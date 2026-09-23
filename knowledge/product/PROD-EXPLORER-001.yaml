@@ -3,7 +3,7 @@ type: product_standard
 title: Workspace Explorer Tree Navigation, Context Attachment & File Filtering
 domain: product
 status: approved
-version: 1.4.0
+version: 1.5.0
 authority:
   level: official
   confidence: high
@@ -32,7 +32,7 @@ do:
   - "Provide multi-select mode (`isSelectMode`) with checkboxes to batch-select multiple files or folders and attach them to chat context with one click."
   - "Provide instant single-click inline attachment (`Paperclip` icon) and `@mention` insertion (`@` icon) on hover for any file or directory row."
   - "Render distinct Visual Studio 2022 color badges and icons based on file type and extension."
-  - "Support context menu and double-click actions: open in system default app via plugin-opener (configured with opener:allow-open-path capability), with graceful fallback to Notepad on Windows if no default application is associated, reveal in Windows Explorer, and copy relative path."
+  - "Support context menu and double-click actions: open in system default app via native Rust command `open_workspace_file` (with automatic Windows Notepad fallback for unassociated file types, bypassing frontend plugin-opener ACL restrictions), reveal in Windows Explorer, and copy relative path."
   - "Provide keyboard shortcuts: `Ctrl+Alt+L` to toggle Workspace Explorer and `Ctrl+;` to focus the file search bar."
 
 dont:

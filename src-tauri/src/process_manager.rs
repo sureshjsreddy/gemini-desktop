@@ -158,7 +158,12 @@ impl ProcessSupervisor {
                 if trimmed.is_empty() || trimmed.starts_with('#') {
                     continue;
                 }
-                if let Some((k, v)) = trimmed.split_once('=') {
+                let line_str = if let Some(stripped) = trimmed.strip_prefix("export ") {
+                    stripped.trim()
+                } else {
+                    trimmed
+                };
+                if let Some((k, v)) = line_str.split_once('=') {
                     let key = k.trim().to_string();
                     let mut val = v.trim().to_string();
                     if (val.starts_with('"') && val.ends_with('"')) || (val.starts_with('\'') && val.ends_with('\'')) {
@@ -295,6 +300,33 @@ DEBUG='true'
         let empty_args: Vec<String> = vec![];
         let no_model = empty_args.windows(2).find(|w| w[0] == "--model").map(|w| &w[1]);
         assert_eq!(no_model, None);
+    }
+
+    #[test]
+    fn test_parse_dotenv_complex_cases() {
+        let temp_file = std::env::temp_dir().join(format!("test_complex_dotenv_{}.env", uuid::Uuid::new_v4()));
+        let sample = "export API_URL=https://api.example.com/v1\r\nexport DB_CONN=\"postgres://user:p=w@localhost:5432/mydb\"\r\nFLAG_MULTIPLE_EQUALS=alpha=beta=gamma\r\nSPACED_KEY = spaced_val\r\n";
+        std::fs::write(&temp_file, sample).unwrap();
+        let parsed = ProcessSupervisor::parse_dotenv_file(&temp_file);
+        let _ = std::fs::remove_file(&temp_file);
+
+        assert_eq!(parsed.get("API_URL"), Some(&"https://api.example.com/v1".to_string()));
+        assert_eq!(parsed.get("DB_CONN"), Some(&"postgres://user:p=w@localhost:5432/mydb".to_string()));
+        assert_eq!(parsed.get("FLAG_MULTIPLE_EQUALS"), Some(&"alpha=beta=gamma".to_string()));
+        assert_eq!(parsed.get("SPACED_KEY"), Some(&"spaced_val".to_string()));
+    }
+
+    #[test]
+    fn test_model_arg_extraction_edge_cases() {
+        // Trailing --model with no value
+        let trailing_model = vec!["--verbose".to_string(), "--model".to_string()];
+        let model = trailing_model.windows(2).find(|w| w[0] == "--model").map(|w| &w[1]);
+        assert_eq!(model, None);
+
+        // Custom fine-tuned model path
+        let custom_args = vec!["--model".to_string(), "custom/org-gemini-3.5-flash:nightly".to_string()];
+        let custom_model = custom_args.windows(2).find(|w| w[0] == "--model").map(|w| &w[1]);
+        assert_eq!(custom_model, Some(&"custom/org-gemini-3.5-flash:nightly".to_string()));
     }
 }
 

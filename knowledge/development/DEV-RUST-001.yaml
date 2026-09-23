@@ -3,7 +3,7 @@ type: development_standard
 title: Rust Backend Command Pattern, Async Tokio & IPC Serialization
 domain: development
 status: approved
-version: 1.0.0
+version: 1.1.0
 authority:
   level: official
   confidence: high
@@ -21,6 +21,8 @@ do:
   - "Decorate exposed functions with `#[tauri::command]` and register them in `tauri::generate_handler![]`."
   - "Inject shared application state via `State<'_, AppState>`."
   - "Map internal errors into user-friendly descriptive string messages using `.map_err(|e| e.to_string())`."
+  - "Offload heavy filesystem operations (such as recursive directory search) to `tokio::task::spawn_blocking` and support atomic cancellation generation counters (`Arc<AtomicU64>`) so long-running scans can be instantly aborted by user actions without freezing the UI."
+  - "Implement native OS process execution fallbacks (e.g. `open_workspace_file` with Windows Notepad fallback using `open::that_detached` and `Command::new(\"notepad.exe\")`) rather than relying on restricted webview opener plugins that fail with ACL errors."
   - "Optimize release compilation in `Cargo.toml` with `lto = true`, `opt-level = 3`, and `strip = true` for maximum runtime speed and minimal binary footprint."
 
 dont:

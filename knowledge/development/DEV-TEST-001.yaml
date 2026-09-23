@@ -3,7 +3,7 @@ type: development_standard
 title: Automated Verification, svelte-check & Cargo Test Standards
 domain: development
 status: approved
-version: 1.0.0
+version: 1.1.0
 authority:
   level: official
   confidence: high
@@ -21,7 +21,7 @@ rule:
 do:
   - "Run `npm run check` (`svelte-kit sync && svelte-check --tsconfig ./tsconfig.json`) and enforce 0 errors and 0 warnings before committing."
   - "Maintain in-memory SQLite unit tests in `database.rs` to verify table initialization, default seeding, cascades, and FTS5 search."
-  - "Maintain Rust backend unit tests in `process_manager.rs` and `commands.rs` covering model argument extraction, .env parsing, git context resolution, and MCP configurations."
+  - "Maintain Rust backend unit tests in `process_manager.rs`, `database.rs`, and `commands.rs` covering model argument extraction, complex .env parsing, git context resolution, chat export formats, crawler depth filtering, relational cascade deletion, FTS5 cleanup triggers, MCP preservation, non-blocking workspace search cancellation, and native file opener fallback (18/18 tests)."
   - "Always run `npm run tauri build` to compile the native Rust backend and package production desktop artifacts (`gemini-desktop.exe`, `.msi`, and `-setup.exe`) in `src-tauri/target/release/` on every completed feature."
   - "Never stop at only `npm run build`; always run `npm run tauri build` to ensure native desktop executables and Windows installers are continuously updated and valid."
 

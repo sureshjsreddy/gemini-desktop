@@ -3,7 +3,7 @@ type: product_standard
 title: Workspace Context Profiles & Working Directory Isolation
 domain: product
 status: approved
-version: 1.1.0
+version: 1.2.0
 authority:
   level: official
   confidence: high
@@ -24,6 +24,7 @@ do:
   - "Support model selection using grouped presets (Auto, Gemini 3 / 3.5, Gemini 2.5, Legacy 1.5) and manual custom model names, decoupling reactive input state to prevent typing clobbering."
   - "Pass the workspace's target working directory when spawning the Gemini CLI process so project-level `GEMINI.md` files are recognized automatically."
   - "Enforce cascade deletion of associated chat sessions and messages when a workspace profile is deleted."
+  - "Persist the last active workspace ID locally across app sessions and reload it automatically on application startup instead of defaulting to the first workspace."
 
 dont:
   - "Do not seed cluttered or redundant demo workspaces by default."

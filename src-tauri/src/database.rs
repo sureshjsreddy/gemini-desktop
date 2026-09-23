@@ -81,6 +81,8 @@ impl DbManager {
 
         conn.execute_batch(
             "
+            PRAGMA foreign_keys = ON;
+
             CREATE TABLE IF NOT EXISTS workspaces (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -441,6 +443,111 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session_id, session.id);
         assert!(results[0].snippet.contains("validator"));
+    }
+
+    #[test]
+    fn test_workspace_crud_and_cascade_delete() {
+        let db = DbManager::new_in_memory().expect("in-memory db initialization failed");
+
+        // 1. Create custom workspace
+        let now = Utc::now().to_rfc3339();
+        let ws = Workspace {
+            id: "ws-custom".to_string(),
+            name: "Alpha Project".to_string(),
+            path: "C:\\Alpha".to_string(),
+            model: "gemini-2.5-pro".to_string(),
+            system_prompt: Some("Custom system instruction".to_string()),
+            created_at: now.clone(),
+        };
+        db.save_workspace(ws).expect("failed to save workspace");
+
+        let workspaces = db.list_workspaces().unwrap();
+        assert_eq!(workspaces.len(), 2); // Personal + Alpha Project
+        let found = workspaces.into_iter().find(|w| w.id == "ws-custom").unwrap();
+        assert_eq!(found.name, "Alpha Project");
+        assert_eq!(found.model, "gemini-2.5-pro");
+
+        // 2. Update workspace (ON CONFLICT)
+        let updated_ws = Workspace {
+            id: "ws-custom".to_string(),
+            name: "Alpha Project Updated".to_string(),
+            path: "C:\\AlphaV2".to_string(),
+            model: "gemini-3.5-flash".to_string(),
+            system_prompt: None,
+            created_at: now,
+        };
+        db.save_workspace(updated_ws).expect("failed to update workspace");
+        let workspaces_v2 = db.list_workspaces().unwrap();
+        let updated = workspaces_v2.into_iter().find(|w| w.id == "ws-custom").unwrap();
+        assert_eq!(updated.name, "Alpha Project Updated");
+        assert_eq!(updated.path, "C:\\AlphaV2");
+        assert_eq!(updated.model, "gemini-3.5-flash");
+
+        // 3. Create child session and message
+        let session = db.create_session("ws-custom", "Sprint 1 Discussion").expect("failed to create session");
+        let msg = Message {
+            id: "msg-alpha-1".to_string(),
+            session_id: session.id.clone(),
+            role: "user".to_string(),
+            content: "What is the sprint velocity?".to_string(),
+            tool_calls_json: None,
+            token_count: 6,
+            created_at: Utc::now().to_rfc3339(),
+        };
+        db.save_message(msg).expect("failed to save message");
+
+        assert_eq!(db.list_sessions("ws-custom").unwrap().len(), 1);
+        assert_eq!(db.list_messages(&session.id).unwrap().len(), 1);
+
+        // 4. Delete workspace and verify relational cascade delete
+        db.delete_workspace("ws-custom").expect("failed to delete workspace");
+        let remaining_ws = db.list_workspaces().unwrap();
+        assert_eq!(remaining_ws.len(), 1); // Only Personal remains
+        assert!(!remaining_ws.iter().any(|w| w.id == "ws-custom"));
+
+        // Sessions and messages must be cascaded
+        assert_eq!(db.list_sessions("ws-custom").unwrap().len(), 0);
+        assert_eq!(db.list_messages(&session.id).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_fts5_cleanup_on_delete() {
+        let db = DbManager::new_in_memory().expect("in-memory db initialization failed");
+        let session = db.create_session("ws-personal", "FTS Cleanup Test").expect("failed to create session");
+
+        let msg = Message {
+            id: "msg-fts-unique".to_string(),
+            session_id: session.id.clone(),
+            role: "assistant".to_string(),
+            content: "The quantum xylophone resonance frequency is 432 Hz.".to_string(),
+            tool_calls_json: None,
+            token_count: 10,
+            created_at: Utc::now().to_rfc3339(),
+        };
+        db.save_message(msg).expect("failed to save message");
+
+        // Verify FTS finds it
+        let before_del = db.search_fts("xylophone").expect("FTS search failed");
+        assert_eq!(before_del.len(), 1);
+
+        // Delete session (which deletes messages)
+        db.delete_session(&session.id).expect("failed to delete session");
+
+        // Verify FTS no longer returns deleted message
+        let after_del = db.search_fts("xylophone").expect("FTS search failed");
+        assert_eq!(after_del.len(), 0);
+    }
+
+    #[test]
+    fn test_session_rename() {
+        let db = DbManager::new_in_memory().expect("in-memory db initialization failed");
+        let session = db.create_session("ws-personal", "Draft Title").expect("failed to create session");
+        assert_eq!(session.title, "Draft Title");
+
+        db.rename_session(&session.id, "Finalized Architecture Plan").expect("failed to rename session");
+        let sessions = db.list_sessions("ws-personal").unwrap();
+        let target = sessions.into_iter().find(|s| s.id == session.id).expect("session not found");
+        assert_eq!(target.title, "Finalized Architecture Plan");
     }
 }
 

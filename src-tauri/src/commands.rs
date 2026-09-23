@@ -410,11 +410,9 @@ pub fn search_history(state: State<AppState>, query: String) -> Result<Vec<Searc
     state.db.search_fts(&query)
 }
 
-#[tauri::command]
-pub fn export_session(state: State<AppState>, session_id: String, format: String) -> Result<String, String> {
-    let messages = state.db.list_messages(&session_id)?;
-    match format.as_str() {
-        "json" => serde_json::to_string_pretty(&messages).map_err(|e| e.to_string()),
+pub fn format_session_export(session_id: &str, messages: &[Message], format: &str) -> Result<String, String> {
+    match format {
+        "json" => serde_json::to_string_pretty(messages).map_err(|e| e.to_string()),
         "txt" => {
             let mut txt = String::new();
             for m in messages {
@@ -436,6 +434,12 @@ pub fn export_session(state: State<AppState>, session_id: String, format: String
             Ok(md)
         }
     }
+}
+
+#[tauri::command]
+pub fn export_session(state: State<AppState>, session_id: String, format: String) -> Result<String, String> {
+    let messages = state.db.list_messages(&session_id)?;
+    format_session_export(&session_id, &messages, &format)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1185,6 +1189,98 @@ mod tests {
         let res = open_workspace_file(non_existent.to_string(), None);
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("File does not exist"));
+    }
+
+    #[test]
+    fn test_format_session_export() {
+        let messages = vec![
+            Message {
+                id: "msg-1".to_string(),
+                session_id: "sess-test".to_string(),
+                role: "user".to_string(),
+                content: "Explain Rust borrowing".to_string(),
+                tool_calls_json: None,
+                token_count: 5,
+                created_at: "2026-09-23T12:00:00Z".to_string(),
+            },
+            Message {
+                id: "msg-2".to_string(),
+                session_id: "sess-test".to_string(),
+                role: "assistant".to_string(),
+                content: "Borrowing allows references without transfer of ownership.".to_string(),
+                tool_calls_json: None,
+                token_count: 10,
+                created_at: "2026-09-23T12:00:05Z".to_string(),
+            },
+        ];
+
+        // 1. Markdown
+        let md = format_session_export("sess-test", &messages, "md").unwrap();
+        assert!(md.contains("# Chat Export - Session sess-test"));
+        assert!(md.contains("### 👤 User"));
+        assert!(md.contains("Explain Rust borrowing"));
+        assert!(md.contains("### ✨ Gemini"));
+
+        // 2. Text
+        let txt = format_session_export("sess-test", &messages, "txt").unwrap();
+        assert!(txt.contains("USER: Explain Rust borrowing"));
+        assert!(txt.contains("ASSISTANT: Borrowing allows references"));
+
+        // 3. JSON
+        let json_str = format_session_export("sess-test", &messages, "json").unwrap();
+        let parsed: Vec<Message> = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].content, "Explain Rust borrowing");
+    }
+
+    #[test]
+    fn test_walk_workspace_dir_filtering_and_depth() {
+        let temp_dir = std::env::temp_dir().join(format!("gemini_test_walk_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Valid files & subdirectories
+        std::fs::write(temp_dir.join("root.txt"), "root").unwrap();
+        let src_dir = temp_dir.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(src_dir.join("lib.rs"), "pub fn test() {}").unwrap();
+
+        let deep_dir = src_dir.join("deep");
+        std::fs::create_dir_all(&deep_dir).unwrap();
+        std::fs::write(deep_dir.join("nested.rs"), "// deep").unwrap();
+
+        // Ignored directories
+        let git_dir = temp_dir.join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(git_dir.join("config"), "").unwrap();
+
+        let nm_dir = temp_dir.join("node_modules").join("pkg");
+        std::fs::create_dir_all(&nm_dir).unwrap();
+        std::fs::write(nm_dir.join("index.js"), "").unwrap();
+
+        let mut entries = Vec::new();
+        walk_workspace_dir(&temp_dir, &temp_dir, 0, 7, &mut entries);
+
+        let relative_paths: Vec<String> = entries.iter().map(|e| e.relative_path.clone()).collect();
+        assert!(relative_paths.contains(&"root.txt".to_string()));
+        assert!(relative_paths.contains(&"src".to_string()));
+        assert!(relative_paths.contains(&"src/lib.rs".to_string()));
+        assert!(relative_paths.contains(&"src/deep/nested.rs".to_string()));
+
+        // Verify ignored paths are NOT present
+        assert!(!relative_paths.iter().any(|p| p.starts_with(".git")));
+        assert!(!relative_paths.iter().any(|p| p.starts_with("node_modules")));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_resolve_git_context_multiple_tokens() {
+        let prompt = "Please check: @git:diff and check status: @git:status for issues";
+        let resolved = resolve_git_context(prompt, None);
+        assert!(resolved.contains("[Context: Git Diff]"));
+        assert!(resolved.contains("[Context: Git Status]"));
+        assert!(resolved.contains("Please check:"));
+        assert!(resolved.contains("and check status:"));
     }
 }
 

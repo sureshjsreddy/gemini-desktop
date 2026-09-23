@@ -23,6 +23,8 @@
   import { themeManager } from "$lib/theme.svelte";
   import { dialogManager } from "$lib/dialog.svelte";
 
+  const LAST_WORKSPACE_KEY = "gemini_desktop_last_workspace_id";
+
   // Reactive State (Svelte 5 Runes)
   let workspaces: Workspace[] = $state([]);
   let activeWorkspace: Workspace | null = $state(null);
@@ -69,9 +71,17 @@
     try {
       workspaces = await invoke<Workspace[]>("get_workspaces");
       if (workspaces.length > 0) {
-        activeWorkspace = workspaces[0];
-        await loadSessionsForWorkspace(activeWorkspace.id);
-        await loadWorkspaceFiles(activeWorkspace.id);
+        let initialWs = workspaces[0];
+        if (typeof window !== "undefined") {
+          const lastWorkspaceId = localStorage.getItem(LAST_WORKSPACE_KEY);
+          if (lastWorkspaceId) {
+            const matched = workspaces.find((w) => w.id === lastWorkspaceId);
+            if (matched) {
+              initialWs = matched;
+            }
+          }
+        }
+        await selectWorkspace(initialWs);
       }
     } catch (e) {
       console.error("Failed to load workspaces:", e);
@@ -181,6 +191,13 @@
 
   async function selectWorkspace(ws: Workspace) {
     activeWorkspace = ws;
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem(LAST_WORKSPACE_KEY, ws.id);
+      } catch (e) {
+        console.warn("Failed to persist last workspace id:", e);
+      }
+    }
     await loadSessionsForWorkspace(ws.id);
     await loadWorkspaceFiles(ws.id);
   }
@@ -336,9 +353,12 @@
   }
 
   async function handleSaveWorkspace(ws: Workspace) {
+    const isNew = !workspaces.some((w) => w.id === ws.id);
     await invoke("save_workspace", { workspace: ws });
     workspaces = await invoke<Workspace[]>("get_workspaces");
-    if (activeWorkspace?.id === ws.id) {
+    if (isNew) {
+      await selectWorkspace(ws);
+    } else if (activeWorkspace?.id === ws.id) {
       activeWorkspace = ws;
       await loadWorkspaceFiles(ws.id);
     }
@@ -348,8 +368,23 @@
   async function handleDeleteWorkspace(id: string) {
     await invoke("delete_workspace", { id });
     workspaces = await invoke<Workspace[]>("get_workspaces");
-    if (activeWorkspace?.id === id && workspaces.length > 0) {
-      await selectWorkspace(workspaces[0]);
+    if (activeWorkspace?.id === id) {
+      if (workspaces.length > 0) {
+        await selectWorkspace(workspaces[0]);
+      } else {
+        activeWorkspace = null;
+        sessions = [];
+        activeSession = null;
+        messages = [];
+        workspaceFiles = [];
+        if (typeof window !== "undefined") {
+          try {
+            localStorage.removeItem(LAST_WORKSPACE_KEY);
+          } catch (e) {
+            // ignore
+          }
+        }
+      }
     }
     showWorkspaceModal = false;
   }

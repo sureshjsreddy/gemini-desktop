@@ -3,7 +3,7 @@ type: development_standard
 title: Svelte 5 Runes State Management & Tailwind CSS v4 Component Standard
 domain: development
 status: approved
-version: 1.0.0
+version: 1.1.0
 authority:
   level: official
   confidence: high
@@ -28,6 +28,7 @@ do:
   - "Replace HTML `autofocus` with programmatic focus inside `$effect` with a small `setTimeout` to eliminate `a11y_autofocus` compiler warnings."
   - "Use `$derived.by` for reactive configuration presets that depend on component props to avoid capturing initial state."
   - "Wrap interactive icon buttons, actions, and status indicators with `Tooltip.svelte` for accessibility and keyboard/hover discoverability."
+  - "Enforce strict CSS stacking context hierarchy: header has `relative z-30`, chat message viewport has `z-0`, bottom prompt bar has `relative z-20`, tooltips elevate dynamically to `z-50` on hover, and dropdown menus (Export, Workspace profile) use `z-40` with outside-click dismissal backdrops so chat messages never occlude menus or tooltips."
 
 dont:
   - "Do not use legacy Svelte 3/4 `export let` syntax or stores (`writable`) when modern runes are available."
