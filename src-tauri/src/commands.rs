@@ -1003,6 +1003,134 @@ pub async fn restart_gemini_session(state: State<'_, AppState>) -> Result<String
     Ok("Gemini CLI session reset successfully. Next prompt will launch with updated environment.".to_string())
 }
 
+pub const WINGET_PACKAGE_ID: &str = "SureshJanakiReddy.GeminiDesktop";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateInfo {
+    pub update_available: bool,
+    pub current_version: String,
+    pub latest_version: String,
+    pub package_id: String,
+    pub release_url: Option<String>,
+}
+
+pub fn parse_winget_version(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Version:") {
+            if let Some((_, ver)) = trimmed.split_once(':') {
+                let v = ver.trim();
+                if !v.is_empty() {
+                    return Some(v.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn is_newer_version(latest: &str, current: &str) -> bool {
+    let clean_latest = latest.trim().trim_start_matches('v');
+    let clean_current = current.trim().trim_start_matches('v');
+
+    let parse_parts = |s: &str| -> Vec<u32> {
+        s.split('.')
+            .map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>())
+            .filter_map(|p| p.parse::<u32>().ok())
+            .collect()
+    };
+
+    let latest_parts = parse_parts(clean_latest);
+    let current_parts = parse_parts(clean_current);
+
+    let max_len = latest_parts.len().max(current_parts.len());
+    for i in 0..max_len {
+        let l = latest_parts.get(i).copied().unwrap_or(0);
+        let c = current_parts.get(i).copied().unwrap_or(0);
+        if l > c {
+            return true;
+        } else if l < c {
+            return false;
+        }
+    }
+
+    false
+}
+
+#[tauri::command]
+pub async fn check_app_update() -> Result<UpdateInfo, String> {
+    tokio::task::spawn_blocking(|| {
+        let current_version = env!("CARGO_PKG_VERSION").to_string();
+
+        let mut cmd = Command::new("winget");
+        cmd.args(["show", WINGET_PACKAGE_ID, "--accept-source-agreements"]);
+
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+
+        if let Ok(output) = cmd.output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(latest) = parse_winget_version(&stdout) {
+                    let update_available = is_newer_version(&latest, &current_version);
+                    let release_url = Some(format!(
+                        "https://github.com/sureshjsreddy/gemini-desktop/releases/tag/v{}",
+                        latest
+                    ));
+                    return Ok(UpdateInfo {
+                        update_available,
+                        current_version,
+                        latest_version: latest,
+                        package_id: WINGET_PACKAGE_ID.to_string(),
+                        release_url,
+                    });
+                }
+            }
+        }
+
+        // Return current version if winget check is unavailable or matches
+        Ok(UpdateInfo {
+            update_available: false,
+            current_version: current_version.clone(),
+            latest_version: current_version,
+            package_id: WINGET_PACKAGE_ID.to_string(),
+            release_url: None,
+        })
+    })
+    .await
+    .map_err(|e| format!("Failed to check for updates: {}", e))?
+}
+
+#[tauri::command]
+pub fn launch_winget_upgrade(mode: Option<String>) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mode_str = mode.as_deref().unwrap_or("external");
+        if mode_str == "external" {
+            let cmd = format!(
+                "winget upgrade --id {} --accept-source-agreements --accept-package-agreements",
+                WINGET_PACKAGE_ID
+            );
+            Command::new("cmd.exe")
+                .args(["/c", "start", "cmd.exe", "/k", &cmd])
+                .spawn()
+                .map_err(|e| format!("Failed to launch winget upgrade in command prompt: {}", e))?;
+            return Ok(());
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = mode;
+        return Err("WinGet is only available on Windows".to_string());
+    }
+
+    Ok(())
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -1281,6 +1409,34 @@ mod tests {
         assert!(resolved.contains("[Context: Git Status]"));
         assert!(resolved.contains("Please check:"));
         assert!(resolved.contains("and check status:"));
+    }
+
+    #[test]
+    fn test_parse_winget_version() {
+        let sample = "
+Found Gemini Desktop [SureshJanakiReddy.GeminiDesktop]
+Version: 0.2.14
+Publisher: Suresh Janaki Reddy
+Author: Suresh Janaki Reddy
+";
+        let ver = parse_winget_version(sample);
+        assert_eq!(ver, Some("0.2.14".to_string()));
+
+        let empty = "No package found";
+        assert_eq!(parse_winget_version(empty), None);
+    }
+
+    #[test]
+    fn test_is_newer_version() {
+        assert!(is_newer_version("0.2.15", "0.2.14"));
+        assert!(is_newer_version("0.3.0", "0.2.14"));
+        assert!(is_newer_version("1.0.0", "0.2.14"));
+        assert!(is_newer_version("v0.2.15", "0.2.14"));
+        assert!(is_newer_version("0.2.15", "v0.2.14"));
+
+        assert!(!is_newer_version("0.2.14", "0.2.14"));
+        assert!(!is_newer_version("0.2.13", "0.2.14"));
+        assert!(!is_newer_version("0.1.99", "0.2.14"));
     }
 }
 

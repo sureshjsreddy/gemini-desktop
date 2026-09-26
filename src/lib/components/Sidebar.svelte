@@ -16,6 +16,7 @@
     Server,
     Terminal,
     PanelLeftClose,
+    RefreshCw,
   } from "lucide-svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
 
@@ -37,6 +38,8 @@
     onToggleTerminal,
     onToggle,
     envStatus = null,
+    onCheckUpdate,
+    isCheckingUpdate = false,
   }: {
     workspaces: Workspace[];
     activeWorkspace: Workspace | null;
@@ -55,6 +58,8 @@
     onToggleTerminal?: () => void;
     onToggle?: () => void;
     envStatus: any;
+    onCheckUpdate?: () => void;
+    isCheckingUpdate?: boolean;
   } = $props();
 
   let showWorkspaceMenu = $state(false);
@@ -319,16 +324,33 @@
     {/if}
   </div>
 
-  <!-- Bottom Workspace Indicator -->
-  <Tooltip
-    class="w-full block"
-    text="Current Workspace Root"
-    subtext="All file attachments, git operations, and terminal executions run inside this directory."
-    position="top"
-  >
-    <div class="p-3 border-t border-subtle text-[11px] text-muted-theme flex items-center justify-between bg-surface/40 cursor-help">
-      <span class="truncate">{activeWorkspace?.path || "C:\\"}</span>
-      <span class="text-accent-theme font-mono shrink-0 ml-2">{activeWorkspace?.model}</span>
+  <!-- Bottom App & Workspace Info -->
+  <div class="border-t border-subtle bg-surface/40">
+    <div class="px-3 pt-2 pb-1 flex items-center justify-between text-[10px] text-muted-theme">
+      <span class="font-mono">v0.2.15</span>
+      {#if onCheckUpdate}
+        <button
+          type="button"
+          onclick={onCheckUpdate}
+          disabled={isCheckingUpdate}
+          class="hover:text-accent-theme flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50"
+          title="Check for updates on WinGet"
+        >
+          <RefreshCw class="w-2.5 h-2.5 {isCheckingUpdate ? 'animate-spin text-accent-theme' : ''}" />
+          <span>{isCheckingUpdate ? "Checking..." : "Check for Updates"}</span>
+        </button>
+      {/if}
     </div>
-  </Tooltip>
+    <Tooltip
+      class="w-full block"
+      text="Current Workspace Root"
+      subtext="All file attachments, git operations, and terminal executions run inside this directory."
+      position="top"
+    >
+      <div class="px-3 pb-2 pt-0.5 text-[11px] text-muted-theme flex items-center justify-between cursor-help">
+        <span class="truncate">{activeWorkspace?.path || "C:\\"}</span>
+        <span class="text-accent-theme font-mono shrink-0 ml-2">{activeWorkspace?.model}</span>
+      </div>
+    </Tooltip>
+  </div>
 </aside>

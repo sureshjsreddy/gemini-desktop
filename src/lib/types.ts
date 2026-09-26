@@ -102,3 +102,11 @@ export interface TerminalCommandResult {
   duration_ms: number;
 }
 
+export interface UpdateInfo {
+  update_available: boolean;
+  current_version: string;
+  latest_version: string;
+  package_id: string;
+  release_url?: string;
+}
+

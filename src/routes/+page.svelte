@@ -11,6 +11,7 @@
     ToolPermissionPayload,
     GeminiEnvStatus,
     WorkspaceFileEntry,
+    UpdateInfo,
   } from "$lib/types";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import ChatView from "$lib/components/ChatView.svelte";
@@ -20,6 +21,7 @@
   import TemplatesModal from "$lib/components/TemplatesModal.svelte";
   import ThemeModal from "$lib/components/ThemeModal.svelte";
   import McpModal from "$lib/components/McpModal.svelte";
+  import UpdateNotificationBanner from "$lib/components/UpdateNotificationBanner.svelte";
   import { themeManager } from "$lib/theme.svelte";
   import { dialogManager } from "$lib/dialog.svelte";
 
@@ -33,6 +35,8 @@
   let messages: Message[] = $state([]);
   let promptTemplates: PromptTemplate[] = $state([]);
   let workspaceFiles: WorkspaceFileEntry[] = $state([]);
+  let updateInfo: UpdateInfo | null = $state(null);
+  let isCheckingUpdate = $state(false);
 
   let isStreaming = $state(false);
   let streamingText = $state("");
@@ -127,7 +131,38 @@
     });
 
     window.addEventListener("keydown", handleGlobalShortcuts);
+
+    // 5. Check for updates on WinGet in the background (3s delay)
+    setTimeout(() => {
+      handleCheckUpdate(false);
+    }, 3000);
   });
+
+  async function handleCheckUpdate(manual = false) {
+    if (isCheckingUpdate) return;
+    isCheckingUpdate = true;
+    try {
+      const info = await invoke<UpdateInfo>("check_app_update");
+      if (info && info.update_available) {
+        const dismissed = localStorage.getItem("gemini_dismissed_update_version");
+        if (manual || dismissed !== info.latest_version) {
+          updateInfo = info;
+        }
+      } else if (manual) {
+        await dialogManager.alert(
+          `Gemini Desktop v${info?.current_version || "0.2.14"} is already up to date with the latest WinGet release!`,
+          "Up to Date"
+        );
+      }
+    } catch (e) {
+      console.warn("Update check failed:", e);
+      if (manual) {
+        await dialogManager.alert(`Could not check for updates: ${e}`, "Check Failed");
+      }
+    } finally {
+      isCheckingUpdate = false;
+    }
+  }
 
   onDestroy(() => {
     if (unlistenChunk) unlistenChunk();
@@ -411,29 +446,36 @@
       onOpenThemeModal={() => (showThemeModal = true)}
       onOpenMcpModal={() => (showMcpModal = true)}
       onToggleTerminal={() => (showTerminalDrawer = !showTerminalDrawer)}
+      onCheckUpdate={() => handleCheckUpdate(true)}
+      {isCheckingUpdate}
     />
   {/if}
 
   <!-- Main Chat Surface -->
-  <ChatView
-    bind:this={chatViewRef}
-    workspace={activeWorkspace}
-    session={activeSession}
-    {workspaceFiles}
-    {messages}
-    {isStreaming}
-    {streamingText}
-    {toolPermission}
-    {showSidebar}
-    onToggleSidebar={() => (showSidebar = !showSidebar)}
-    bind:showTerminalDrawer
-    bind:showSolutionExplorer
-    onSendPrompt={handleSendPrompt}
-    onCancelPrompt={handleCancelPrompt}
-    onToolResponse={handleToolResponse}
-    onExport={handleExport}
-    onOpenMcpModal={() => (showMcpModal = true)}
-  />
+  <div class="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
+    {#if updateInfo}
+      <UpdateNotificationBanner {updateInfo} onDismiss={() => (updateInfo = null)} />
+    {/if}
+    <ChatView
+      bind:this={chatViewRef}
+      workspace={activeWorkspace}
+      session={activeSession}
+      {workspaceFiles}
+      {messages}
+      {isStreaming}
+      {streamingText}
+      {toolPermission}
+      {showSidebar}
+      onToggleSidebar={() => (showSidebar = !showSidebar)}
+      bind:showTerminalDrawer
+      bind:showSolutionExplorer
+      onSendPrompt={handleSendPrompt}
+      onCancelPrompt={handleCancelPrompt}
+      onToolResponse={handleToolResponse}
+      onExport={handleExport}
+      onOpenMcpModal={() => (showMcpModal = true)}
+    />
+  </div>
 
   <!-- Right Visual Studio 2022 Workspace Explorer -->
   <SolutionExplorer

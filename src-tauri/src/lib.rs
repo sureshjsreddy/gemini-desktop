@@ -54,7 +54,9 @@ pub fn run() {
             get_mcp_config,
             save_mcp_config,
             run_terminal_command,
-            restart_gemini_session
+            restart_gemini_session,
+            check_app_update,
+            launch_winget_upgrade
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

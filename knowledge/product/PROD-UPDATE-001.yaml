@@ -1,0 +1,42 @@
+id: PROD-UPDATE-001
+type: product_standard
+title: WinGet Update Detection & Interactive User Notification
+domain: product
+status: approved
+version: 1.0.0
+authority:
+  level: official
+  confidence: high
+owner:
+  team: product_team
+
+applies_to:
+  - frontend
+  - backend
+  - packaging
+
+rule:
+  "The desktop client must automatically check the Windows Package Manager (WinGet) catalog for available updates and display a non-intrusive interactive notification banner when a newer release is published."
+
+do:
+  - "Query the local WinGet catalog asynchronously using `winget show SureshJanakiReddy.GeminiDesktop --accept-source-agreements` via `tokio::task::spawn_blocking` to avoid blocking the UI."
+  - "Trigger automatic background update checks with a 3-second delay on application startup."
+  - "Compare the latest version from WinGet against the current application version using semantic versioning."
+  - "Provide a non-intrusive floating `UpdateNotificationBanner` presenting the new version number and 1-click update action."
+  - "Provide a 1-click 'Update via WinGet' action that launches an interactive command prompt to run `winget upgrade --id SureshJanakiReddy.GeminiDesktop` with live download/install progress."
+  - "Provide a 1-click 'Copy Command' button to copy the upgrade command to clipboard."
+  - "Support version-specific dismissal stored in `localStorage` so users are not repeatedly prompted for the same version once dismissed."
+  - "Provide a manual 'Check for Updates' action in the sidebar footer next to the version indicator."
+
+dont:
+  - "Do not block application startup or UI rendering with synchronous network or CLI queries."
+  - "Do not perform silent, forced updates without user knowledge and approval."
+  - "Do not display aggressive, modal-blocking update dialogs on launch."
+
+reason:
+  "WinGet-based update detection gives Windows users seamless, official package manager updates without requiring complex auto-updater infrastructure."
+
+related_items:
+  - ARCH-SYS-001
+  - DEV-SVELTE-001
+  - DEV-RUST-001
