@@ -17,9 +17,10 @@
       ],
     },
     {
-      group: "Gemini 3 / 3.5",
+      group: "Gemini 3 / 3.5 / 3.8 (Preview & Latest)",
       options: [
-        { value: "gemini-3.5-flash", label: "gemini-3.5-flash (Fast & powerful default in CLI 0.59)" },
+        { value: "gemini-3.8-flash", label: "gemini-3.8-flash (Latest Preview — Ultra-responsive next-gen Flash)" },
+        { value: "gemini-3.5-flash", label: "gemini-3.5-flash (Fast & powerful default in CLI 0.59+)" },
         { value: "gemini-3.5-flash-lite", label: "gemini-3.5-flash-lite (Ultra-fast & lightweight 3.5)" },
         { value: "gemini-3.1-pro-preview", label: "gemini-3.1-pro-preview (Deep reasoning, complex coding)" },
         { value: "gemini-3.1-flash-lite", label: "gemini-3.1-flash-lite (Ultra-fast & cost-effective)" },
@@ -239,7 +240,7 @@
                   type="text"
                   value={customModelInput}
                   oninput={onCustomModelInput}
-                  placeholder="e.g. gemini-3-pro-preview or custom model"
+                  placeholder="e.g. gemini-3.8-flash, gemini-3.5-flash-lite, or custom model"
                   class="w-full px-2.5 py-1.5 bg-surface border border-theme-default rounded text-primary-theme font-mono text-xs focus:outline-none focus:border-accent-theme"
                 />
                 <span class="text-[10px] text-muted-theme mt-1 block">

@@ -297,6 +297,10 @@ DEBUG='true'
         let model = extra_args.windows(2).find(|w| w[0] == "--model").map(|w| &w[1]);
         assert_eq!(model, Some(&"gemini-3.5-flash-lite".to_string()));
 
+        let preview_args = vec!["--model".to_string(), "gemini-3.8-flash".to_string()];
+        let preview_model = preview_args.windows(2).find(|w| w[0] == "--model").map(|w| &w[1]);
+        assert_eq!(preview_model, Some(&"gemini-3.8-flash".to_string()));
+
         let empty_args: Vec<String> = vec![];
         let no_model = empty_args.windows(2).find(|w| w[0] == "--model").map(|w| &w[1]);
         assert_eq!(no_model, None);

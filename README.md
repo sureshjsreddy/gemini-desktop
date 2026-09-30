@@ -21,7 +21,7 @@ A modern, blazing-fast native desktop application for interacting with the **Gem
 - **🎯 Official Gemini Model Selection**
   - **Auto (Gemini 3)**: Dynamically balances between Pro and Flash models based on task complexity.
   - **Auto (Gemini 2.5)**: Dynamic selection across Gemini 2.5 series.
-  - **Gemini 3 Series**: `gemini-3-pro-preview` (deep reasoning & architecture), `gemini-3-flash-preview` (high speed).
+  - **Gemini 3 / 3.5 / 3.8 Series**: `gemini-3.8-flash` (latest preview — ultra-responsive next-gen Flash), `gemini-3.5-flash` (powerful default), `gemini-3.5-flash-lite` (lightweight), `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-pro-preview`, `gemini-3-flash-preview`.
   - **Gemini 2.5 Series**: `gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite`.
   - **Manual / Custom Entry**: Enter any custom model identifier, fine-tuned endpoint, or preview string.
 

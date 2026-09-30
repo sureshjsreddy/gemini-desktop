@@ -15,11 +15,11 @@ applies_to:
   - backend
 
 rule:
-  "Gemini Desktop model options must adhere to official Gemini CLI model support (Auto, Gemini 3 / 3.5, Gemini 2.5, Flash-Lite, and Manual selection) and route model configurations via ACP session/set_model and CLI process flags."
+  "Gemini Desktop model options must adhere to official Gemini CLI model support (Auto, Gemini 3 / 3.5 / 3.8, Gemini 2.5, Flash-Lite, and Manual selection) and route model configurations via ACP session/set_model and CLI process flags."
 
 do:
   - "Support Auto mode (`auto` for Gemini 3 and `auto-gemini-2.5` for Gemini 2.5) to let the CLI automatically balance speed and reasoning."
-  - "Expose Gemini 3 and 3.5 models (`gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-pro-preview`, `gemini-3-flash-preview`)."
+  - "Expose Gemini 3, 3.5, and 3.8 models (`gemini-3.8-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-pro-preview`, `gemini-3-flash-preview`)."
   - "Expose Gemini 2.5 models (`gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`)."
   - "Maintain legacy options (`gemini-1.5-pro`, `gemini-1.5-flash`) for backward compatibility."
   - "Provide a Manual custom model input allowing users to specify any arbitrary model identifier or fine-tuned endpoint."
