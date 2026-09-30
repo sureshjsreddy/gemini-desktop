@@ -3,7 +3,7 @@ type: product_standard
 title: Interactive Tool Permission Approval & Safe System Execution
 domain: product
 status: approved
-version: 1.0.0
+version: 1.2.0
 authority:
   level: official
   confidence: high
@@ -16,20 +16,26 @@ applies_to:
   - acp_client
 
 rule:
-  "When the Gemini agent requests tool execution (such as running shell commands or modifying files), the desktop UI must render an interactive approval modal allowing the user to either approve or deny the action."
+  "When the Gemini agent requests tool execution, the system must govern permissions via the official Policy Engine approval modes (default, auto_edit, yolo, plan). If permission confirmation is required by the active mode, the desktop UI must render an interactive approval prompt allowing the user to approve, reject, or escalate to autonomous YOLO execution."
 
 do:
-  - "Display the tool name, command parameters, and context reason clearly in the approval prompt."
-  - "Provide distinct 'Allow' and 'Deny' buttons in the chat UI."
+  - "Provide a prominent Mode Selector Pill in the ChatView header displaying the active policy mode (⚡ Auto-Edit, 🚀 YOLO, 🛡️ Ask Permission, 📋 Plan Mode)."
+  - "Default to `auto_edit` mode to minimize developer prompt fatigue by auto-approving file edits (`write_file`, `replace`) while continuing to prompt for system shell commands."
+  - "Persist user mode selection in `localStorage` under `gemini_desktop_approval_mode` across sessions and restarts."
+  - "Pass `--approval-mode <mode>` (or `--yolo`) and `--skip-trust` flags when launching the underlying Gemini CLI process."
+  - "Provide a 1-click 'Allow & switch to YOLO mode' escalation in the tool permission prompt banner to allow immediate uninterrupted autonomous execution."
+  - "Display the tool name, command parameters, locations, and context reason clearly in the approval prompt."
   - "Send the decision back through `respond_tool_permission` command over ACP stdin."
-  - "Log the decision and execution outcome into the chat session history."
 
 dont:
-  - "Do not execute unconfirmed destructive system commands silently in the background."
+  - "Do not execute unconfirmed destructive system commands silently when in Ask (`default`) mode."
+  - "Do not force users to answer repetitive permission prompts for safe file changes when running in `auto_edit` or `yolo` modes."
+  - "Do not use deprecated `tools.exclude` configuration; use official Policy Engine approval modes and rule evaluations."
 
 reason:
-  "Desktop agent execution must respect user sovereignty and safety, preventing accidental or malicious file tampering."
+  "Balancing safety with ergonomics requires flexible policy modes: developers doing fast refactoring need auto-approvals for code edits, while security-sensitive operations or unfamiliar repositories benefit from strict interactive prompts."
 
 related_items:
   - ARCH-ACP-001
   - DEV-SVELTE-001
+  - PROD-UPDATE-001

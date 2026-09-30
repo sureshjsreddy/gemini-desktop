@@ -25,6 +25,7 @@ pub struct AppState {
     pub supervisor: ProcessSupervisor,
     pub acp_session: Arc<AcpSession>,
     pub active_process_workspace: Arc<Mutex<Option<String>>>,
+    pub active_child: Arc<Mutex<Option<std::process::Child>>>,
     pub search_generation: Arc<AtomicU64>,
 }
 
@@ -191,6 +192,38 @@ pub fn resolve_git_context(prompt: &str, workspace_path: Option<&std::path::Path
     expanded.trim().to_string()
 }
 
+/// Constructs CLI argument list including model selection, approval mode, and workspace flags.
+pub fn build_gemini_extra_args(model: &str, approval_mode: &str) -> Vec<String> {
+    let mut extra_args = Vec::new();
+    let trimmed_model = model.trim();
+    if !trimmed_model.is_empty() && trimmed_model != "auto" {
+        extra_args.push("--model".to_string());
+        extra_args.push(trimmed_model.to_string());
+    }
+
+    match approval_mode {
+        "yolo" => {
+            extra_args.push("--approval-mode".to_string());
+            extra_args.push("yolo".to_string());
+        }
+        "auto_edit" => {
+            extra_args.push("--approval-mode".to_string());
+            extra_args.push("auto_edit".to_string());
+        }
+        "plan" => {
+            extra_args.push("--approval-mode".to_string());
+            extra_args.push("plan".to_string());
+        }
+        _ => {
+            extra_args.push("--approval-mode".to_string());
+            extra_args.push("default".to_string());
+        }
+    }
+
+    extra_args.push("--skip-trust".to_string());
+    extra_args
+}
+
 #[tauri::command]
 pub async fn send_prompt(
     app: AppHandle,
@@ -199,6 +232,7 @@ pub async fn send_prompt(
     workspace_id: String,
     prompt: String,
     model: String,
+    approval_mode: Option<String>,
 ) -> Result<u64, String> {
     let now = Utc::now().to_rfc3339();
 
@@ -219,14 +253,30 @@ pub async fn send_prompt(
     let ws = workspaces.into_iter().find(|w| w.id == workspace_id);
     let ws_path = ws.as_ref().map(|w| PathBuf::from(&w.path));
 
+    // Resolve effective approval mode and composite process key
+    let effective_mode = match approval_mode.as_deref().unwrap_or("auto_edit") {
+        "yolo" => "yolo",
+        "default" => "default",
+        "plan" => "plan",
+        _ => "auto_edit",
+    };
+    let process_key = format!("{}::{}", workspace_id, effective_mode);
+
     // 3. Ensure CLI process is spawned and ACP connected
     let mut ws_guard = state.active_process_workspace.lock().await;
     let needs_spawn = match &*ws_guard {
-        Some(current_ws) => current_ws != &workspace_id,
+        Some(current_key) => current_key != &process_key,
         None => true,
     };
 
     if needs_spawn {
+        // 1. Terminate previous CLI process if still alive
+        let mut child_guard = state.active_child.lock().await;
+        if let Some(mut old_child) = child_guard.take() {
+            let _ = old_child.kill();
+            let _ = old_child.wait();
+        }
+
         state.acp_session.clear_sessions();
 
         let gemini_bin = match crate::process_manager::find_gemini_executable() {
@@ -257,12 +307,7 @@ pub async fn send_prompt(
             }
         };
 
-        let mut extra_args = Vec::new();
-        let trimmed_model = model.trim();
-        if !trimmed_model.is_empty() && trimmed_model != "auto" {
-            extra_args.push("--model".to_string());
-            extra_args.push(trimmed_model.to_string());
-        }
+        let extra_args = build_gemini_extra_args(&model, effective_mode);
 
         match state.supervisor.spawn_gemini(&gemini_bin, ws_path.clone(), &extra_args) {
             Ok(mut child) => {
@@ -296,7 +341,8 @@ pub async fn send_prompt(
                     });
                 }
 
-                *ws_guard = Some(workspace_id.clone());
+                *child_guard = Some(child);
+                *ws_guard = Some(process_key);
 
                 // Send initialize request (per ACP specification)
                 let _ = state.acp_session.send_request_with_response("initialize", serde_json::json!({
@@ -356,6 +402,8 @@ pub async fn send_prompt(
         }
     };
 
+    state.acp_session.set_active_local_session(&session_id);
+
     // Explicitly set the active model on this session via ACP session/set_model
     let trimmed_model = model.trim();
     if !trimmed_model.is_empty() {
@@ -378,7 +426,9 @@ pub async fn send_prompt(
         ]
     });
 
-    state.acp_session.send_request("session/prompt", prompt_params).await
+    let req_id = state.acp_session.send_request("session/prompt", prompt_params).await?;
+    state.acp_session.register_prompt_request(req_id, &session_id);
+    Ok(req_id)
 }
 
 #[tauri::command]
@@ -997,6 +1047,11 @@ pub async fn run_terminal_command(
 
 #[tauri::command]
 pub async fn restart_gemini_session(state: State<'_, AppState>) -> Result<String, String> {
+    let mut child_guard = state.active_child.lock().await;
+    if let Some(mut old_child) = child_guard.take() {
+        let _ = old_child.kill();
+        let _ = old_child.wait();
+    }
     let mut ws_guard = state.active_process_workspace.lock().await;
     *ws_guard = None;
     state.acp_session.clear_sessions();
@@ -1104,31 +1159,90 @@ pub async fn check_app_update() -> Result<UpdateInfo, String> {
     .map_err(|e| format!("Failed to check for updates: {}", e))?
 }
 
+/// Generates a standalone Windows updater script that waits for Gemini Desktop
+/// to close, performs the WinGet upgrade, and relaunches the app on success.
+pub fn generate_updater_batch_script(package_id: &str, exe_path: &str) -> String {
+    format!(
+        r#"@echo off
+title Gemini Desktop Updater
+cls
+echo ========================================================
+echo   Gemini Desktop WinGet Auto-Updater
+echo ========================================================
+echo.
+echo Closing Gemini Desktop to release file locks...
+timeout /t 2 /nobreak >nul
+taskkill /F /IM gemini-desktop.exe >nul 2>&1
+
+echo.
+echo Upgrading package: {pkg_id}
+echo Running winget upgrade...
+echo.
+winget upgrade --id {pkg_id} --accept-source-agreements --accept-package-agreements
+
+if %ERRORLEVEL% EQU 0 (
+    echo.
+    echo ========================================================
+    echo   Update completed successfully! Relaunching app...
+    echo ========================================================
+    timeout /t 2 /nobreak >nul
+    start "" "{exe_path}"
+    exit
+) else (
+    echo.
+    echo ========================================================
+    echo   WinGet upgrade finished with exit code: %ERRORLEVEL%
+    echo ========================================================
+    echo If access was denied, please run cmd as Administrator.
+    echo Press any key to close this window.
+    pause >nul
+)
+"#,
+        pkg_id = package_id,
+        exe_path = exe_path.replace('"', "")
+    )
+}
+
 #[tauri::command]
-pub fn launch_winget_upgrade(mode: Option<String>) -> Result<(), String> {
+pub fn launch_winget_upgrade(app: AppHandle, auto_close: Option<bool>) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let mode_str = mode.as_deref().unwrap_or("external");
-        if mode_str == "external" {
-            let cmd = format!(
-                "winget upgrade --id {} --accept-source-agreements --accept-package-agreements",
-                WINGET_PACKAGE_ID
-            );
-            Command::new("cmd.exe")
-                .args(["/c", "start", "cmd.exe", "/k", &cmd])
-                .spawn()
-                .map_err(|e| format!("Failed to launch winget upgrade in command prompt: {}", e))?;
-            return Ok(());
+        let current_exe = std::env::current_exe().ok();
+        let exe_path_str = current_exe
+            .as_ref()
+            .and_then(|p| p.to_str())
+            .unwrap_or("gemini-desktop.exe");
+
+        let batch_content = generate_updater_batch_script(WINGET_PACKAGE_ID, exe_path_str);
+
+        let temp_bat = std::env::temp_dir().join("gemini_desktop_updater.bat");
+        std::fs::write(&temp_bat, batch_content)
+            .map_err(|e| format!("Failed to create updater script: {}", e))?;
+
+        let bat_path = temp_bat.to_string_lossy().to_string();
+
+        Command::new("cmd.exe")
+            .args(["/c", "start", "cmd.exe", "/c", &bat_path])
+            .spawn()
+            .map_err(|e| format!("Failed to launch updater: {}", e))?;
+
+        if auto_close.unwrap_or(true) {
+            let app_clone = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(600));
+                app_clone.exit(0);
+            });
         }
+
+        return Ok(());
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = mode;
+        let _ = app;
+        let _ = auto_close;
         return Err("WinGet is only available on Windows".to_string());
     }
-
-    Ok(())
 }
 
 
@@ -1437,6 +1551,39 @@ Author: Suresh Janaki Reddy
         assert!(!is_newer_version("0.2.14", "0.2.14"));
         assert!(!is_newer_version("0.2.13", "0.2.14"));
         assert!(!is_newer_version("0.1.99", "0.2.14"));
+    }
+
+    #[test]
+    fn test_build_gemini_extra_args() {
+        let args_auto_edit = build_gemini_extra_args("gemini-3.8-flash", "auto_edit");
+        assert!(args_auto_edit.contains(&"--model".to_string()));
+        assert!(args_auto_edit.contains(&"gemini-3.8-flash".to_string()));
+        assert!(args_auto_edit.contains(&"--approval-mode".to_string()));
+        assert!(args_auto_edit.contains(&"auto_edit".to_string()));
+        assert!(args_auto_edit.contains(&"--skip-trust".to_string()));
+
+        let args_yolo = build_gemini_extra_args("auto", "yolo");
+        assert!(!args_yolo.contains(&"--model".to_string()));
+        assert!(args_yolo.contains(&"--approval-mode".to_string()));
+        assert!(args_yolo.contains(&"yolo".to_string()));
+        assert!(args_yolo.contains(&"--skip-trust".to_string()));
+
+        let args_default = build_gemini_extra_args("", "default");
+        assert!(args_default.contains(&"--approval-mode".to_string()));
+        assert!(args_default.contains(&"default".to_string()));
+
+        let args_plan = build_gemini_extra_args("gemini-2.5-pro", "plan");
+        assert!(args_plan.contains(&"--approval-mode".to_string()));
+        assert!(args_plan.contains(&"plan".to_string()));
+    }
+
+    #[test]
+    fn test_generate_updater_batch_script() {
+        let script = generate_updater_batch_script("MyTest.Package", "C:\\App\\gemini-desktop.exe");
+        assert!(script.contains("winget upgrade --id MyTest.Package"));
+        assert!(script.contains("taskkill /F /IM gemini-desktop.exe"));
+        assert!(script.contains("timeout /t 2"));
+        assert!(script.contains("C:\\App\\gemini-desktop.exe"));
     }
 }
 

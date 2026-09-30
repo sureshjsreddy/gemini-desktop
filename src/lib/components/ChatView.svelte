@@ -6,6 +6,7 @@
     ToolPermissionPayload,
     WorkspaceFileEntry,
     AttachmentItem,
+    ApprovalMode,
   } from "$lib/types";
   import FilePickerModal from "$lib/components/FilePickerModal.svelte";
   import TerminalDrawer from "$lib/components/TerminalDrawer.svelte";
@@ -39,6 +40,10 @@
     FolderTree,
     PanelLeftClose,
     PanelLeftOpen,
+    Shield,
+    Zap,
+    Rocket,
+    BookOpen,
   } from "lucide-svelte";
   import { tick } from "svelte";
 
@@ -54,6 +59,7 @@
     onToggleSidebar,
     showTerminalDrawer = $bindable(false),
     showSolutionExplorer = $bindable(true),
+    approvalMode = "auto_edit",
     onSendPrompt,
     onCancelPrompt,
     onToolResponse,
@@ -71,6 +77,7 @@
     onToggleSidebar?: () => void;
     showTerminalDrawer?: boolean;
     showSolutionExplorer?: boolean;
+    approvalMode?: ApprovalMode;
     onSendPrompt: (prompt: string) => void;
     onCancelPrompt: () => void;
     onToolResponse: (requestId: number, optionId?: string, allowed?: boolean) => void;
@@ -82,6 +89,66 @@
   let chatViewport: HTMLDivElement | null = $state(null);
   let textareaElem: HTMLTextAreaElement | null = $state(null);
   let showExportMenu = $state(false);
+
+  const MODES: {
+    id: ApprovalMode;
+    label: string;
+    shortLabel: string;
+    description: string;
+    icon: any;
+    badgeClass: string;
+    iconClass: string;
+    tagClass: string;
+  }[] = [
+    {
+      id: "auto_edit",
+      label: "Auto-Edit",
+      shortLabel: "Auto-Edit",
+      description: "Auto-approves file changes; asks before running terminal commands",
+      icon: Zap,
+      badgeClass: "bg-amber-500/15 hover:bg-amber-500/25 text-amber-600 dark:text-amber-400 border-amber-500/30",
+      iconClass: "text-amber-500",
+      tagClass: "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30",
+    },
+    {
+      id: "yolo",
+      label: "YOLO (Autonomous)",
+      shortLabel: "YOLO",
+      description: "Auto-approves all file changes and terminal commands without prompting",
+      icon: Rocket,
+      badgeClass: "bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-600 dark:text-emerald-400 border-emerald-500/30",
+      iconClass: "text-emerald-500",
+      tagClass: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30",
+    },
+    {
+      id: "default",
+      label: "Ask Permission",
+      shortLabel: "Ask",
+      description: "Prompts for confirmation before modifying files or executing commands",
+      icon: Shield,
+      badgeClass: "bg-sky-500/15 hover:bg-sky-500/25 text-sky-600 dark:text-sky-400 border-sky-500/30",
+      iconClass: "text-sky-500",
+      tagClass: "bg-sky-500/15 text-sky-600 dark:text-sky-400 border border-sky-500/30",
+    },
+    {
+      id: "plan",
+      label: "Plan Mode",
+      shortLabel: "Plan",
+      description: "Read-only research and design phase; file and terminal writes are disabled",
+      icon: BookOpen,
+      badgeClass: "bg-purple-500/15 hover:bg-purple-500/25 text-purple-600 dark:text-purple-400 border-purple-500/30",
+      iconClass: "text-purple-500",
+      tagClass: "bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-500/30",
+    },
+  ];
+
+  let effectiveApprovalMode = $derived(
+    workspace?.approval_mode || approvalMode || "auto_edit"
+  );
+  let currentModeConfig = $derived(
+    MODES.find((m) => m.id === effectiveApprovalMode) || MODES[0]
+  );
+  let ModeIcon = $derived(currentModeConfig.icon);
 
   export function insertFileMention(relPath: string) {
     const mention = `@${relPath} `;
@@ -466,6 +533,20 @@
     </div>
 
     <div class="flex items-center gap-2">
+      <!-- Execution Approval Mode Status Badge -->
+      <Tooltip
+        text="Policy Mode: {currentModeConfig.label}"
+        subtext="{currentModeConfig.description} (Workspace Setting)"
+        position="bottom"
+      >
+        <div
+          class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border font-semibold shadow-xs select-none cursor-help {currentModeConfig.badgeClass}"
+        >
+          <ModeIcon size={13} class={currentModeConfig.iconClass} />
+          <span>{currentModeConfig.shortLabel}</span>
+        </div>
+      </Tooltip>
+
       {#if onOpenMcpModal}
         <Tooltip
           text="Model Context Protocol (MCP)"
@@ -795,47 +876,49 @@
       {/if}
 
       <!-- Dynamic Options Buttons -->
-      {#if toolPermission.options && toolPermission.options.length > 0}
-        <div class="flex items-center flex-wrap gap-2 mt-3.5 justify-end">
-          {#each toolPermission.options as opt}
+      <div class="flex items-center justify-end flex-wrap gap-2 mt-3.5">
+        {#if toolPermission.options && toolPermission.options.length > 0}
+          <div class="flex items-center flex-wrap gap-2 justify-end">
+            {#each toolPermission.options as opt}
+              <button
+                onclick={() => onToolResponse(toolPermission.request_id, opt.option_id, opt.kind?.startsWith("allow") ?? true)}
+                class="px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer {
+                  opt.kind?.startsWith('allow') || opt.name.toLowerCase().includes('allow')
+                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white font-bold'
+                    : opt.kind?.startsWith('reject') || opt.name.toLowerCase().includes('reject') || opt.name.toLowerCase().includes('deny')
+                    ? 'bg-rose-500/15 hover:bg-rose-500/25 text-rose-600 dark:text-rose-300 border border-rose-500/30'
+                    : 'bg-surface hover:bg-surface-hover text-secondary-theme hover:text-primary-theme border border-theme-default'
+                }"
+              >
+                {#if opt.kind?.startsWith('allow') || opt.name.toLowerCase().includes('allow')}
+                  <CheckCircle size={14} />
+                {:else if opt.kind?.startsWith('reject') || opt.name.toLowerCase().includes('reject') || opt.name.toLowerCase().includes('deny')}
+                  <XCircle size={14} />
+                {/if}
+                <span>{opt.name}</span>
+              </button>
+            {/each}
+          </div>
+        {:else}
+          <!-- Fallback standard Allow/Deny -->
+          <div class="flex items-center gap-2 justify-end">
             <button
-              onclick={() => onToolResponse(toolPermission.request_id, opt.option_id, opt.kind?.startsWith("allow") ?? true)}
-              class="px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer {
-                opt.kind?.startsWith('allow') || opt.name.toLowerCase().includes('allow')
-                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white font-bold'
-                  : opt.kind?.startsWith('reject') || opt.name.toLowerCase().includes('reject') || opt.name.toLowerCase().includes('deny')
-                  ? 'bg-rose-500/15 hover:bg-rose-500/25 text-rose-600 dark:text-rose-300 border border-rose-500/30'
-                  : 'bg-surface hover:bg-surface-hover text-secondary-theme hover:text-primary-theme border border-theme-default'
-              }"
+              onclick={() => onToolResponse(toolPermission.request_id, undefined, true)}
+              class="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
             >
-              {#if opt.kind?.startsWith('allow') || opt.name.toLowerCase().includes('allow')}
-                <CheckCircle size={14} />
-              {:else if opt.kind?.startsWith('reject') || opt.name.toLowerCase().includes('reject') || opt.name.toLowerCase().includes('deny')}
-                <XCircle size={14} />
-              {/if}
-              <span>{opt.name}</span>
+              <CheckCircle size={14} />
+              <span>Allow</span>
             </button>
-          {/each}
-        </div>
-      {:else}
-        <!-- Fallback standard Allow/Deny -->
-        <div class="flex items-center gap-2 mt-3.5 justify-end">
-          <button
-            onclick={() => onToolResponse(toolPermission.request_id, undefined, true)}
-            class="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
-          >
-            <CheckCircle size={14} />
-            <span>Allow</span>
-          </button>
-          <button
-            onclick={() => onToolResponse(toolPermission.request_id, undefined, false)}
-            class="px-3.5 py-1.5 rounded-lg bg-surface hover:bg-surface-hover text-secondary-theme hover:text-rose-500 hover:border-rose-500/40 font-semibold text-xs flex items-center gap-1.5 transition-colors border border-theme-default shadow-xs cursor-pointer"
-          >
-            <XCircle size={14} />
-            <span>Deny</span>
-          </button>
-        </div>
-      {/if}
+            <button
+              onclick={() => onToolResponse(toolPermission.request_id, undefined, false)}
+              class="px-3.5 py-1.5 rounded-lg bg-surface hover:bg-surface-hover text-secondary-theme hover:text-rose-500 hover:border-rose-500/40 font-semibold text-xs flex items-center gap-1.5 transition-colors border border-theme-default shadow-xs cursor-pointer"
+            >
+              <XCircle size={14} />
+              <span>Deny</span>
+            </button>
+          </div>
+        {/if}
+      </div>
     </div>
   {/if}
 
@@ -1049,6 +1132,19 @@
             position="top"
           >
             <span class="cursor-help">Working Dir: <span class="text-secondary-theme font-mono">{workspace?.path || "C:\\"}</span></span>
+          </Tooltip>
+
+          <span class="text-muted-theme/40 select-none">&bull;</span>
+
+          <Tooltip
+            text="Policy Approval Mode: {currentModeConfig.label}"
+            subtext="{currentModeConfig.description} (Configured in Workspace Settings)"
+            position="top"
+          >
+            <div class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[11px] font-semibold cursor-help select-none {currentModeConfig.badgeClass}">
+              <ModeIcon size={11} class={currentModeConfig.iconClass} />
+              <span>{currentModeConfig.shortLabel}</span>
+            </div>
           </Tooltip>
         </div>
 

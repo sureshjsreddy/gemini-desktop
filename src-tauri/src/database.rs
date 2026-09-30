@@ -13,6 +13,7 @@ pub struct Workspace {
     pub path: String,
     pub model: String,
     pub system_prompt: Option<String>,
+    pub approval_mode: Option<String>,
     pub created_at: String,
 }
 
@@ -89,6 +90,7 @@ impl DbManager {
                 path TEXT NOT NULL,
                 model TEXT NOT NULL DEFAULT 'gemini-2.5-pro',
                 system_prompt TEXT,
+                approval_mode TEXT DEFAULT 'auto_edit',
                 created_at TEXT NOT NULL
             );
 
@@ -138,6 +140,9 @@ impl DbManager {
             "
         )?;
 
+        // Migration: add approval_mode to workspaces table if upgrading from older schema
+        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN approval_mode TEXT DEFAULT 'auto_edit'", []);
+
         Ok(())
     }
 
@@ -153,7 +158,7 @@ impl DbManager {
 
             for (id, name, path, model) in default_workspaces {
                 conn.execute(
-                    "INSERT INTO workspaces (id, name, path, model, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    "INSERT INTO workspaces (id, name, path, model, approval_mode, created_at) VALUES (?1, ?2, ?3, ?4, 'auto_edit', ?5)",
                     params![id, name, path, model, now],
                 )?;
             }
@@ -190,7 +195,7 @@ impl DbManager {
 
     pub fn list_workspaces(&self) -> Result<Vec<Workspace>, String> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, path, model, system_prompt, created_at FROM workspaces ORDER BY name ASC")
+        let mut stmt = conn.prepare("SELECT id, name, path, model, system_prompt, approval_mode, created_at FROM workspaces ORDER BY name ASC")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt.query_map([], |row| {
@@ -200,7 +205,8 @@ impl DbManager {
                 path: row.get(2)?,
                 model: row.get(3)?,
                 system_prompt: row.get(4)?,
-                created_at: row.get(5)?,
+                approval_mode: row.get(5)?,
+                created_at: row.get(6)?,
             })
         }).map_err(|e| e.to_string())?;
 
@@ -214,14 +220,23 @@ impl DbManager {
     pub fn save_workspace(&self, ws: Workspace) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO workspaces (id, name, path, model, system_prompt, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO workspaces (id, name, path, model, system_prompt, approval_mode, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 path = excluded.path,
                 model = excluded.model,
-                system_prompt = excluded.system_prompt",
-            params![ws.id, ws.name, ws.path, ws.model, ws.system_prompt, ws.created_at],
+                system_prompt = excluded.system_prompt,
+                approval_mode = excluded.approval_mode",
+            params![
+                ws.id,
+                ws.name,
+                ws.path,
+                ws.model,
+                ws.system_prompt,
+                ws.approval_mode.as_deref().unwrap_or("auto_edit"),
+                ws.created_at
+            ],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -457,6 +472,7 @@ mod tests {
             path: "C:\\Alpha".to_string(),
             model: "gemini-2.5-pro".to_string(),
             system_prompt: Some("Custom system instruction".to_string()),
+            approval_mode: Some("auto_edit".to_string()),
             created_at: now.clone(),
         };
         db.save_workspace(ws).expect("failed to save workspace");
@@ -466,6 +482,7 @@ mod tests {
         let found = workspaces.into_iter().find(|w| w.id == "ws-custom").unwrap();
         assert_eq!(found.name, "Alpha Project");
         assert_eq!(found.model, "gemini-2.5-pro");
+        assert_eq!(found.approval_mode.as_deref(), Some("auto_edit"));
 
         // 2. Update workspace (ON CONFLICT)
         let updated_ws = Workspace {
@@ -474,6 +491,7 @@ mod tests {
             path: "C:\\AlphaV2".to_string(),
             model: "gemini-3.5-flash".to_string(),
             system_prompt: None,
+            approval_mode: Some("yolo".to_string()),
             created_at: now,
         };
         db.save_workspace(updated_ws).expect("failed to update workspace");
@@ -482,6 +500,7 @@ mod tests {
         assert_eq!(updated.name, "Alpha Project Updated");
         assert_eq!(updated.path, "C:\\AlphaV2");
         assert_eq!(updated.model, "gemini-3.5-flash");
+        assert_eq!(updated.approval_mode.as_deref(), Some("yolo"));
 
         // 3. Create child session and message
         let session = db.create_session("ws-custom", "Sprint 1 Discussion").expect("failed to create session");

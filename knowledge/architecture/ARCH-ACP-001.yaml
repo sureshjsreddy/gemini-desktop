@@ -3,7 +3,7 @@ type: architecture_standard
 title: Agent Client Protocol (ACP) JSON-RPC Streaming & Tool Intercepts
 domain: architecture
 status: approved
-version: 1.1.0
+version: 1.2.0
 authority:
   level: official
   confidence: high
@@ -21,13 +21,16 @@ do:
   - "Spawn the Gemini CLI with piped stdin, stdout, and stderr (`Stdio::piped()`)."
   - "Run dedicated background reader threads for stdout and stderr to handle streaming tokens and telemetry asynchronously."
   - "Emit `acp-chunk` events for delta content updates and final completion (`is_done: true`)."
-  - "Intercept tool permission requests, pause execution, and emit `tool-permission-request` to the frontend for explicit user confirmation before executing system commands."
+  - "Intercept tool permission requests, pause execution, and emit `acp-tool-permission` to the frontend for explicit user confirmation or mode escalation before executing system commands."
+  - "Track process lifecycle via a composite key (`format!(\"{}::{}\", workspace_id, effective_mode)`) so switching policy approval modes (`default`, `auto_edit`, `yolo`, `plan`) cleanly re-spawns the supervised CLI process."
+  - "Pass `--approval-mode <mode>` (or `--yolo`) and `--skip-trust` CLI flags upon spawning to govern tool policy execution."
   - "Explicitly configure active session models via `session/set_model` JSON-RPC requests prior to prompt dispatch."
+  - "Isolate background streams per session ID (`streamStates[session_id]`) in the frontend and resolve ACP session mappings in the backend so users can switch between chats while the CLI is processing in the background without cross-talk or UI blocking."
   - "Provide a fallback mock/offline mode if the Gemini CLI executable is absent on PATH."
 
 dont:
   - "Do not block the Tauri main thread or Tokio runtime waiting for ACP line responses."
-  - "Do not auto-approve dangerous system tool calls (e.g. bash commands, file writes) without user permission."
+  - "Do not auto-approve dangerous system tool calls without user permission when running in Ask (`default`) mode."
   - "Do not send invalid model parameters in ACP `session/new` or `session/prompt` payloads."
 
 reason:

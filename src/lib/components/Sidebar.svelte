@@ -25,6 +25,7 @@
     activeWorkspace = null,
     sessions = [],
     activeSession = null,
+    generatingSessionIds = new Set<string>(),
     onSelectWorkspace,
     onSelectSession,
     onNewSession,
@@ -45,6 +46,7 @@
     activeWorkspace: Workspace | null;
     sessions: Session[];
     activeSession: Session | null;
+    generatingSessionIds?: Set<string>;
     onSelectWorkspace: (ws: Workspace) => void;
     onSelectSession: (s: Session) => void;
     onNewSession: () => void;
@@ -166,7 +168,7 @@
     <Tooltip
       class="w-full block"
       text="New Conversation"
-      subtext="Start a fresh chat thread with clean context in the current workspace"
+      subtext="Start a fresh chat thread with a clean context"
       shortcut="Ctrl+N"
       position="right"
     >
@@ -174,8 +176,8 @@
         onclick={onNewSession}
         class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg bg-surface hover:bg-surface-hover text-primary-theme hover:border-accent-theme/50 border border-theme-default text-xs font-medium transition-all shadow-2xs group cursor-pointer"
       >
-        <Plus size={15} class="text-accent-theme group-hover:scale-110 transition-transform" />
-        <span>New Chat</span>
+        <Plus size={15} class="text-accent-theme group-hover:scale-110 transition-transform shrink-0" />
+        <span class="truncate font-semibold">New Chat</span>
         <span class="ml-auto text-[10px] text-muted-theme font-mono">Ctrl+N</span>
       </button>
     </Tooltip>
@@ -290,8 +292,20 @@
           }}
         >
           <div class="flex items-center gap-2 truncate flex-1 mr-1">
-            <MessageSquare size={14} class="shrink-0 {activeSession?.id === session.id ? 'text-accent-theme' : 'text-muted-theme'}" />
+            {#if generatingSessionIds?.has(session.id)}
+              <span class="relative flex h-2 w-2 shrink-0">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-theme opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-2 w-2 bg-accent-theme"></span>
+              </span>
+            {:else}
+              <MessageSquare size={14} class="shrink-0 {activeSession?.id === session.id ? 'text-accent-theme' : 'text-muted-theme'}" />
+            {/if}
             <span class="truncate">{session.title}</span>
+            {#if generatingSessionIds?.has(session.id)}
+              <span class="ml-auto text-[10px] text-accent-theme font-medium animate-pulse shrink-0">
+                generating...
+              </span>
+            {/if}
           </div>
 
           <!-- Hover Action buttons -->
@@ -327,7 +341,7 @@
   <!-- Bottom App & Workspace Info -->
   <div class="border-t border-subtle bg-surface/40">
     <div class="px-3 pt-2 pb-1 flex items-center justify-between text-[10px] text-muted-theme">
-      <span class="font-mono">v0.2.15</span>
+      <span class="font-mono">v0.2.17</span>
       {#if onCheckUpdate}
         <button
           type="button"

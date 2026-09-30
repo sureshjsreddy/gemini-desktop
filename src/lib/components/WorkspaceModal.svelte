@@ -1,7 +1,34 @@
 <script lang="ts">
-  import type { Workspace } from "$lib/types";
+  import type { Workspace, ApprovalMode } from "$lib/types";
   import { X, Plus, Trash2, Check } from "lucide-svelte";
   import { dialogManager } from "$lib/dialog.svelte";
+
+  const APPROVAL_MODES: {
+    value: ApprovalMode;
+    label: string;
+    description: string;
+  }[] = [
+    {
+      value: "auto_edit",
+      label: "Auto-Edit (Recommended)",
+      description: "Auto-approves safe file edits; interactive prompt for shell and terminal commands",
+    },
+    {
+      value: "yolo",
+      label: "YOLO (Full Autonomous)",
+      description: "Auto-approves all tool actions including terminal execution and edits without prompts",
+    },
+    {
+      value: "default",
+      label: "Ask Permission",
+      description: "Requires explicit user confirmation before every file edit and command execution",
+    },
+    {
+      value: "plan",
+      label: "Plan Mode",
+      description: "Read-only planning and analysis; file edits and terminal commands are disallowed",
+    },
+  ];
 
   interface ModelOptionGroup {
     group: string;
@@ -64,6 +91,7 @@
     name: "",
     path: "C:\\",
     model: "auto",
+    approval_mode: "auto_edit",
     system_prompt: "",
     created_at: new Date().toISOString(),
   });
@@ -117,6 +145,7 @@
       name: "New Workspace",
       path: "C:\\",
       model: "auto",
+      approval_mode: "auto_edit",
       system_prompt: "",
       created_at: new Date().toISOString(),
     };
@@ -134,6 +163,7 @@
     } else {
       editingWorkspace.model = selectedDropdownValue;
     }
+    editingWorkspace.approval_mode = editingWorkspace.approval_mode || "auto_edit";
     onSaveWorkspace({ ...editingWorkspace });
   }
 </script>
@@ -178,11 +208,14 @@
 
           {#each workspaces as ws}
             <button
-              onclick={() => (editingWorkspace = { ...ws })}
+              onclick={() => (editingWorkspace = { ...ws, approval_mode: ws.approval_mode || "auto_edit" })}
               class="w-full text-left px-3 py-2 rounded-lg text-xs transition-colors {editingWorkspace.id === ws.id ? 'bg-surface-elevated text-accent-theme font-medium border border-subtle' : 'text-secondary-theme hover:bg-surface-elevated/50'}"
             >
               <div class="truncate">{ws.name}</div>
-              <div class="text-[10px] text-muted-theme font-mono truncate">{ws.model}</div>
+              <div class="text-[10px] text-muted-theme font-mono truncate flex items-center justify-between">
+                <span class="truncate mr-1">{ws.model}</span>
+                <span class="capitalize text-[9px] shrink-0 opacity-75">{ws.approval_mode || "auto_edit"}</span>
+              </div>
             </button>
           {/each}
         </div>
@@ -250,6 +283,22 @@
             {/if}
             <span class="text-[11px] text-muted-theme mt-1.5 block">
               Auto dynamically balances speed and complexity. Manual lets you select or enter any model.
+            </span>
+          </div>
+
+          <div>
+            <label for="ws-approval-mode" class="block text-primary-theme font-medium mb-1">Policy Approval Mode</label>
+            <select
+              id="ws-approval-mode"
+              bind:value={editingWorkspace.approval_mode}
+              class="w-full px-3 py-2 bg-app border border-theme-default rounded-lg text-primary-theme focus:outline-none focus:border-accent-theme font-sans"
+            >
+              {#each APPROVAL_MODES as m}
+                <option value={m.value}>{m.label}</option>
+              {/each}
+            </select>
+            <span class="text-[11px] text-muted-theme mt-1.5 block">
+              {APPROVAL_MODES.find((m) => m.value === (editingWorkspace.approval_mode || "auto_edit"))?.description}
             </span>
           </div>
 

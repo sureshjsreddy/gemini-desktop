@@ -12,6 +12,7 @@
     GeminiEnvStatus,
     WorkspaceFileEntry,
     UpdateInfo,
+    ApprovalMode,
   } from "$lib/types";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import ChatView from "$lib/components/ChatView.svelte";
@@ -28,19 +29,45 @@
   const LAST_WORKSPACE_KEY = "gemini_desktop_last_workspace_id";
 
   // Reactive State (Svelte 5 Runes)
-  let workspaces: Workspace[] = $state([]);
-  let activeWorkspace: Workspace | null = $state(null);
-  let sessions: Session[] = $state([]);
-  let activeSession: Session | null = $state(null);
-  let messages: Message[] = $state([]);
-  let promptTemplates: PromptTemplate[] = $state([]);
-  let workspaceFiles: WorkspaceFileEntry[] = $state([]);
-  let updateInfo: UpdateInfo | null = $state(null);
+  let workspaces = $state<Workspace[]>([]);
+  let activeWorkspace = $state<Workspace | null>(null);
+  let sessions = $state<Session[]>([]);
+  let activeSession = $state<Session | null>(null);
+  let messages = $state<Message[]>([]);
+  let promptTemplates = $state<PromptTemplate[]>([]);
+  let workspaceFiles = $state<WorkspaceFileEntry[]>([]);
+  let updateInfo = $state<UpdateInfo | null>(null);
   let isCheckingUpdate = $state(false);
+  let approvalMode: ApprovalMode = $derived(activeWorkspace?.approval_mode || "auto_edit");
 
-  let isStreaming = $state(false);
-  let streamingText = $state("");
-  let toolPermission: ToolPermissionPayload | null = $state(null);
+  interface SessionStreamState {
+    streamingText: string;
+    isStreaming: boolean;
+    toolPermission: ToolPermissionPayload | null;
+  }
+
+  let streamStates = $state<Record<string, SessionStreamState>>({});
+
+  let activeStreamState = $derived.by<SessionStreamState>(() => {
+    const sid = activeSession?.id;
+    if (sid && streamStates[sid]) {
+      return streamStates[sid];
+    }
+    return { streamingText: "", isStreaming: false, toolPermission: null };
+  });
+
+  let isStreaming = $derived(activeStreamState.isStreaming);
+  let streamingText = $derived(activeStreamState.streamingText);
+  let toolPermission = $derived(activeStreamState.toolPermission);
+
+  let generatingSessionIds = $derived(
+    new Set(
+      Object.entries(streamStates)
+        .filter(([_, s]) => s.isStreaming)
+        .map(([id]) => id)
+    )
+  );
+
   let envStatus: GeminiEnvStatus | null = $state(null);
 
   // Modals & Panels
@@ -102,19 +129,81 @@
     unlistenChunk = await listen<{ session_id: string; delta: string; is_done: boolean }>(
       "acp-chunk",
       (event) => {
-        const { delta, is_done } = event.payload;
-        streamingText += delta;
+        const { session_id, delta, is_done } = event.payload;
+        if (!session_id) return;
+
+        if (!streamStates[session_id]) {
+          streamStates[session_id] = {
+            streamingText: "",
+            isStreaming: true,
+            toolPermission: null,
+          };
+        }
+
+        streamStates[session_id].streamingText += delta;
+        streamStates[session_id].isStreaming = !is_done;
 
         if (is_done) {
-          finishStreaming();
+          finishStreamingForSession(session_id);
         }
       }
     );
 
     unlistenTool = await listen<ToolPermissionPayload>(
       "acp-tool-permission",
-      (event) => {
-        toolPermission = event.payload;
+      async (event) => {
+        const payload = event.payload;
+        const sessionId = payload.session_id;
+
+        // 1. YOLO Mode: Auto-approve all tools immediately without showing permission prompt
+        if (approvalMode === "yolo") {
+          try {
+            await invoke("respond_tool_permission", {
+              requestId: payload.request_id,
+              allowed: true,
+            });
+          } catch (e) {
+            console.error("Failed to auto-approve tool in YOLO mode:", e);
+          }
+          return;
+        }
+
+        // 2. Auto-Edit Mode: Auto-approve file edits, while requiring prompt for shell/terminal commands
+        if (approvalMode === "auto_edit") {
+          const kind = (payload.kind || "").toLowerCase();
+          const name = (payload.tool_name || "").toLowerCase();
+          const isEdit =
+            kind === "edit" ||
+            name.includes("write") ||
+            name.includes("edit") ||
+            name.includes("replace") ||
+            name.includes("patch") ||
+            name.includes("create");
+
+          if (isEdit) {
+            try {
+              await invoke("respond_tool_permission", {
+                requestId: payload.request_id,
+                allowed: true,
+              });
+            } catch (e) {
+              console.error("Failed to auto-approve edit tool in auto_edit mode:", e);
+            }
+            return;
+          }
+        }
+
+        // 3. Ask Mode (default) or non-edit tool in Auto-Edit mode: Present interactive confirmation UI for the target session
+        if (sessionId) {
+          if (!streamStates[sessionId]) {
+            streamStates[sessionId] = {
+              streamingText: "",
+              isStreaming: true,
+              toolPermission: null,
+            };
+          }
+          streamStates[sessionId].toolPermission = payload;
+        }
       }
     );
 
@@ -122,12 +211,18 @@
       const payloadStr = JSON.stringify(event.payload || "");
       if (payloadStr.toLowerCase().includes("cancel")) {
         console.warn("Ignored cancellation signal:", event.payload);
-        finishStreaming();
+        if (activeSession?.id) {
+          finishStreamingForSession(activeSession.id);
+        }
         return;
       }
       console.error("ACP Error:", event.payload);
-      streamingText += `\n\n**Error:** ${payloadStr}`;
-      finishStreaming();
+      if (activeSession?.id) {
+        if (streamStates[activeSession.id]) {
+          streamStates[activeSession.id].streamingText += `\n\n**Error:** ${payloadStr}`;
+        }
+        finishStreamingForSession(activeSession.id);
+      }
     });
 
     window.addEventListener("keydown", handleGlobalShortcuts);
@@ -150,7 +245,7 @@
         }
       } else if (manual) {
         await dialogManager.alert(
-          `Gemini Desktop v${info?.current_version || "0.2.14"} is already up to date with the latest WinGet release!`,
+          `Gemini Desktop v${info?.current_version || "0.2.17"} is already up to date with the latest WinGet release!`,
           "Up to Date"
         );
       }
@@ -291,10 +386,12 @@
     }
     if (!activeSession) return;
 
+    const targetSessionId = activeSession.id;
+
     // Auto-update title if it's default
     if (activeSession.title === "New Conversation") {
       const summary = prompt.substring(0, 32) + (prompt.length > 32 ? "..." : "");
-      await invoke("rename_session", { sessionId: activeSession.id, title: summary });
+      await invoke("rename_session", { sessionId: targetSessionId, title: summary });
       activeSession.title = summary;
       sessions = [...sessions];
     }
@@ -302,7 +399,7 @@
     // Add user message to UI immediately
     const userMsg: Message = {
       id: "temp-" + Date.now(),
-      session_id: activeSession.id,
+      session_id: targetSessionId,
       role: "user",
       content: prompt,
       token_count: 0,
@@ -310,51 +407,74 @@
     };
     messages = [...messages, userMsg];
 
-    isStreaming = true;
-    streamingText = "";
+    // Initialize session stream state
+    streamStates[targetSessionId] = {
+      streamingText: "",
+      isStreaming: true,
+      toolPermission: null,
+    };
 
     try {
       await invoke("send_prompt", {
-        sessionId: activeSession.id,
+        sessionId: targetSessionId,
         workspaceId: activeWorkspace.id,
         prompt,
         model: activeWorkspace.model,
+        approvalMode,
       });
     } catch (err: any) {
-      streamingText = `**Error starting prompt:** ${err?.toString() || err}`;
-      finishStreaming();
+      if (streamStates[targetSessionId]) {
+        streamStates[targetSessionId].streamingText = `**Error starting prompt:** ${err?.toString() || err}`;
+      }
+      finishStreamingForSession(targetSessionId);
     }
   }
 
-  async function finishStreaming() {
-    isStreaming = false;
-    if (activeSession && streamingText) {
+  async function finishStreamingForSession(sessionId: string) {
+    const stream = streamStates[sessionId];
+    if (!stream) return;
+
+    const finalText = stream.streamingText;
+    stream.isStreaming = false;
+    delete streamStates[sessionId];
+    streamStates = { ...streamStates };
+
+    if (finalText) {
       const assistantMsg: Message = {
         id: "msg-" + Date.now(),
-        session_id: activeSession.id,
+        session_id: sessionId,
         role: "assistant",
-        content: streamingText,
-        token_count: Math.ceil(streamingText.length / 4),
+        content: finalText,
+        token_count: Math.ceil(finalText.length / 4),
         created_at: new Date().toISOString(),
       };
       await invoke("save_message", { msg: assistantMsg });
-      messages = [...messages, assistantMsg];
-      streamingText = "";
+
+      // If the user is currently viewing this session, update visible messages immediately
+      if (activeSession?.id === sessionId) {
+        messages = [...messages, assistantMsg];
+      }
     }
   }
 
   async function handleCancelPrompt() {
-    isStreaming = false;
+    if (!activeSession) return;
+    const sid = activeSession.id;
+    if (streamStates[sid]) {
+      streamStates[sid].toolPermission = null;
+    }
     try {
-      await invoke("cancel_prompt", { requestId: 1, sessionId: activeSession?.id });
+      await invoke("cancel_prompt", { requestId: 1, sessionId: sid });
     } catch (e) {
       console.warn("Cancel signal error:", e);
     }
-    finishStreaming();
+    finishStreamingForSession(sid);
   }
 
   async function handleToolResponse(requestId: number, optionId?: string, allowed: boolean = true) {
-    toolPermission = null;
+    if (activeSession?.id && streamStates[activeSession.id]) {
+      streamStates[activeSession.id].toolPermission = null;
+    }
     try {
       await invoke("respond_tool_permission", { requestId, optionId, allowed });
     } catch (e) {
@@ -389,6 +509,7 @@
 
   async function handleSaveWorkspace(ws: Workspace) {
     const isNew = !workspaces.some((w) => w.id === ws.id);
+    const oldMode = activeWorkspace?.approval_mode;
     await invoke("save_workspace", { workspace: ws });
     workspaces = await invoke<Workspace[]>("get_workspaces");
     if (isNew) {
@@ -396,6 +517,16 @@
     } else if (activeWorkspace?.id === ws.id) {
       activeWorkspace = ws;
       await loadWorkspaceFiles(ws.id);
+      if (oldMode !== ws.approval_mode) {
+        const anyStreaming = Object.values(streamStates).some((s) => s.isStreaming);
+        if (!anyStreaming) {
+          try {
+            await invoke("restart_gemini_session");
+          } catch (e) {
+            console.warn("Failed to reset session on mode switch:", e);
+          }
+        }
+      }
     }
     showWorkspaceModal = false;
   }
@@ -433,6 +564,7 @@
       {activeWorkspace}
       {sessions}
       {activeSession}
+      {generatingSessionIds}
       {envStatus}
       onToggle={() => (showSidebar = false)}
       onSelectWorkspace={selectWorkspace}
@@ -466,6 +598,7 @@
       {streamingText}
       {toolPermission}
       {showSidebar}
+      {approvalMode}
       onToggleSidebar={() => (showSidebar = !showSidebar)}
       bind:showTerminalDrawer
       bind:showSolutionExplorer

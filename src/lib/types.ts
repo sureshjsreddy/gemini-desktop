@@ -4,6 +4,7 @@ export interface Workspace {
   path: string;
   model: string;
   system_prompt?: string;
+  approval_mode?: ApprovalMode;
   created_at: string;
 }
 
@@ -109,4 +110,6 @@ export interface UpdateInfo {
   package_id: string;
   release_url?: string;
 }
+
+export type ApprovalMode = "default" | "auto_edit" | "yolo" | "plan";
 

@@ -68,8 +68,10 @@ pub struct AcpSession {
     stdin_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     pending_requests: Arc<StdMutex<HashMap<u64, oneshot::Sender<Result<Value, JsonRpcError>>>>>,
     pending_permissions: Arc<StdMutex<HashMap<u64, Vec<PermissionOption>>>>,
+    pending_prompt_sessions: Arc<StdMutex<HashMap<u64, String>>>,
     local_to_acp: Arc<StdMutex<HashMap<String, String>>>,
     acp_to_local: Arc<StdMutex<HashMap<String, String>>>,
+    active_local_session: Arc<StdMutex<Option<String>>>,
 }
 
 impl AcpSession {
@@ -79,8 +81,10 @@ impl AcpSession {
             stdin_writer: Arc::new(Mutex::new(None)),
             pending_requests: Arc::new(StdMutex::new(HashMap::new())),
             pending_permissions: Arc::new(StdMutex::new(HashMap::new())),
+            pending_prompt_sessions: Arc::new(StdMutex::new(HashMap::new())),
             local_to_acp: Arc::new(StdMutex::new(HashMap::new())),
             acp_to_local: Arc::new(StdMutex::new(HashMap::new())),
+            active_local_session: Arc::new(StdMutex::new(None)),
         }
     }
 
@@ -120,6 +124,16 @@ impl AcpSession {
         }
     }
 
+    pub fn set_active_local_session(&self, local_id: &str) {
+        if let Ok(mut guard) = self.active_local_session.lock() {
+            *guard = Some(local_id.to_string());
+        }
+    }
+
+    pub fn get_active_local_session(&self) -> Option<String> {
+        self.active_local_session.lock().ok()?.clone()
+    }
+
     pub fn clear_sessions(&self) {
         if let Ok(mut l2a) = self.local_to_acp.lock() {
             l2a.clear();
@@ -127,6 +141,22 @@ impl AcpSession {
         if let Ok(mut a2l) = self.acp_to_local.lock() {
             a2l.clear();
         }
+        if let Ok(mut map) = self.pending_prompt_sessions.lock() {
+            map.clear();
+        }
+        if let Ok(mut guard) = self.active_local_session.lock() {
+            *guard = None;
+        }
+    }
+
+    pub fn register_prompt_request(&self, request_id: u64, local_session_id: &str) {
+        if let Ok(mut map) = self.pending_prompt_sessions.lock() {
+            map.insert(request_id, local_session_id.to_string());
+        }
+    }
+
+    pub fn take_prompt_session(&self, request_id: u64) -> Option<String> {
+        self.pending_prompt_sessions.lock().ok()?.remove(&request_id)
     }
 
     pub fn take_pending_request(&self, id: u64) -> Option<oneshot::Sender<Result<Value, JsonRpcError>>> {
@@ -315,6 +345,32 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     return;
                 }
             }
+
+            // 1b. Check if this is the completion response for a session/prompt request
+            if let Some(target_session) = acp_session.take_prompt_session(id) {
+                if let Some(err_val) = val.get("error") {
+                    let code = err_val.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+                    let message = err_val.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");
+                    if code != -32800 && !message.to_lowercase().contains("cancel") {
+                        let _ = app_handle.emit("acp-error", val.clone());
+                    }
+                }
+
+                let delta = val.pointer("/result/content/text")
+                    .or_else(|| val.pointer("/result/content"))
+                    .or_else(|| val.pointer("/result/text"))
+                    .or_else(|| val.pointer("/result/output"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
+                    session_id: target_session,
+                    delta,
+                    is_done: true,
+                });
+                return;
+            }
         }
 
         if let Some(method) = val.get("method").and_then(|m| m.as_str()) {
@@ -324,6 +380,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     let matched_session_id = val.pointer("/params/sessionId")
                         .and_then(|s| s.as_str())
                         .and_then(|acp_sid| acp_session.get_local_session_id(acp_sid))
+                        .or_else(|| acp_session.get_active_local_session())
                         .unwrap_or_else(|| active_session_id.to_string());
 
                     // Check standard ACP format (update.content.text or update.delta) as well as flat fields
@@ -355,6 +412,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     let session_id = val.pointer("/params/sessionId")
                         .and_then(|s| s.as_str())
                         .and_then(|acp_sid| acp_session.get_local_session_id(acp_sid))
+                        .or_else(|| acp_session.get_active_local_session())
                         .unwrap_or_else(|| active_session_id.to_string());
 
                     let title = val.pointer("/params/toolCall/title")
@@ -458,28 +516,22 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
             let matched_session_id = val.pointer("/result/sessionId")
                 .and_then(|s| s.as_str())
                 .and_then(|acp_sid| acp_session.get_local_session_id(acp_sid))
+                .or_else(|| acp_session.get_active_local_session())
                 .unwrap_or_else(|| active_session_id.to_string());
 
-            if let Some(text) = val.pointer("/result/content/text")
+            let delta = val.pointer("/result/content/text")
                 .or_else(|| val.pointer("/result/content"))
                 .or_else(|| val.pointer("/result/text"))
                 .or_else(|| val.pointer("/result/output"))
-                .and_then(|t| t.as_str()) {
-                let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
-                    session_id: matched_session_id,
-                    delta: text.to_string(),
-                    is_done: true,
-                });
-            } else if val.pointer("/result/stopReason").is_some() {
-                // ACP turn completion notification
-                let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
-                    session_id: matched_session_id,
-                    delta: "".to_string(),
-                    is_done: true,
-                });
-            } else {
-                let _ = app_handle.emit("acp-response", val);
-            }
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
+                session_id: matched_session_id,
+                delta,
+                is_done: true,
+            });
             return;
         }
 
@@ -501,4 +553,38 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
         delta: format!("{}\n", trimmed),
         is_done: false,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_prompt_session_tracking() {
+        let session = AcpSession::new();
+        session.register_prompt_request(42, "session-alpha");
+        session.register_prompt_request(43, "session-beta");
+
+        assert_eq!(session.take_prompt_session(42), Some("session-alpha".to_string()));
+        // Once taken, request id is consumed
+        assert_eq!(session.take_prompt_session(42), None);
+        // Other sessions remain intact
+        assert_eq!(session.take_prompt_session(43), Some("session-beta".to_string()));
+    }
+
+    #[test]
+    fn test_session_mapping_and_cleanup() {
+        let session = AcpSession::new();
+        session.register_session_mapping("local-123", "acp-xyz");
+
+        assert_eq!(session.get_acp_session_id("local-123"), Some("acp-xyz".to_string()));
+        assert_eq!(session.get_local_session_id("acp-xyz"), Some("local-123".to_string()));
+
+        session.register_prompt_request(100, "local-123");
+        session.clear_sessions();
+
+        assert_eq!(session.get_acp_session_id("local-123"), None);
+        assert_eq!(session.get_local_session_id("acp-xyz"), None);
+        assert_eq!(session.take_prompt_session(100), None);
+    }
 }

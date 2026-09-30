@@ -2,6 +2,7 @@
   import type { UpdateInfo } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
   import { openPath } from "@tauri-apps/plugin-opener";
+  import { dialogManager } from "$lib/dialog.svelte";
   import { Sparkles, Terminal, Copy, Check, ExternalLink, X } from "lucide-svelte";
 
   let {
@@ -20,15 +21,22 @@
   );
 
   async function handleUpdateNow() {
+    const confirmed = await dialogManager.confirm(
+      `Gemini Desktop must close so WinGet can install update v${updateInfo.latest_version} without file locks.\n\nThe update will run in an external console and automatically relaunch Gemini Desktop upon completion.\n\nProceed with update and restart?`,
+      {
+        title: "Update & Restart Gemini Desktop",
+        confirmText: "Update & Restart",
+        cancelText: "Cancel",
+      }
+    );
+    if (!confirmed) return;
+
     isUpdating = true;
     try {
-      await invoke("launch_winget_upgrade", { mode: "external" });
+      await invoke("launch_winget_upgrade", { autoClose: true });
     } catch (e) {
       console.error("Failed to launch WinGet upgrade:", e);
-    } finally {
-      setTimeout(() => {
-        isUpdating = false;
-      }, 2000);
+      isUpdating = false;
     }
   }
 
@@ -96,7 +104,7 @@
       title="Launch WinGet upgrade in an interactive command prompt"
     >
       <Terminal class="w-3.5 h-3.5" />
-      <span>{isUpdating ? "Launching..." : "Update via WinGet"}</span>
+      <span>{isUpdating ? "Closing & Updating..." : "Update via WinGet"}</span>
     </button>
 
     <!-- Copy command button -->

@@ -16,6 +16,7 @@ pub fn run() {
     let supervisor = ProcessSupervisor::new();
     let acp_session = Arc::new(AcpSession::new());
     let active_process_workspace = Arc::new(Mutex::new(None));
+    let active_child = Arc::new(Mutex::new(None));
     let search_generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     let state = AppState {
@@ -23,6 +24,7 @@ pub fn run() {
         supervisor,
         acp_session,
         active_process_workspace,
+        active_child,
         search_generation,
     };
 
