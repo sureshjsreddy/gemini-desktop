@@ -15,16 +15,13 @@
   import { getModeConfig } from "$lib/utils/approvalModes";
   import {
     Download,
-    Terminal,
     Sparkles,
     User,
-    Server,
     Copy,
     Check,
     RotateCcw,
     Edit3,
     ArrowDown,
-    FolderTree,
     PanelLeftClose,
     PanelLeftOpen,
     FileText,
@@ -224,58 +221,6 @@
             <span>{currentModeConfig.shortLabel}</span>
           </div>
         {/if}
-      </Tooltip>
-
-      {#if onOpenMcpModal}
-        <Tooltip
-          text="Model Context Protocol (MCP)"
-          subtext="Connect external tools, databases, and APIs like Azure DevOps, GitHub, and SQLite"
-          shortcut="Ctrl+M"
-          position="bottom"
-        >
-          <button
-            onclick={onOpenMcpModal}
-            class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-secondary-theme hover:text-primary-theme rounded-lg bg-surface hover:bg-surface-hover transition-colors border border-theme-default cursor-pointer"
-          >
-            <Server size={14} class="text-accent-theme" />
-            <span>MCP Servers</span>
-          </button>
-        </Tooltip>
-      {/if}
-
-      <!-- Terminal Drawer Toggle Button -->
-      <Tooltip
-        text="Integrated Terminal Console"
-        subtext="Open embedded PowerShell drawer to run builds, inspect git, and sync .env"
-        shortcut="Ctrl+`"
-        position="bottom"
-      >
-        <button
-          type="button"
-          onclick={() => (showTerminalDrawer = !showTerminalDrawer)}
-          class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg transition-colors border border-theme-default cursor-pointer {showTerminalDrawer ? 'bg-accent-subtle text-accent-theme border-accent-subtle' : 'text-secondary-theme hover:text-primary-theme bg-surface hover:bg-surface-hover'}"
-        >
-          <Terminal size={14} class={showTerminalDrawer ? 'text-accent-theme' : ''} />
-          <span>Terminal</span>
-        </button>
-      </Tooltip>
-
-      <!-- Workspace Explorer Toggle Button -->
-      <Tooltip
-        text="Workspace Explorer"
-        subtext="Toggle workspace file and folder tree"
-        shortcut="Ctrl+Alt+L"
-        position="bottom"
-      >
-        <button
-          type="button"
-          onclick={() => (showSolutionExplorer = !showSolutionExplorer)}
-          class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg transition-colors border border-theme-default cursor-pointer {showSolutionExplorer ? 'bg-accent-subtle text-accent-theme border-accent-subtle' : 'text-secondary-theme hover:text-primary-theme bg-surface hover:bg-surface-hover'}"
-          aria-label="Toggle Workspace Explorer"
-        >
-          <FolderTree size={14} class={showSolutionExplorer ? 'text-accent-theme' : ''} />
-          <span>Explorer</span>
-        </button>
       </Tooltip>
 
       <!-- Export Menu -->

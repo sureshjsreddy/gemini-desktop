@@ -15,13 +15,16 @@
     Palette,
     Server,
     Terminal,
+    FolderTree,
     PanelLeftClose,
+    PanelLeftOpen,
     RefreshCw,
   } from "lucide-svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { APP_VERSION_FALLBACK } from "$lib/version";
 
   let {
+    isOpen = true,
     workspaces = [],
     activeWorkspace = null,
     sessions = [],
@@ -39,11 +42,13 @@
     onOpenThemeModal,
     onOpenMcpModal,
     onToggleTerminal,
+    onToggleExplorer,
     onToggle,
     envStatus = null,
     onCheckUpdate,
     isCheckingUpdate = false,
   }: {
+    isOpen?: boolean;
     workspaces: Workspace[];
     activeWorkspace: Workspace | null;
     sessions: Session[];
@@ -61,6 +66,7 @@
     onOpenThemeModal: () => void;
     onOpenMcpModal: () => void;
     onToggleTerminal?: () => void;
+    onToggleExplorer?: () => void;
     onToggle?: () => void;
     envStatus: any;
     onCheckUpdate?: () => void;
@@ -70,7 +76,178 @@
   let showWorkspaceMenu = $state(false);
 </script>
 
-<aside class="w-72 h-screen flex flex-col bg-sidebar border-r border-subtle select-none shrink-0">
+{#if !isOpen}
+  <!-- Collapsed Left Navigation Strip -->
+  <aside
+    class="w-12 h-screen flex flex-col items-center py-2.5 bg-sidebar border-r border-subtle select-none shrink-0 z-20 justify-between"
+    aria-label="Navigation collapsed strip"
+  >
+    <!-- Top Action Icons Group -->
+    <div class="flex flex-col items-center gap-1.5 w-full">
+      <!-- App Brand Logo / Expand Button -->
+      {#if onToggle}
+        <Tooltip text="Expand Sidebar" shortcut="Ctrl+B" position="right">
+          <button
+            type="button"
+            onclick={onToggle}
+            class="w-8 h-8 rounded-lg flex items-center justify-center text-white shadow-sm shadow-black/20 hover:scale-105 active:scale-95 transition-all cursor-pointer mb-0.5"
+            style="background: var(--accent-gradient);"
+            aria-label="Expand sidebar"
+          >
+            <Sparkles size={16} />
+          </button>
+        </Tooltip>
+      {:else}
+        <div
+          class="w-8 h-8 rounded-lg flex items-center justify-center text-white shadow-sm shadow-black/20 mb-0.5"
+          style="background: var(--accent-gradient);"
+        >
+          <Sparkles size={16} />
+        </div>
+      {/if}
+
+      <div class="w-6 h-px bg-border/40 my-0.5"></div>
+
+      <!-- New Chat Button -->
+      <Tooltip text="New Conversation" shortcut="Ctrl+N" position="right">
+        <button
+          type="button"
+          onclick={onNewSession}
+          class="w-8 h-8 rounded-lg flex items-center justify-center text-secondary-theme hover:text-accent-theme hover:bg-surface transition-colors cursor-pointer"
+          aria-label="New conversation"
+        >
+          <Plus size={16} />
+        </button>
+      </Tooltip>
+
+      <!-- Search History Button -->
+      <Tooltip text="Search History" shortcut="Ctrl+K" position="right">
+        <button
+          type="button"
+          onclick={onOpenSearch}
+          class="w-8 h-8 rounded-lg flex items-center justify-center text-secondary-theme hover:text-primary-theme hover:bg-surface transition-colors cursor-pointer"
+          aria-label="Search past conversations"
+        >
+          <Search size={15} />
+        </button>
+      </Tooltip>
+
+      <!-- Prompt Templates Button -->
+      <Tooltip text="Prompt Library" position="right">
+        <button
+          type="button"
+          onclick={onOpenTemplates}
+          class="w-8 h-8 rounded-lg flex items-center justify-center text-secondary-theme hover:text-primary-theme hover:bg-surface transition-colors cursor-pointer"
+          aria-label="Prompt templates"
+        >
+          <BookOpen size={15} />
+        </button>
+      </Tooltip>
+
+      <!-- Workspace Profile Selector / Modal -->
+      <Tooltip text={`Workspace: ${activeWorkspace?.name || 'Default'}`} position="right">
+        <button
+          type="button"
+          onclick={onOpenWorkspaceModal}
+          class="w-8 h-8 rounded-lg flex items-center justify-center text-secondary-theme hover:text-accent-theme hover:bg-surface transition-colors cursor-pointer"
+          aria-label="Workspace profile"
+        >
+          <FolderKanban size={15} />
+        </button>
+      </Tooltip>
+
+      <div class="w-6 h-px bg-border/40 my-0.5"></div>
+
+      <!-- MCP Servers Modal -->
+      {#if onOpenMcpModal}
+        <Tooltip text="MCP Servers" shortcut="Ctrl+M" position="right">
+          <button
+            type="button"
+            onclick={onOpenMcpModal}
+            class="w-8 h-8 rounded-lg flex items-center justify-center text-secondary-theme hover:text-accent-theme hover:bg-surface transition-colors cursor-pointer"
+            aria-label="MCP servers"
+          >
+            <Server size={15} />
+          </button>
+        </Tooltip>
+      {/if}
+
+      <!-- Terminal Console Drawer Toggle -->
+      {#if onToggleTerminal}
+        <Tooltip text="Terminal Console" shortcut="Ctrl+`" position="right">
+          <button
+            type="button"
+            onclick={onToggleTerminal}
+            class="w-8 h-8 rounded-lg flex items-center justify-center text-secondary-theme hover:text-accent-theme hover:bg-surface transition-colors cursor-pointer"
+            aria-label="Terminal console"
+          >
+            <Terminal size={15} />
+          </button>
+        </Tooltip>
+      {/if}
+
+      <!-- Workspace Explorer Panel Toggle -->
+      {#if onToggleExplorer}
+        <Tooltip text="Workspace Explorer" shortcut="Ctrl+Alt+L" position="right">
+          <button
+            type="button"
+            onclick={onToggleExplorer}
+            class="w-8 h-8 rounded-lg flex items-center justify-center text-secondary-theme hover:text-[#a855f7] hover:bg-surface transition-colors cursor-pointer"
+            aria-label="Workspace explorer"
+          >
+            <FolderTree size={15} />
+          </button>
+        </Tooltip>
+      {/if}
+    </div>
+
+    <!-- Bottom Action Icons Group -->
+    <div class="flex flex-col items-center gap-1.5 w-full">
+      <!-- Theme & Colors -->
+      <Tooltip text="Theme & Colors" position="right">
+        <button
+          type="button"
+          onclick={onOpenThemeModal}
+          class="w-8 h-8 rounded-lg flex items-center justify-center text-secondary-theme hover:text-accent-theme hover:bg-surface transition-colors cursor-pointer"
+          aria-label="Theme settings"
+        >
+          <Palette size={15} />
+        </button>
+      </Tooltip>
+
+      <!-- WinGet Update Check / Version Indicator -->
+      {#if onCheckUpdate}
+        <Tooltip text={isCheckingUpdate ? "Checking updates..." : `v${appVersion} • Check for Updates`} position="right">
+          <button
+            type="button"
+            onclick={onCheckUpdate}
+            disabled={isCheckingUpdate}
+            class="w-8 h-8 rounded-lg flex items-center justify-center text-secondary-theme hover:text-accent-theme hover:bg-surface transition-colors cursor-pointer disabled:opacity-50"
+            aria-label="Check updates"
+          >
+            <RefreshCw size={14} class={isCheckingUpdate ? "animate-spin text-accent-theme" : ""} />
+          </button>
+        </Tooltip>
+      {/if}
+
+      <!-- Expand Sidebar Button at the very bottom -->
+      {#if onToggle}
+        <Tooltip text="Expand Sidebar" shortcut="Ctrl+B" position="right">
+          <button
+            type="button"
+            onclick={onToggle}
+            class="w-8 h-8 rounded-lg flex items-center justify-center text-muted-theme hover:text-primary-theme hover:bg-surface transition-colors cursor-pointer mt-0.5"
+            aria-label="Expand sidebar"
+          >
+            <PanelLeftOpen size={16} />
+          </button>
+        </Tooltip>
+      {/if}
+    </div>
+  </aside>
+{:else}
+  <!-- Full Left Navigation Sidebar -->
+  <aside class="w-72 h-screen flex flex-col bg-sidebar border-r border-subtle select-none shrink-0">
   <!-- Top App Brand -->
   <div class="p-3.5 border-b border-subtle flex items-center justify-between">
     <div class="flex items-center gap-2.5 truncate">
@@ -268,6 +445,26 @@
         </button>
       </Tooltip>
     {/if}
+
+    {#if onToggleExplorer}
+      <Tooltip
+        class="w-full block"
+        text="Workspace Explorer"
+        subtext="Toggle workspace file and folder tree"
+        shortcut="Ctrl+Alt+L"
+        position="right"
+      >
+        <button
+          type="button"
+          onclick={onToggleExplorer}
+          class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-surface-hover text-secondary-theme hover:text-primary-theme text-xs transition-colors cursor-pointer"
+        >
+          <FolderTree size={14} class="text-[#a855f7]" />
+          <span>Workspace Explorer</span>
+          <span class="ml-auto text-[10px] text-muted-theme font-mono">Ctrl+Alt+L</span>
+        </button>
+      </Tooltip>
+    {/if}
   </div>
 
   <!-- Chat History Sessions List -->
@@ -371,3 +568,4 @@
     </Tooltip>
   </div>
 </aside>
+{/if}

@@ -30,6 +30,7 @@ do:
   - "Use `modalManager` (`src/lib/modal.svelte.ts`) to govern dialog modals (`search`, `workspace`, `templates`, `theme`, `mcp`) with `isOpen(type)`, `open(type)`, `close()`, and `toggle(type)`, preventing multiple competing open modals and eliminating scattered boolean flags."
   - "Decompose high-complexity views into focused subcomponents (e.g. `ToolPermissionCard.svelte`, `ChatPromptComposer.svelte`, `ChatMentionPopover.svelte`, `ExplorerContextMenu.svelte`, `ExplorerTreeRow.svelte`) and extract reusable domain logic into pure utility modules (`approvalModes.ts`, `fileIcons.ts`, `fileFilters.ts`)."
   - "Enforce strict CSS stacking context hierarchy: header has `relative z-30`, chat message viewport has `z-0`, bottom prompt bar has `relative z-20`, tooltips elevate dynamically to `z-50` on hover, and dropdown menus (Export, Workspace profile) use `z-40` with outside-click dismissal backdrops so chat messages never occlude menus or tooltips."
+  - "Design collateral navigation panels (Sidebar, SolutionExplorer) with dual-state layouts: full-width drawer when open, and a compact vertical icon strip (`w-12` on left, `w-7` on right) when collapsed to maximize chat and code viewing space while retaining 1-click access to core actions."
 
 dont:
   - "Do not use legacy Svelte 3/4 `export let` syntax or stores (`writable`) when modern runes are available."

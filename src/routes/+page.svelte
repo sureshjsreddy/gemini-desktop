@@ -611,31 +611,31 @@
 
 <div class="flex h-screen w-screen bg-app overflow-hidden select-none">
   <!-- Left Navigation Sidebar -->
-  {#if showSidebar}
-    <Sidebar
-      {workspaces}
-      {activeWorkspace}
-      {sessions}
-      {activeSession}
-      {generatingSessionIds}
-      {envStatus}
-      {appVersion}
-      onToggle={() => (showSidebar = false)}
-      onSelectWorkspace={selectWorkspace}
-      onSelectSession={selectSession}
-      onNewSession={handleNewSession}
-      onRenameSession={handleRenameSession}
-      onDeleteSession={handleDeleteSession}
-      onOpenSearch={() => modalManager.open("search")}
-      onOpenTemplates={() => modalManager.open("templates")}
-      onOpenWorkspaceModal={() => modalManager.open("workspace")}
-      onOpenThemeModal={() => modalManager.open("theme")}
-      onOpenMcpModal={() => modalManager.open("mcp")}
-      onToggleTerminal={() => (showTerminalDrawer = !showTerminalDrawer)}
-      onCheckUpdate={() => handleCheckUpdate(true)}
-      {isCheckingUpdate}
-    />
-  {/if}
+  <Sidebar
+    isOpen={showSidebar}
+    {workspaces}
+    {activeWorkspace}
+    {sessions}
+    {activeSession}
+    {generatingSessionIds}
+    {envStatus}
+    {appVersion}
+    onToggle={() => (showSidebar = !showSidebar)}
+    onSelectWorkspace={selectWorkspace}
+    onSelectSession={selectSession}
+    onNewSession={handleNewSession}
+    onRenameSession={handleRenameSession}
+    onDeleteSession={handleDeleteSession}
+    onOpenSearch={() => modalManager.open("search")}
+    onOpenTemplates={() => modalManager.open("templates")}
+    onOpenWorkspaceModal={() => modalManager.open("workspace")}
+    onOpenThemeModal={() => modalManager.open("theme")}
+    onOpenMcpModal={() => modalManager.open("mcp")}
+    onToggleTerminal={() => (showTerminalDrawer = !showTerminalDrawer)}
+    onToggleExplorer={() => (showSolutionExplorer = !showSolutionExplorer)}
+    onCheckUpdate={() => handleCheckUpdate(true)}
+    {isCheckingUpdate}
+  />
 
   <!-- Main Chat Surface -->
   <div class="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
