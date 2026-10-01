@@ -3,7 +3,7 @@ type: product_standard
 title: Interactive Tool Permission Approval & Safe System Execution
 domain: product
 status: approved
-version: 1.2.0
+version: 1.3.0
 authority:
   level: official
   confidence: high
@@ -20,6 +20,8 @@ rule:
 
 do:
   - "Provide a prominent Mode Selector Pill in the ChatView header displaying the active policy mode (⚡ Auto-Edit, 🚀 YOLO, 🛡️ Ask Permission, 📋 Plan Mode)."
+  - "Enable 1-click mode cycling directly on the Mode Selector Pill in the ChatView header and the prompt bar to switch instantaneously between ⚡ Auto-Edit, 🚀 YOLO, 🛡️ Ask Permission, and 📋 Plan modes without opening Workspace Settings modal."
+  - "Provide real-time inline tool execution badges in the chat stream during autonomous YOLO and Auto-Edit execution so the user has continuous progress visibility."
   - "Default to `auto_edit` mode to minimize developer prompt fatigue by auto-approving file edits (`write_file`, `replace`) while continuing to prompt for system shell commands."
   - "Configure approval mode per workspace in Workspace Settings (`ask`, `auto_edit`, `yolo`, `plan`), mapping cleanly to ACP mode IDs (`default`, `autoEdit`, `yolo`, `plan`)."
   - "Synchronize mode dynamically at runtime via `session/set_mode` on each prompt, and display active mode badge in the bottom chat prompt bar."
