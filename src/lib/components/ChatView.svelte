@@ -46,8 +46,6 @@
     onToolResponse,
     onExport,
     onOpenMcpModal,
-    onCycleMode,
-    onEscalateYolo,
   }: {
     workspace: Workspace | null;
     session: Session | null;
@@ -66,8 +64,6 @@
     onToolResponse: (requestId: number, optionId?: string, allowed?: boolean) => void;
     onExport: (format: string) => void;
     onOpenMcpModal?: () => void;
-    onCycleMode?: () => void;
-    onEscalateYolo?: () => void;
   } = $props();
 
   let composerRef: ReturnType<typeof ChatPromptComposer> | null = $state(null);
@@ -200,29 +196,18 @@
     </div>
 
     <div class="flex items-center gap-2">
-      <!-- Execution Approval Mode Status Badge (Click to Cycle Mode) -->
+      <!-- Execution Approval Mode Status Badge (Static indicator, configured in Workspace Settings) -->
       <Tooltip
-        text={`Policy Mode: ${currentModeConfig.label}${onCycleMode ? ' (Click to switch)' : ''}`}
-        subtext={currentModeConfig.description}
+        text={`Policy Approval Mode: ${currentModeConfig.label}`}
+        subtext={`${currentModeConfig.description} (Change in Workspace Settings)`}
         position="bottom"
       >
-        {#if onCycleMode}
-          <button
-            type="button"
-            onclick={onCycleMode}
-            class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border font-semibold shadow-xs select-none cursor-pointer transition-all duration-150 {currentModeConfig.badgeClass} active:scale-95"
-          >
-            <ModeIcon size={13} class={currentModeConfig.iconClass} />
-            <span>{currentModeConfig.shortLabel}</span>
-          </button>
-        {:else}
-          <div
-            class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border font-semibold shadow-xs select-none cursor-help {currentModeConfig.badgeClass}"
-          >
-            <ModeIcon size={13} class={currentModeConfig.iconClass} />
-            <span>{currentModeConfig.shortLabel}</span>
-          </div>
-        {/if}
+        <div
+          class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border font-semibold shadow-xs select-none cursor-default {currentModeConfig.badgeClass}"
+        >
+          <ModeIcon size={13} class={currentModeConfig.iconClass} />
+          <span>{currentModeConfig.shortLabel}</span>
+        </div>
       </Tooltip>
 
       <!-- Export Menu -->
@@ -438,7 +423,7 @@
 
   <!-- Tool Permission Confirmation Banner (ACP) -->
   {#if toolPermission}
-    <ToolPermissionCard {toolPermission} onRespond={onToolResponse} {onEscalateYolo} />
+    <ToolPermissionCard {toolPermission} onRespond={onToolResponse} />
   {/if}
 
   <!-- Prompt Input Bar -->
@@ -454,7 +439,6 @@
       onSendPrompt(prompt);
     }}
     {onCancelPrompt}
-    {onCycleMode}
   />
 
   <!-- Terminal Drawer -->

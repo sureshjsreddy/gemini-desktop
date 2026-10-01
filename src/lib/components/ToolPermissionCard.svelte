@@ -6,17 +6,14 @@
     FileText,
     FileCode,
     Terminal,
-    Zap,
   } from "lucide-svelte";
 
   let {
     toolPermission,
     onRespond,
-    onEscalateYolo,
   }: {
     toolPermission: ToolPermissionPayload;
     onRespond: (requestId: number, optionId?: string, allowed?: boolean) => void;
-    onEscalateYolo?: () => void;
   } = $props();
 </script>
 
@@ -127,21 +124,6 @@
           <span>Deny</span>
         </button>
       </div>
-    {/if}
-
-    {#if onEscalateYolo}
-      <button
-        type="button"
-        onclick={() => {
-          onRespond(toolPermission.request_id, "proceed_always", true);
-          onEscalateYolo();
-        }}
-        class="px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold"
-        title="Allow this action and switch workspace to autonomous YOLO mode for all future tools"
-      >
-        <Zap size={14} />
-        <span>Allow & switch to YOLO</span>
-      </button>
     {/if}
   </div>
 </div>

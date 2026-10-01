@@ -32,7 +32,6 @@
     approvalMode = "auto_edit",
     onSendPrompt,
     onCancelPrompt,
-    onCycleMode,
   }: {
     workspace: Workspace | null;
     workspaceFiles?: WorkspaceFileEntry[];
@@ -40,7 +39,6 @@
     approvalMode?: ApprovalMode;
     onSendPrompt: (prompt: string) => void;
     onCancelPrompt: () => void;
-    onCycleMode?: () => void;
   } = $props();
 
   let inputPrompt = $state("");
@@ -497,25 +495,14 @@
         <span class="text-muted-theme/40 select-none">&bull;</span>
 
         <Tooltip
-          text={`Policy Approval Mode: ${currentModeConfig.label}${onCycleMode ? ' (Click to switch)' : ''}`}
-          subtext={currentModeConfig.description}
+          text={`Policy Approval Mode: ${currentModeConfig.label}`}
+          subtext={`${currentModeConfig.description} (Change in Workspace Settings)`}
           position="top"
         >
-          {#if onCycleMode}
-            <button
-              type="button"
-              onclick={onCycleMode}
-              class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[11px] font-semibold cursor-pointer select-none transition-all duration-150 {currentModeConfig.badgeClass} active:scale-95"
-            >
-              <ModeIcon size={11} class={currentModeConfig.iconClass} />
-              <span>{currentModeConfig.shortLabel}</span>
-            </button>
-          {:else}
-            <div class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[11px] font-semibold cursor-help select-none {currentModeConfig.badgeClass}">
-              <ModeIcon size={11} class={currentModeConfig.iconClass} />
-              <span>{currentModeConfig.shortLabel}</span>
-            </div>
-          {/if}
+          <div class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[11px] font-semibold cursor-default select-none {currentModeConfig.badgeClass}">
+            <ModeIcon size={11} class={currentModeConfig.iconClass} />
+            <span>{currentModeConfig.shortLabel}</span>
+          </div>
         </Tooltip>
       </div>
 

@@ -585,22 +585,6 @@
     modalManager.close();
   }
 
-  async function handleCycleMode() {
-    if (!activeWorkspace) return;
-    const current = activeWorkspace.approval_mode || "auto_edit";
-    const modes: ApprovalMode[] = ["auto_edit", "yolo", "default", "plan"];
-    const nextIdx = (modes.indexOf(current) + 1) % modes.length;
-    const nextMode = modes[nextIdx];
-    const updatedWs = { ...activeWorkspace, approval_mode: nextMode };
-    await handleSaveWorkspace(updatedWs);
-  }
-
-  async function handleEscalateYolo() {
-    if (!activeWorkspace) return;
-    const updatedWs = { ...activeWorkspace, approval_mode: "yolo" as ApprovalMode };
-    await handleSaveWorkspace(updatedWs);
-  }
-
   async function handleDeleteWorkspace(id: string) {
     await invoke("delete_workspace", { id });
     workspaces = await invoke<Workspace[]>("get_workspaces");
@@ -678,8 +662,6 @@
       onToolResponse={handleToolResponse}
       onExport={handleExport}
       onOpenMcpModal={() => modalManager.open("mcp")}
-      onCycleMode={handleCycleMode}
-      onEscalateYolo={handleEscalateYolo}
     />
   </div>
 
