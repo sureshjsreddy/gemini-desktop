@@ -19,6 +19,7 @@ rule:
 
 do:
   - "Decorate exposed functions with `#[tauri::command]` and register them in `tauri::generate_handler![]`."
+  - "Organize backend commands into domain modules under `src-tauri/src/commands/` (`session.rs`, `workspace.rs`, `db.rs`, `mcp.rs`, `terminal.rs`, `updater.rs`), re-exporting them through `commands/mod.rs` to maintain separation of concerns."
   - "Inject shared application state via `State<'_, AppState>`."
   - "Map internal errors into user-friendly descriptive string messages using `.map_err(|e| e.to_string())`."
   - "Offload heavy filesystem operations (such as recursive directory search) to `tokio::task::spawn_blocking` and support atomic cancellation generation counters (`Arc<AtomicU64>`) so long-running scans can be instantly aborted by user actions without freezing the UI."

@@ -62,6 +62,12 @@ export interface ToolPermissionPayload {
   options: PermissionOption[];
 }
 
+export interface SessionStreamState {
+  streamingText: string;
+  isStreaming: boolean;
+  toolPermission: ToolPermissionPayload | null;
+}
+
 export interface GeminiEnvStatus {
   installed: boolean;
   path?: string;
@@ -76,11 +82,30 @@ export interface WorkspaceFileEntry {
   extension?: string;
 }
 
+export interface TreeNode {
+  name: string;
+  path: string;
+  isDir: boolean;
+  extension?: string;
+  children: TreeNode[];
+  isLoaded?: boolean;
+  isLoading?: boolean;
+}
+
 export interface AttachmentItem {
   id: string;
   name: string;
   path: string;
   kind: "file" | "directory" | "git" | "external";
+}
+
+export interface MentionOption {
+  id: string;
+  label: string;
+  insertText: string;
+  title: string;
+  subtitle: string;
+  kind: "file" | "directory" | "git";
 }
 
 export interface McpServerConfig {

@@ -321,6 +321,61 @@ impl AcpSession {
     }
 }
 
+/// Detects and strips internal Gemini CLI control tags like `[MODE_UPDATE] <mode>`
+/// from incoming text deltas while extracting the reported mode.
+pub fn sanitize_acp_delta(delta: &str) -> (String, Option<String>) {
+    if !delta.contains("[MODE_UPDATE]") {
+        return (delta.to_string(), None);
+    }
+
+    let mut detected_mode = None;
+    let mut cleaned_lines = Vec::new();
+
+    for line in delta.lines() {
+        if let Some(idx) = line.find("[MODE_UPDATE]") {
+            let after = &line[idx + "[MODE_UPDATE]".len()..];
+            let trimmed = after.trim_start();
+            let mode_token = if let Some(space_idx) = trimmed.find(|c: char| c.is_whitespace()) {
+                &trimmed[..space_idx]
+            } else {
+                trimmed
+            };
+            if !mode_token.is_empty() {
+                detected_mode = Some(mode_token.to_string());
+            }
+
+            let before = &line[..idx];
+            let after_mode = if let Some(space_idx) = trimmed.find(|c: char| c.is_whitespace()) {
+                &trimmed[space_idx..]
+            } else {
+                ""
+            };
+            let rebuilt = format!("{}{}", before, after_mode);
+            if !rebuilt.trim().is_empty() {
+                cleaned_lines.push(rebuilt);
+            }
+        } else {
+            cleaned_lines.push(line.to_string());
+        }
+    }
+
+    let mut clean_str = cleaned_lines.join("\n");
+
+    // Also strip inline if [MODE_UPDATE] wasn't separated by newlines
+    while let Some(idx) = clean_str.find("[MODE_UPDATE]") {
+        let after = &clean_str[idx + "[MODE_UPDATE]".len()..];
+        let trimmed = after.trim_start();
+        let rest = if let Some(space_idx) = trimmed.find(|c: char| c.is_whitespace()) {
+            &trimmed[space_idx..]
+        } else {
+            ""
+        };
+        clean_str = format!("{}{}", &clean_str[..idx], rest);
+    }
+
+    (clean_str, detected_mode)
+}
+
 pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<AcpSession>, active_session_id: &str) {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -364,9 +419,17 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     .unwrap_or("")
                     .to_string();
 
+                let (clean_delta, mode_opt) = sanitize_acp_delta(&delta);
+                if let Some(mode) = mode_opt {
+                    let _ = app_handle.emit("acp-mode-update", serde_json::json!({
+                        "sessionId": target_session,
+                        "mode": mode
+                    }));
+                }
+
                 let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
                     session_id: target_session,
-                    delta,
+                    delta: clean_delta,
                     is_done: true,
                 });
                 return;
@@ -400,9 +463,21 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                         .and_then(|d| d.as_bool())
                         .unwrap_or(false);
 
+                    let (clean_delta, mode_opt) = sanitize_acp_delta(&delta);
+                    if let Some(mode) = mode_opt {
+                        let _ = app_handle.emit("acp-mode-update", serde_json::json!({
+                            "sessionId": matched_session_id,
+                            "mode": mode
+                        }));
+                    }
+
+                    if clean_delta.is_empty() && !is_done {
+                        return;
+                    }
+
                     let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
                         session_id: matched_session_id,
-                        delta,
+                        delta: clean_delta,
                         is_done,
                     });
                 }
@@ -527,9 +602,17 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                 .unwrap_or("")
                 .to_string();
 
+            let (clean_delta, mode_opt) = sanitize_acp_delta(&delta);
+            if let Some(mode) = mode_opt {
+                let _ = app_handle.emit("acp-mode-update", serde_json::json!({
+                    "sessionId": matched_session_id,
+                    "mode": mode
+                }));
+            }
+
             let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
                 session_id: matched_session_id,
-                delta,
+                delta: clean_delta,
                 is_done: true,
             });
             return;
@@ -548,9 +631,21 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
     }
 
     // Fallback: If CLI outputs raw streaming lines or debug logs, emit as text chunk
+    let (clean_trimmed, mode_opt) = sanitize_acp_delta(trimmed);
+    if let Some(mode) = mode_opt {
+        let _ = app_handle.emit("acp-mode-update", serde_json::json!({
+            "sessionId": active_session_id,
+            "mode": mode
+        }));
+    }
+
+    if clean_trimmed.is_empty() {
+        return;
+    }
+
     let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
         session_id: active_session_id.to_string(),
-        delta: format!("{}\n", trimmed),
+        delta: format!("{}\n", clean_trimmed),
         is_done: false,
     });
 }
@@ -558,6 +653,29 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sanitize_acp_delta() {
+        let chunk = "[MODE_UPDATE] autoEdit";
+        let (cleaned, mode) = sanitize_acp_delta(chunk);
+        assert_eq!(cleaned, "");
+        assert_eq!(mode, Some("autoEdit".to_string()));
+
+        let chunk_default = "[MODE_UPDATE] default";
+        let (cleaned2, mode2) = sanitize_acp_delta(chunk_default);
+        assert_eq!(cleaned2, "");
+        assert_eq!(mode2, Some("default".to_string()));
+
+        let normal_chunk = "I have created the file";
+        let (cleaned3, mode3) = sanitize_acp_delta(normal_chunk);
+        assert_eq!(cleaned3, "I have created the file");
+        assert_eq!(mode3, None);
+
+        let concatenated = "[MODE_UPDATE] autoEdit\nI have successfully created dummy.txt";
+        let (cleaned4, mode4) = sanitize_acp_delta(concatenated);
+        assert_eq!(cleaned4, "I have successfully created dummy.txt");
+        assert_eq!(mode4, Some("autoEdit".to_string()));
+    }
 
     #[test]
     fn test_prompt_session_tracking() {

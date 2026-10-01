@@ -13,6 +13,7 @@
     WorkspaceFileEntry,
     UpdateInfo,
     ApprovalMode,
+    SessionStreamState,
   } from "$lib/types";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import ChatView from "$lib/components/ChatView.svelte";
@@ -25,6 +26,7 @@
   import UpdateNotificationBanner from "$lib/components/UpdateNotificationBanner.svelte";
   import { themeManager } from "$lib/theme.svelte";
   import { dialogManager } from "$lib/dialog.svelte";
+  import { modalManager } from "$lib/modal.svelte";
 
   const LAST_WORKSPACE_KEY = "gemini_desktop_last_workspace_id";
 
@@ -39,12 +41,6 @@
   let updateInfo = $state<UpdateInfo | null>(null);
   let isCheckingUpdate = $state(false);
   let approvalMode: ApprovalMode = $derived(activeWorkspace?.approval_mode || "auto_edit");
-
-  interface SessionStreamState {
-    streamingText: string;
-    isStreaming: boolean;
-    toolPermission: ToolPermissionPayload | null;
-  }
 
   let streamStates = $state<Record<string, SessionStreamState>>({});
 
@@ -70,12 +66,7 @@
 
   let envStatus: GeminiEnvStatus | null = $state(null);
 
-  // Modals & Panels
-  let showSearchModal = $state(false);
-  let showWorkspaceModal = $state(false);
-  let showTemplatesModal = $state(false);
-  let showThemeModal = $state(false);
-  let showMcpModal = $state(false);
+  // Panels & Drawers
   let showTerminalDrawer = $state(false);
   let showSolutionExplorer = $state(true);
   let showSidebar = $state(true);
@@ -86,6 +77,7 @@
   let unlistenChunk: UnlistenFn | null = null;
   let unlistenTool: UnlistenFn | null = null;
   let unlistenError: UnlistenFn | null = null;
+  let unlistenModeUpdate: UnlistenFn | null = null;
 
   onMount(async () => {
     // 0. Initialize theme
@@ -140,11 +132,34 @@
           };
         }
 
-        streamStates[session_id].streamingText += delta;
+        let cleanDelta = delta || "";
+        if (cleanDelta.includes("[MODE_UPDATE]")) {
+          cleanDelta = cleanDelta.replace(/\[MODE_UPDATE\]\s*[a-zA-Z0-9_]*/g, "");
+        }
+
+        if (cleanDelta) {
+          streamStates[session_id].streamingText += cleanDelta;
+        }
         streamStates[session_id].isStreaming = !is_done;
 
         if (is_done) {
           finishStreamingForSession(session_id);
+        }
+      }
+    );
+
+    unlistenModeUpdate = await listen<{ sessionId?: string; mode?: string }>(
+      "acp-mode-update",
+      (event) => {
+        const mode = event.payload?.mode;
+        if (mode && activeWorkspace) {
+          const normalizedMode: ApprovalMode =
+            mode === "autoEdit" ? "auto_edit" :
+            mode === "yolo" ? "yolo" :
+            mode === "plan" ? "plan" : "default";
+          if (activeWorkspace.approval_mode !== normalizedMode) {
+            activeWorkspace = { ...activeWorkspace, approval_mode: normalizedMode };
+          }
         }
       }
     );
@@ -245,7 +260,7 @@
         }
       } else if (manual) {
         await dialogManager.alert(
-          `Gemini Desktop v${info?.current_version || "0.2.17"} is already up to date with the latest WinGet release!`,
+          `Gemini Desktop v${info?.current_version || "0.2.18"} is already up to date with the latest WinGet release!`,
           "Up to Date"
         );
       }
@@ -263,6 +278,7 @@
     if (unlistenChunk) unlistenChunk();
     if (unlistenTool) unlistenTool();
     if (unlistenError) unlistenError();
+    if (unlistenModeUpdate) unlistenModeUpdate();
     window.removeEventListener("keydown", handleGlobalShortcuts);
   });
 
@@ -272,10 +288,10 @@
       handleNewSession();
     } else if ((e.ctrlKey || e.metaKey) && e.key === "k") {
       e.preventDefault();
-      showSearchModal = true;
+      modalManager.toggle("search");
     } else if ((e.ctrlKey || e.metaKey) && e.key === "m") {
       e.preventDefault();
-      showMcpModal = !showMcpModal;
+      modalManager.toggle("mcp");
     } else if ((e.ctrlKey || e.metaKey) && (e.key === "`" || e.key === "~")) {
       e.preventDefault();
       showTerminalDrawer = !showTerminalDrawer;
@@ -528,7 +544,7 @@
         }
       }
     }
-    showWorkspaceModal = false;
+    modalManager.close();
   }
 
   async function handleDeleteWorkspace(id: string) {
@@ -552,7 +568,7 @@
         }
       }
     }
-    showWorkspaceModal = false;
+    modalManager.close();
   }
 </script>
 
@@ -572,11 +588,11 @@
       onNewSession={handleNewSession}
       onRenameSession={handleRenameSession}
       onDeleteSession={handleDeleteSession}
-      onOpenSearch={() => (showSearchModal = true)}
-      onOpenTemplates={() => (showTemplatesModal = true)}
-      onOpenWorkspaceModal={() => (showWorkspaceModal = true)}
-      onOpenThemeModal={() => (showThemeModal = true)}
-      onOpenMcpModal={() => (showMcpModal = true)}
+      onOpenSearch={() => modalManager.open("search")}
+      onOpenTemplates={() => modalManager.open("templates")}
+      onOpenWorkspaceModal={() => modalManager.open("workspace")}
+      onOpenThemeModal={() => modalManager.open("theme")}
+      onOpenMcpModal={() => modalManager.open("mcp")}
       onToggleTerminal={() => (showTerminalDrawer = !showTerminalDrawer)}
       onCheckUpdate={() => handleCheckUpdate(true)}
       {isCheckingUpdate}
@@ -606,7 +622,7 @@
       onCancelPrompt={handleCancelPrompt}
       onToolResponse={handleToolResponse}
       onExport={handleExport}
-      onOpenMcpModal={() => (showMcpModal = true)}
+      onOpenMcpModal={() => modalManager.open("mcp")}
     />
   </div>
 
@@ -629,10 +645,10 @@
     }}
   />
 
-  <!-- Modals -->
+  <!-- Modals Consolidated with modalManager -->
   <SearchModal
-    isOpen={showSearchModal}
-    onClose={() => (showSearchModal = false)}
+    isOpen={modalManager.isOpen("search")}
+    onClose={() => modalManager.close()}
     onSearch={handleSearch}
     onSelectResult={async (res) => {
       const foundSession = sessions.find((s) => s.id === res.session_id);
@@ -643,30 +659,31 @@
   />
 
   <WorkspaceModal
-    isOpen={showWorkspaceModal}
+    isOpen={modalManager.isOpen("workspace")}
+    {activeWorkspace}
     {workspaces}
-    onClose={() => (showWorkspaceModal = false)}
+    onClose={() => modalManager.close()}
     onSaveWorkspace={handleSaveWorkspace}
     onDeleteWorkspace={handleDeleteWorkspace}
   />
 
   <TemplatesModal
-    isOpen={showTemplatesModal}
+    isOpen={modalManager.isOpen("templates")}
     templates={promptTemplates}
-    onClose={() => (showTemplatesModal = false)}
+    onClose={() => modalManager.close()}
     onSelectTemplate={(prompt) => {
       handleSendPrompt(prompt);
     }}
   />
 
   <ThemeModal
-    isOpen={showThemeModal}
-    onClose={() => (showThemeModal = false)}
+    isOpen={modalManager.isOpen("theme")}
+    onClose={() => modalManager.close()}
   />
 
   <McpModal
-    isOpen={showMcpModal}
+    isOpen={modalManager.isOpen("mcp")}
     {activeWorkspace}
-    onClose={() => (showMcpModal = false)}
+    onClose={() => modalManager.close()}
   />
 </div>

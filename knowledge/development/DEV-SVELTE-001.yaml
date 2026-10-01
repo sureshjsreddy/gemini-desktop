@@ -3,7 +3,7 @@ type: development_standard
 title: Svelte 5 Runes State Management & Tailwind CSS v4 Component Standard
 domain: development
 status: approved
-version: 1.1.0
+version: 1.2.0
 authority:
   level: official
   confidence: high
@@ -27,7 +27,8 @@ do:
   - "Ensure all dialog modals enforce strict accessibility: backdrop has `role=\"presentation\"` and `onkeydown` Escape handler; inner card has `role=\"dialog\"`, `aria-modal=\"true\"`, `tabindex=\"-1\"`, and `onkeydown={(e) => e.stopPropagation()}`."
   - "Replace HTML `autofocus` with programmatic focus inside `$effect` with a small `setTimeout` to eliminate `a11y_autofocus` compiler warnings."
   - "Use `$derived.by` for reactive configuration presets that depend on component props to avoid capturing initial state."
-  - "Wrap interactive icon buttons, actions, and status indicators with `Tooltip.svelte` for accessibility and keyboard/hover discoverability."
+  - "Use `modalManager` (`src/lib/modal.svelte.ts`) to govern dialog modals (`search`, `workspace`, `templates`, `theme`, `mcp`) with `isOpen(type)`, `open(type)`, `close()`, and `toggle(type)`, preventing multiple competing open modals and eliminating scattered boolean flags."
+  - "Decompose high-complexity views into focused subcomponents (e.g. `ToolPermissionCard.svelte`, `ChatPromptComposer.svelte`, `ChatMentionPopover.svelte`, `ExplorerContextMenu.svelte`, `ExplorerTreeRow.svelte`) and extract reusable domain logic into pure utility modules (`approvalModes.ts`, `fileIcons.ts`, `fileFilters.ts`)."
   - "Enforce strict CSS stacking context hierarchy: header has `relative z-30`, chat message viewport has `z-0`, bottom prompt bar has `relative z-20`, tooltips elevate dynamically to `z-50` on hover, and dropdown menus (Export, Workspace profile) use `z-40` with outside-click dismissal backdrops so chat messages never occlude menus or tooltips."
 
 dont:

@@ -46,9 +46,11 @@ marked.setOptions({
 
 export function renderMarkdown(content: string): string {
   if (!content) return "";
+  // Strip any internal CLI control tags like [MODE_UPDATE] autoEdit
+  const sanitized = content.replace(/\[MODE_UPDATE\]\s*[a-zA-Z0-9_]*/g, "").trim();
   try {
-    return marked.parse(content) as string;
+    return marked.parse(sanitized) as string;
   } catch (e) {
-    return content;
+    return sanitized;
   }
 }

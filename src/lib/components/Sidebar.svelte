@@ -341,7 +341,7 @@
   <!-- Bottom App & Workspace Info -->
   <div class="border-t border-subtle bg-surface/40">
     <div class="px-3 pt-2 pb-1 flex items-center justify-between text-[10px] text-muted-theme">
-      <span class="font-mono">v0.2.17</span>
+      <span class="font-mono">v0.2.18</span>
       {#if onCheckUpdate}
         <button
           type="button"

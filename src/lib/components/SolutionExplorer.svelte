@@ -1,5 +1,7 @@
 <script lang="ts">
-  import type { Workspace, WorkspaceFileEntry } from "$lib/types";
+  import type { Workspace, WorkspaceFileEntry, TreeNode } from "$lib/types";
+  import ExplorerContextMenu from "$lib/components/ExplorerContextMenu.svelte";
+  import ExplorerTreeRow from "$lib/components/ExplorerTreeRow.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import {
     Folder,
@@ -32,16 +34,10 @@
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
   import { dialogManager } from "$lib/dialog.svelte";
+  import { getFileIconMeta } from "$lib/utils/fileIcons";
+  import { isNodeVisible } from "$lib/utils/fileFilters";
 
-  export interface TreeNode {
-    name: string;
-    path: string;
-    isDir: boolean;
-    extension?: string;
-    children: TreeNode[];
-    isLoaded?: boolean;
-    isLoading?: boolean;
-  }
+  export type { TreeNode };
 
   let {
     workspace = null,
@@ -85,14 +81,6 @@
   // Resizable Panel Width
   let explorerWidth = $state(310);
   let isDragging = $state(false);
-
-  // Filter helper: dotfiles/dotfolders are hidden unless showHiddenFiles is true
-  function isNodeVisible(node: TreeNode, showHidden: boolean): boolean {
-    if (!showHidden && node.name.startsWith(".")) {
-      return false;
-    }
-    return true;
-  }
 
   let visibleRootItems = $derived.by(() => {
     return rootNodes.filter((n) => isNodeVisible(n, showHiddenFiles));
@@ -420,92 +408,6 @@
     const x = Math.min(clickX, window.innerWidth - 200);
     const y = Math.min(clickY, window.innerHeight - 240);
     contextMenu = { x, y, node };
-  }
-
-  // Visual Studio 2022 File Icon & Color Mapping
-  function getFileIconMeta(node: TreeNode) {
-    if (node.isDir) {
-      return {
-        type: "folder",
-        color: "#f59e0b", // Classic VS yellow/amber
-        badge: "",
-      };
-    }
-
-    const ext = (node.extension || "").toLowerCase();
-    const lowerName = node.name.toLowerCase();
-
-    // Specific file names
-    if (lowerName === "cargo.toml" || lowerName === "cargo.lock") {
-      return { type: "code", color: "#f97316", badge: "CRG" };
-    }
-    if (lowerName === "package.json") {
-      return { type: "code", color: "#eab308", badge: "{}" };
-    }
-    if (lowerName === "gemini.md" || lowerName === "agents.md") {
-      return { type: "text", color: "#38bdf8", badge: "AI" };
-    }
-    if (lowerName.startsWith(".git")) {
-      return { type: "text", color: "#f97316", badge: "GIT" };
-    }
-
-    // Extensions
-    switch (ext) {
-      case "cs":
-        return { type: "code", color: "#a855f7", badge: "C#" };
-      case "rs":
-        return { type: "code", color: "#f97316", badge: "RS" };
-      case "ts":
-      case "tsx":
-        return { type: "code", color: "#3b82f6", badge: "TS" };
-      case "js":
-      case "jsx":
-      case "mjs":
-        return { type: "code", color: "#eab308", badge: "JS" };
-      case "svelte":
-        return { type: "code", color: "#ff3e00", badge: "SV" };
-      case "html":
-      case "htm":
-        return { type: "code", color: "#f97316", badge: "<>" };
-      case "css":
-      case "scss":
-      case "sass":
-      case "less":
-        return { type: "code", color: "#06b6d4", badge: "#" };
-      case "json":
-        return { type: "code", color: "#fbbf24", badge: "{}" };
-      case "md":
-      case "markdown":
-        return { type: "text", color: "#38bdf8", badge: "MD" };
-      case "yaml":
-      case "yml":
-        return { type: "text", color: "#c084fc", badge: "YML" };
-      case "toml":
-      case "ini":
-      case "conf":
-      case "cfg":
-        return { type: "text", color: "#fb923c", badge: "CFG" };
-      case "sql":
-      case "db":
-      case "sqlite":
-        return { type: "database", color: "#14b8a6", badge: "SQL" };
-      case "sh":
-      case "bash":
-      case "bat":
-      case "cmd":
-      case "ps1":
-        return { type: "terminal", color: "#22c55e", badge: ">_" };
-      case "png":
-      case "jpg":
-      case "jpeg":
-      case "gif":
-      case "svg":
-      case "ico":
-      case "webp":
-        return { type: "image", color: "#c084fc", badge: "IMG" };
-      default:
-        return { type: "text", color: "#94a3b8", badge: "" };
-    }
   }
 
   // Handle panel resizing via dragging left border
@@ -850,10 +752,29 @@
             {/if}
           </div>
         {:else}
-          <!-- Tree Nodes with Recursive Snippet -->
+          <!-- Tree Nodes with Recursive ExplorerTreeRow -->
           <div class="py-0.5">
             {#each visibleRootItems as node (node.path)}
-              {@render treeRow(node, 0)}
+              <ExplorerTreeRow
+                {node}
+                depth={0}
+                {expandedDirs}
+                {selectedNode}
+                {checkedItems}
+                {isSelectMode}
+                {attachedPath}
+                {copiedPath}
+                {showHiddenFiles}
+                onSelectNode={(n) => (selectedNode = n)}
+                onToggleDir={toggleDir}
+                onToggleCheckItem={toggleCheckItem}
+                onOpenFile={handleOpenFile}
+                onContextMenu={handleContextMenu}
+                onAttachNode={handleAttachNode}
+                onInsertMention={handleInsertMention}
+                onRevealInExplorer={handleRevealInExplorer}
+                onCopyPath={handleCopyPath}
+              />
             {/each}
           </div>
         {/if}
@@ -899,333 +820,16 @@
 {/if}
 
 <!-- Context Menu Popup -->
-{#if contextMenu}
-  <!-- Backdrop to close context menu -->
-  <div
-    class="fixed inset-0 z-50 bg-transparent"
-    onclick={() => (contextMenu = null)}
-    oncontextmenu={(e) => {
-      e.preventDefault();
-      contextMenu = null;
-    }}
-    role="presentation"
-  ></div>
-
-  <!-- Context Menu Card -->
-  <div
-    class="fixed z-50 w-48 bg-surface-elevated border border-subtle rounded-lg shadow-2xl py-1 text-xs text-primary-theme"
-    style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
-  >
-    <div class="px-2.5 py-1 text-[10px] text-muted-theme border-b border-subtle/60 font-mono truncate">
-      {contextMenu.node.name}
-    </div>
-
-    <!-- Attach to Chat -->
-    <button
-      type="button"
-      onclick={() => {
-        if (contextMenu) handleAttachNode(contextMenu.node);
-      }}
-      class="w-full px-2.5 py-1.5 text-left hover:bg-surface-hover flex items-center gap-2 text-accent-theme font-medium cursor-pointer"
-    >
-      <Paperclip size={13} />
-      <span>Attach to Chat</span>
-    </button>
-
-    <!-- Mention in Chat -->
-    <button
-      type="button"
-      onclick={() => {
-        if (contextMenu) handleInsertMention(contextMenu.node);
-      }}
-      class="w-full px-2.5 py-1.5 text-left hover:bg-surface-hover flex items-center gap-2 cursor-pointer"
-    >
-      <AtSign size={13} class="text-secondary-theme" />
-      <span>Mention in Prompt (@)</span>
-    </button>
-
-    <div class="my-1 border-t border-subtle/60"></div>
-
-    {#if !contextMenu.node.isDir}
-      <!-- Open File with Default App -->
-      <button
-        type="button"
-        onclick={() => {
-          if (contextMenu) handleOpenFile(contextMenu.node.path);
-        }}
-        class="w-full px-2.5 py-1.5 text-left hover:bg-surface-hover flex items-center gap-2 cursor-pointer"
-      >
-        <ExternalLink size={13} class="text-secondary-theme" />
-        <span>Open with Default App</span>
-      </button>
-
-      <!-- Open File with Notepad -->
-      <button
-        type="button"
-        onclick={() => {
-          if (contextMenu) handleOpenFile(contextMenu.node.path, undefined, { forceNotepad: true });
-        }}
-        class="w-full px-2.5 py-1.5 text-left hover:bg-surface-hover flex items-center gap-2 cursor-pointer text-secondary-theme hover:text-primary-theme"
-      >
-        <FileText size={13} class="text-muted-theme" />
-        <span>Open with Notepad</span>
-      </button>
-    {/if}
-
-    <!-- Reveal in Explorer -->
-    <button
-      type="button"
-      onclick={() => {
-        if (contextMenu) handleRevealInExplorer(contextMenu.node.path);
-      }}
-      class="w-full px-2.5 py-1.5 text-left hover:bg-surface-hover flex items-center gap-2 cursor-pointer"
-    >
-      <Eye size={13} class="text-secondary-theme" />
-      <span>Reveal in Explorer</span>
-    </button>
-
-    <div class="my-1 border-t border-subtle/60"></div>
-
-    <!-- Copy Relative Path -->
-    <button
-      type="button"
-      onclick={() => {
-        if (contextMenu) handleCopyPath(contextMenu.node.path);
-      }}
-      class="w-full px-2.5 py-1.5 text-left hover:bg-surface-hover flex items-center gap-2 cursor-pointer"
-    >
-      <Copy size={13} class="text-secondary-theme" />
-      <span>Copy Relative Path</span>
-    </button>
-  </div>
-{/if}
-
-<!-- Svelte 5 Recursive Tree Node Snippet -->
-{#snippet treeRow(node: TreeNode, depth: number)}
-  {@const isExpanded = node.isDir && expandedDirs.has(node.path)}
-  {@const isSelected = selectedNode?.path === node.path}
-  {@const isChecked = checkedItems.has(node.path)}
-  {@const isAttached = attachedPath === node.path}
-  {@const meta = getFileIconMeta(node)}
-  {@const isHiddenItem = node.name.startsWith(".")}
-
-  <!-- Tree Row Item (VS 2022 Height: 24px) -->
-  <div
-    role="treeitem"
-    aria-selected={isSelected}
-    aria-expanded={node.isDir ? isExpanded : undefined}
-    tabindex="0"
-    onclick={() => {
-      selectedNode = node;
-      if (isSelectMode) {
-        toggleCheckItem(node);
-      } else if (node.isDir) {
-        toggleDir(node);
-      }
-    }}
-    ondblclick={(e) => {
-      if (!node.isDir) {
-        handleOpenFile(node.path, e);
-      }
-    }}
-    oncontextmenu={(e) => handleContextMenu(node, e)}
-    onkeydown={(e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        selectedNode = node;
-        if (isSelectMode) {
-          toggleCheckItem(node);
-        } else if (node.isDir) {
-          toggleDir(node);
-        }
-      }
-    }}
-    class="group relative flex items-center h-6 pr-2 cursor-pointer transition-colors select-none {isSelected ? 'bg-accent-subtle text-primary-theme font-medium border-l-2 border-accent-theme' : 'text-secondary-theme hover:bg-surface-hover/80 hover:text-primary-theme'} {isHiddenItem ? 'opacity-70' : ''}"
-    style="padding-left: {depth * 14 + 6}px;"
-  >
-    <!-- Visual Studio Tree Indentation Guide Line -->
-    {#if depth > 0}
-      <div
-        class="absolute top-0 bottom-0 border-l border-subtle/40 pointer-events-none"
-        style="left: {(depth - 1) * 14 + 11}px;"
-      ></div>
-    {/if}
-
-    <!-- Optional Selection Checkbox in Select Mode -->
-    {#if isSelectMode}
-      <button
-        type="button"
-        onclick={(e) => toggleCheckItem(node, e)}
-        class="w-3.5 h-3.5 mr-1 flex items-center justify-center text-muted-theme hover:text-accent-theme cursor-pointer"
-        aria-label="Check item to attach"
-      >
-        {#if isChecked}
-          <CheckSquare size={13} class="text-accent-theme" />
-        {:else}
-          <Square size={13} class="opacity-60" />
-        {/if}
-      </button>
-    {/if}
-
-    <!-- Caret Arrow for Folders / Spacer for Files -->
-    {#if node.isDir}
-      <button
-        type="button"
-        onclick={(e) => toggleDir(node, e)}
-        class="w-3.5 h-3.5 flex items-center justify-center text-muted-theme hover:text-primary-theme shrink-0 cursor-pointer"
-        aria-label={isExpanded ? "Collapse folder" : "Expand folder"}
-      >
-        {#if node.isLoading}
-          <RotateCw size={11} class="animate-spin text-accent-theme" />
-        {:else}
-          <ChevronRight
-            size={12}
-            class="transition-transform duration-150 {isExpanded ? 'rotate-90 text-primary-theme' : ''}"
-          />
-        {/if}
-      </button>
-    {:else}
-      <span class="w-3.5 h-3.5 shrink-0"></span>
-    {/if}
-
-    <!-- File / Folder Icon -->
-    <div class="w-4 h-4 mr-1.5 flex items-center justify-center shrink-0">
-      {#if node.isDir}
-        {#if isExpanded}
-          <FolderOpen size={14} class="text-[#f59e0b]" />
-        {:else}
-          <Folder size={14} class="text-[#f59e0b]" />
-        {/if}
-      {:else}
-        {#if meta.type === "code"}
-          <FileCode size={14} style="color: {meta.color};" />
-        {:else if meta.type === "database"}
-          <Database size={14} style="color: {meta.color};" />
-        {:else if meta.type === "terminal"}
-          <Terminal size={14} style="color: {meta.color};" />
-        {:else if meta.type === "image"}
-          <Image size={14} style="color: {meta.color};" />
-        {:else}
-          <FileText size={14} style="color: {meta.color};" />
-        {/if}
-      {/if}
-    </div>
-
-    <!-- Node Name -->
-    <span class="truncate text-xs leading-none mr-2 font-normal {isHiddenItem ? 'italic' : ''}" title={node.path}>
-      {node.name}
-    </span>
-
-    <!-- Folder Child Count Badge -->
-    {#if node.isDir && node.children.length > 0}
-      <span class="text-[10px] text-muted-theme/80 font-mono group-hover:opacity-0 transition-opacity ml-auto shrink-0">
-        {node.children.length}
-      </span>
-    {/if}
-
-    <!-- Action Buttons on Row Hover -->
-    <div class="hidden group-hover:flex items-center gap-0.5 ml-auto shrink-0 bg-surface/90 rounded px-0.5 border border-subtle/50">
-      <!-- Direct "Attach to Chat" Button (Available on both files and folders!) -->
-      <Tooltip text={isAttached ? "Attached to Chat!" : node.isDir ? "Attach Folder to Chat" : "Attach File to Chat"} position="left">
-        <button
-          type="button"
-          onclick={(e) => handleAttachNode(node, e)}
-          class="p-0.5 rounded hover:bg-surface-elevated transition-colors cursor-pointer {isAttached ? 'text-emerald-400 font-bold' : 'text-accent-theme hover:text-accent-hover'}"
-          aria-label="Attach to Chat"
-        >
-          {#if isAttached}
-            <Check size={11} />
-          {:else}
-            <Paperclip size={11} />
-          {/if}
-        </button>
-      </Tooltip>
-
-      <!-- Insert @mention into Chat Prompt -->
-      <Tooltip text={node.isDir ? "Mention Folder (@dir/)" : "Mention File (@file)"} position="left">
-        <button
-          type="button"
-          onclick={(e) => handleInsertMention(node, e)}
-          class="p-0.5 text-muted-theme hover:text-accent-theme rounded hover:bg-surface-elevated transition-colors cursor-pointer"
-          aria-label="Insert mention"
-        >
-          <AtSign size={11} />
-        </button>
-      </Tooltip>
-
-      {#if !node.isDir}
-        <!-- Open with Default App -->
-        <Tooltip text="Open File" position="left">
-          <button
-            type="button"
-            onclick={(e) => handleOpenFile(node.path, e)}
-            class="p-0.5 text-muted-theme hover:text-primary-theme rounded hover:bg-surface-elevated transition-colors cursor-pointer"
-            aria-label="Open file"
-          >
-            <ExternalLink size={11} />
-          </button>
-        </Tooltip>
-      {/if}
-
-      <!-- Reveal in Explorer -->
-      <Tooltip text="Reveal in Windows Explorer" position="left">
-        <button
-          type="button"
-          onclick={(e) => handleRevealInExplorer(node.path, e)}
-          class="p-0.5 text-muted-theme hover:text-primary-theme rounded hover:bg-surface-elevated transition-colors cursor-pointer"
-          aria-label="Reveal in File Explorer"
-        >
-          <Eye size={11} />
-        </button>
-      </Tooltip>
-
-      <!-- Copy Relative Path -->
-      <Tooltip text={copiedPath === node.path ? "Copied!" : "Copy Relative Path"} position="left">
-        <button
-          type="button"
-          onclick={(e) => handleCopyPath(node.path, e)}
-          class="p-0.5 text-muted-theme hover:text-primary-theme rounded hover:bg-surface-elevated transition-colors cursor-pointer"
-          aria-label="Copy path"
-        >
-          {#if copiedPath === node.path}
-            <Check size={11} class="text-emerald-400" />
-          {:else}
-            <Copy size={11} />
-          {/if}
-        </button>
-      </Tooltip>
-    </div>
-  </div>
-
-  <!-- Recursive Render Children when Folder is Expanded -->
-  {#if node.isDir && isExpanded}
-    <div>
-      {#if node.isLoading}
-        <div
-          class="flex items-center gap-1.5 h-6 text-muted-theme text-[11px] select-none italic"
-          style="padding-left: {(depth + 1) * 14 + 6}px;"
-        >
-          <RotateCw size={11} class="animate-spin text-accent-theme" />
-          <span>Loading...</span>
-        </div>
-      {:else}
-        {@const visibleChildren = node.children.filter((c) => isNodeVisible(c, showHiddenFiles))}
-        {#if node.isLoaded && visibleChildren.length === 0}
-          <div
-            class="flex items-center h-6 text-muted-theme/60 text-[11px] select-none italic"
-            style="padding-left: {(depth + 1) * 14 + 6}px;"
-          >
-            (empty)
-          </div>
-        {:else}
-          {#each visibleChildren as child (child.path)}
-            {@render treeRow(child, depth + 1)}
-          {/each}
-        {/if}
-      {/if}
-    </div>
-  {/if}
-{/snippet}
+<ExplorerContextMenu
+  {contextMenu}
+  onClose={() => (contextMenu = null)}
+  onAttach={handleAttachNode}
+  onMention={handleInsertMention}
+  onOpenFile={handleOpenFile}
+  onOpenWithNotepad={(path) => handleOpenFile(path, undefined, { forceNotepad: true })}
+  onReveal={handleRevealInExplorer}
+  onCopyPath={handleCopyPath}
+/>
 
 <!-- Search Result Row Snippet (Files Only with Path Context) -->
 {#snippet searchResultRow(node: TreeNode)}

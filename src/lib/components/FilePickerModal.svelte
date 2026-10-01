@@ -13,6 +13,8 @@
     EyeOff,
   } from "lucide-svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
+  import { isHiddenOrIgnored } from "$lib/utils/fileFilters";
+  import { getFileIconColor } from "$lib/utils/fileIcons";
 
   let {
     isOpen = false,
@@ -35,30 +37,6 @@
   let selectedIndex = $state(0);
   let showHidden = $state(false);
   let searchInputEl: HTMLInputElement | null = $state(null);
-
-  const IGNORED_NAMES = new Set([
-    "node_modules",
-    "target",
-    "build",
-    "dist",
-    ".svelte-kit",
-    ".git",
-    ".vscode",
-    ".idea",
-    "__pycache__",
-    ".next",
-    ".turbo",
-    "vendor",
-  ]);
-
-  function isHiddenOrIgnored(relPath: string): boolean {
-    const parts = relPath.split("/");
-    for (const p of parts) {
-      if (p.startsWith(".")) return true;
-      if (IGNORED_NAMES.has(p.toLowerCase())) return true;
-    }
-    return false;
-  }
 
   // Reset navigation when modal opens
   $effect(() => {
@@ -270,34 +248,6 @@
     if (search.trim()) {
       onSelectCustomPath(search.trim());
       onClose();
-    }
-  }
-
-  // Visual Studio / Modern File Icon Meta
-  function getFileIconColor(ext?: string): string {
-    switch ((ext || "").toLowerCase()) {
-      case "ts":
-      case "tsx":
-        return "#3b82f6";
-      case "js":
-      case "jsx":
-        return "#eab308";
-      case "svelte":
-        return "#ff3e00";
-      case "rs":
-        return "#f97316";
-      case "json":
-        return "#fbbf24";
-      case "md":
-        return "#38bdf8";
-      case "html":
-        return "#f97316";
-      case "css":
-        return "#06b6d4";
-      case "sql":
-        return "#14b8a6";
-      default:
-        return "#94a3b8";
     }
   }
 </script>

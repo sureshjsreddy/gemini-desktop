@@ -74,12 +74,14 @@
 
   let {
     isOpen = false,
+    activeWorkspace = null,
     workspaces = [],
     onClose,
     onSaveWorkspace,
     onDeleteWorkspace,
   }: {
     isOpen: boolean;
+    activeWorkspace?: Workspace | null;
     workspaces: Workspace[];
     onClose: () => void;
     onSaveWorkspace: (ws: Workspace) => void;
@@ -99,6 +101,24 @@
   let selectedDropdownValue = $state("auto");
   let customModelInput = $state("");
   let lastSyncedWorkspaceId = $state<string | null>(null);
+
+  let wasOpen = false;
+  $effect(() => {
+    if (isOpen && !wasOpen) {
+      wasOpen = true;
+      const target = (activeWorkspace && workspaces.find((w) => w.id === activeWorkspace.id)) || activeWorkspace || workspaces[0];
+      if (target) {
+        editingWorkspace = {
+          ...target,
+          approval_mode: target.approval_mode || "auto_edit",
+        };
+      } else {
+        startNew();
+      }
+    } else if (!isOpen) {
+      wasOpen = false;
+    }
+  });
 
   $effect(() => {
     // Only re-sync dropdown state when editing workspace changes (avoids clobbering manual typing)

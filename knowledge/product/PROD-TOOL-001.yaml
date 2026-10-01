@@ -21,7 +21,8 @@ rule:
 do:
   - "Provide a prominent Mode Selector Pill in the ChatView header displaying the active policy mode (⚡ Auto-Edit, 🚀 YOLO, 🛡️ Ask Permission, 📋 Plan Mode)."
   - "Default to `auto_edit` mode to minimize developer prompt fatigue by auto-approving file edits (`write_file`, `replace`) while continuing to prompt for system shell commands."
-  - "Persist user mode selection in `localStorage` under `gemini_desktop_approval_mode` across sessions and restarts."
+  - "Configure approval mode per workspace in Workspace Settings (`ask`, `auto_edit`, `yolo`, `plan`), mapping cleanly to ACP mode IDs (`default`, `autoEdit`, `yolo`, `plan`)."
+  - "Synchronize mode dynamically at runtime via `session/set_mode` on each prompt, and display active mode badge in the bottom chat prompt bar."
   - "Pass `--approval-mode <mode>` (or `--yolo`) and `--skip-trust` flags when launching the underlying Gemini CLI process."
   - "Provide a 1-click 'Allow & switch to YOLO mode' escalation in the tool permission prompt banner to allow immediate uninterrupted autonomous execution."
   - "Display the tool name, command parameters, locations, and context reason clearly in the approval prompt."

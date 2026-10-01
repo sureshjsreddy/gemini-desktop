@@ -24,6 +24,8 @@ do:
   - "Intercept tool permission requests, pause execution, and emit `acp-tool-permission` to the frontend for explicit user confirmation or mode escalation before executing system commands."
   - "Track process lifecycle via a composite key (`format!(\"{}::{}\", workspace_id, effective_mode)`) so switching policy approval modes (`default`, `auto_edit`, `yolo`, `plan`) cleanly re-spawns the supervised CLI process."
   - "Pass `--approval-mode <mode>` (or `--yolo`) and `--skip-trust` CLI flags upon spawning to govern tool policy execution."
+  - "Explicitly synchronize per-session policy approval mode via `session/set_mode` JSON-RPC requests (`modeId: \"default\" | \"autoEdit\" | \"yolo\" | \"plan\"`) to ensure ACP runtime matches workspace settings."
+  - "Sanitize ACP agent chunks via `sanitize_acp_delta` to strip internal `[MODE_UPDATE] <mode>` control tags and emit `acp-mode-update` events, preventing runtime mode telemetry from polluting chat text."
   - "Explicitly configure active session models via `session/set_model` JSON-RPC requests prior to prompt dispatch."
   - "Isolate background streams per session ID (`streamStates[session_id]`) in the frontend and resolve ACP session mappings in the backend so users can switch between chats while the CLI is processing in the background without cross-talk or UI blocking."
   - "Provide a fallback mock/offline mode if the Gemini CLI executable is absent on PATH."
