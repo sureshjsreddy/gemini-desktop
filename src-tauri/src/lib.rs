@@ -58,7 +58,8 @@ pub fn run() {
             run_terminal_command,
             restart_gemini_session,
             check_app_update,
-            launch_winget_upgrade
+            launch_winget_upgrade,
+            get_app_version
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

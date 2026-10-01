@@ -19,6 +19,7 @@
     RefreshCw,
   } from "lucide-svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
+  import { APP_VERSION_FALLBACK } from "$lib/version";
 
   let {
     workspaces = [],
@@ -26,6 +27,7 @@
     sessions = [],
     activeSession = null,
     generatingSessionIds = new Set<string>(),
+    appVersion = APP_VERSION_FALLBACK,
     onSelectWorkspace,
     onSelectSession,
     onNewSession,
@@ -47,6 +49,7 @@
     sessions: Session[];
     activeSession: Session | null;
     generatingSessionIds?: Set<string>;
+    appVersion?: string;
     onSelectWorkspace: (ws: Workspace) => void;
     onSelectSession: (s: Session) => void;
     onNewSession: () => void;
@@ -341,7 +344,7 @@
   <!-- Bottom App & Workspace Info -->
   <div class="border-t border-subtle bg-surface/40">
     <div class="px-3 pt-2 pb-1 flex items-center justify-between text-[10px] text-muted-theme">
-      <span class="font-mono">v0.2.18</span>
+      <span class="font-mono">v{appVersion}</span>
       {#if onCheckUpdate}
         <button
           type="button"

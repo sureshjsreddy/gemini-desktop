@@ -29,8 +29,10 @@ do:
   - "Provide a 1-click 'Copy Command' button to copy the upgrade command to clipboard."
   - "Support version-specific dismissal stored in `localStorage` so users are not repeatedly prompted for the same version once dismissed."
   - "Provide a manual 'Check for Updates' action in the sidebar footer next to the version indicator."
+  - "Dynamically resolve the running application version in the UI via the `get_app_version` Tauri IPC command (sourced from Cargo.toml via `env!(\"CARGO_PKG_VERSION\")`) with a compile-time Vite define fallback (`__APP_VERSION__` from package.json), never hardcoding version strings in UI components."
 
 dont:
+  - "Do not hardcode version strings in UI templates or components; always bind to dynamic version state."
   - "Do not block application startup or UI rendering with synchronous network or CLI queries."
   - "Do not perform silent, forced updates without user knowledge and approval."
   - "Do not attempt to run in-place binary upgrades while the primary executable is still open and running."

@@ -57,6 +57,11 @@ pub fn is_newer_version(latest: &str, current: &str) -> bool {
 }
 
 #[tauri::command]
+pub async fn get_app_version() -> Result<String, String> {
+    Ok(env!("CARGO_PKG_VERSION").to_string())
+}
+
+#[tauri::command]
 pub async fn check_app_update() -> Result<UpdateInfo, String> {
     tokio::task::spawn_blocking(|| {
         let current_version = env!("CARGO_PKG_VERSION").to_string();
@@ -228,5 +233,12 @@ Author: Suresh Janaki Reddy
         assert!(script.contains("taskkill /F /IM gemini-desktop.exe"));
         assert!(script.contains("timeout /t 2"));
         assert!(script.contains("C:\\App\\gemini-desktop.exe"));
+    }
+
+    #[tokio::test]
+    async fn test_get_app_version() {
+        let ver = get_app_version().await.unwrap();
+        assert!(!ver.is_empty());
+        assert_eq!(ver, env!("CARGO_PKG_VERSION"));
     }
 }

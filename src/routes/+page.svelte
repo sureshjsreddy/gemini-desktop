@@ -27,10 +27,12 @@
   import { themeManager } from "$lib/theme.svelte";
   import { dialogManager } from "$lib/dialog.svelte";
   import { modalManager } from "$lib/modal.svelte";
+  import { getAppVersion, APP_VERSION_FALLBACK } from "$lib/version";
 
   const LAST_WORKSPACE_KEY = "gemini_desktop_last_workspace_id";
 
   // Reactive State (Svelte 5 Runes)
+  let appVersion = $state(APP_VERSION_FALLBACK);
   let workspaces = $state<Workspace[]>([]);
   let activeWorkspace = $state<Workspace | null>(null);
   let sessions = $state<Session[]>([]);
@@ -81,8 +83,11 @@
   let unlistenStderr: UnlistenFn | null = null;
 
   onMount(async () => {
-    // 0. Initialize theme
+    // 0. Initialize theme & dynamic app version
     themeManager.init();
+    getAppVersion().then((ver) => {
+      if (ver) appVersion = ver;
+    });
 
     // 1. Check Gemini environment status
     try {
@@ -279,7 +284,7 @@
         }
       } else if (manual) {
         await dialogManager.alert(
-          `Gemini Desktop v${info?.current_version || "0.2.19"} is already up to date with the latest WinGet release!`,
+          `Gemini Desktop v${info?.current_version || appVersion} is already up to date with the latest WinGet release!`,
           "Up to Date"
         );
       }
@@ -614,6 +619,7 @@
       {activeSession}
       {generatingSessionIds}
       {envStatus}
+      {appVersion}
       onToggle={() => (showSidebar = false)}
       onSelectWorkspace={selectWorkspace}
       onSelectSession={selectSession}
