@@ -296,17 +296,17 @@ impl AcpSession {
                     opts.iter()
                         .find(|o| o.kind.contains("allow"))
                         .map(|o| o.option_id.clone())
-                        .unwrap_or_else(|| "allow-once".to_string())
+                        .unwrap_or_else(|| "proceed_once".to_string())
                 } else {
                     opts.iter()
                         .find(|o| o.kind.contains("reject") || o.kind.contains("deny"))
                         .map(|o| o.option_id.clone())
-                        .unwrap_or_else(|| "reject-once".to_string())
+                        .unwrap_or_else(|| "cancel".to_string())
                 }
             } else if allowed {
-                "allow-once".to_string()
+                "proceed_once".to_string()
             } else {
-                "reject-once".to_string()
+                "cancel".to_string()
             }
         };
 
@@ -427,9 +427,21 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     }));
                 }
 
+                let stop_reason = val.pointer("/result/stopReason").and_then(|s| s.as_str());
+                let final_delta = if clean_delta.is_empty() {
+                    match stop_reason {
+                        Some("max_turn_requests") => "\n\n*(Session reached maximum turn limit)*".to_string(),
+                        Some("max_tokens") => "\n\n*(Context token window limit reached)*".to_string(),
+                        Some("cancelled") => "\n\n*(Prompt cancelled)*".to_string(),
+                        _ => String::new(),
+                    }
+                } else {
+                    clean_delta
+                };
+
                 let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
                     session_id: target_session,
-                    delta: clean_delta,
+                    delta: final_delta,
                     is_done: true,
                 });
                 return;
@@ -447,7 +459,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                         .unwrap_or_else(|| active_session_id.to_string());
 
                     // Check standard ACP format (update.content.text or update.delta) as well as flat fields
-                    let delta = val.pointer("/params/update/content/text")
+                    let mut delta = val.pointer("/params/update/content/text")
                         .or_else(|| val.pointer("/params/update/text"))
                         .or_else(|| val.pointer("/params/update/delta"))
                         .or_else(|| val.pointer("/params/update/content"))
@@ -457,6 +469,36 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                         .and_then(|t| t.as_str())
                         .unwrap_or("")
                         .to_string();
+
+                    // If delta is empty, check if this is an ACP tool execution update (in YOLO / AutoEdit mode)
+                    if delta.is_empty() {
+                        let update_type = val.pointer("/params/update/sessionUpdate").and_then(|s| s.as_str());
+                        match update_type {
+                            Some("tool_call") => {
+                                let title = val.pointer("/params/update/title")
+                                    .or_else(|| val.pointer("/params/update/toolCallId"))
+                                    .and_then(|t| t.as_str())
+                                    .unwrap_or("tool");
+                                let status = val.pointer("/params/update/status").and_then(|s| s.as_str()).unwrap_or("in_progress");
+                                if status == "in_progress" || status == "pending" {
+                                    delta = format!("\n\n> ⚙️ **Running tool:** `{}`...\n", title);
+                                }
+                            }
+                            Some("tool_call_update") => {
+                                let title = val.pointer("/params/update/title")
+                                    .or_else(|| val.pointer("/params/update/toolCallId"))
+                                    .and_then(|t| t.as_str())
+                                    .unwrap_or("tool");
+                                let status = val.pointer("/params/update/status").and_then(|s| s.as_str()).unwrap_or("completed");
+                                if status == "completed" {
+                                    delta = format!("> ✅ **Completed:** `{}`\n\n", title);
+                                } else if status == "failed" {
+                                    delta = format!("> ❌ **Tool failed:** `{}`\n\n", title);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
 
                     let is_done = val.pointer("/params/done")
                         .or_else(|| val.pointer("/params/update/done"))
@@ -586,8 +628,12 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
             return;
         }
 
-        // Check if response has a result containing text/content or turn completion
-        if val.get("result").is_some() {
+        // Check if response has a result containing text/content or explicit turn completion
+        if val.pointer("/result/content").is_some()
+            || val.pointer("/result/text").is_some()
+            || val.pointer("/result/output").is_some()
+            || val.pointer("/result/sessionId").is_some()
+        {
             let matched_session_id = val.pointer("/result/sessionId")
                 .and_then(|s| s.as_str())
                 .and_then(|acp_sid| acp_session.get_local_session_id(acp_sid))
@@ -704,5 +750,29 @@ mod tests {
         assert_eq!(session.get_acp_session_id("local-123"), None);
         assert_eq!(session.get_local_session_id("acp-xyz"), None);
         assert_eq!(session.take_prompt_session(100), None);
+    }
+
+    #[test]
+    fn test_store_and_retrieve_permission_options() {
+        let session = AcpSession::new();
+        let options = vec![
+            PermissionOption {
+                option_id: "proceed_once".to_string(),
+                name: "Allow".to_string(),
+                kind: "allow_once".to_string(),
+            },
+            PermissionOption {
+                option_id: "cancel".to_string(),
+                name: "Reject".to_string(),
+                kind: "reject_once".to_string(),
+            },
+        ];
+        session.store_permission_options(101, options);
+        let retrieved = session.pending_permissions.lock().unwrap().remove(&101);
+        assert!(retrieved.is_some());
+        let opts = retrieved.unwrap();
+        assert_eq!(opts.len(), 2);
+        assert_eq!(opts[0].option_id, "proceed_once");
+        assert_eq!(opts[1].option_id, "cancel");
     }
 }

@@ -237,6 +237,11 @@ impl ProcessSupervisor {
             cmd.env("GEMINI_MODEL", model_arg);
         }
 
+        // Enforce non-interactive pagers and CI environment to prevent blocking child tools in YOLO mode
+        cmd.env("CI", "true");
+        cmd.env("PAGER", "cat");
+        cmd.env("GIT_PAGER", "cat");
+
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

@@ -78,6 +78,7 @@
   let unlistenTool: UnlistenFn | null = null;
   let unlistenError: UnlistenFn | null = null;
   let unlistenModeUpdate: UnlistenFn | null = null;
+  let unlistenStderr: UnlistenFn | null = null;
 
   onMount(async () => {
     // 0. Initialize theme
@@ -240,6 +241,24 @@
       }
     });
 
+    unlistenStderr = await listen<string>("acp-stderr", (event) => {
+      const line = event.payload;
+      if (!line) return;
+      if (
+        line.includes("Retrying with backoff") ||
+        line.includes("503") ||
+        line.includes("429") ||
+        line.includes("high demand")
+      ) {
+        const sid = activeSession?.id;
+        if (sid && streamStates[sid] && streamStates[sid].isStreaming) {
+          if (!streamStates[sid].streamingText.includes("high demand, retrying")) {
+            streamStates[sid].streamingText += "\n\n> ⏳ *Model is currently experiencing high demand, retrying with backoff...*\n\n";
+          }
+        }
+      }
+    });
+
     window.addEventListener("keydown", handleGlobalShortcuts);
 
     // 5. Check for updates on WinGet in the background (3s delay)
@@ -260,7 +279,7 @@
         }
       } else if (manual) {
         await dialogManager.alert(
-          `Gemini Desktop v${info?.current_version || "0.2.18"} is already up to date with the latest WinGet release!`,
+          `Gemini Desktop v${info?.current_version || "0.2.19"} is already up to date with the latest WinGet release!`,
           "Up to Date"
         );
       }
@@ -279,6 +298,7 @@
     if (unlistenTool) unlistenTool();
     if (unlistenError) unlistenError();
     if (unlistenModeUpdate) unlistenModeUpdate();
+    if (unlistenStderr) unlistenStderr();
     window.removeEventListener("keydown", handleGlobalShortcuts);
   });
 
@@ -450,26 +470,28 @@
     const stream = streamStates[sessionId];
     if (!stream) return;
 
-    const finalText = stream.streamingText;
+    let finalText = stream.streamingText.trim();
     stream.isStreaming = false;
     delete streamStates[sessionId];
     streamStates = { ...streamStates };
 
-    if (finalText) {
-      const assistantMsg: Message = {
-        id: "msg-" + Date.now(),
-        session_id: sessionId,
-        role: "assistant",
-        content: finalText,
-        token_count: Math.ceil(finalText.length / 4),
-        created_at: new Date().toISOString(),
-      };
-      await invoke("save_message", { msg: assistantMsg });
+    if (!finalText) {
+      finalText = "*(Completed with no additional text response)*";
+    }
 
-      // If the user is currently viewing this session, update visible messages immediately
-      if (activeSession?.id === sessionId) {
-        messages = [...messages, assistantMsg];
-      }
+    const assistantMsg: Message = {
+      id: "msg-" + Date.now(),
+      session_id: sessionId,
+      role: "assistant",
+      content: finalText,
+      token_count: Math.ceil(finalText.length / 4),
+      created_at: new Date().toISOString(),
+    };
+    await invoke("save_message", { msg: assistantMsg });
+
+    // If the user is currently viewing this session, update visible messages immediately
+    if (activeSession?.id === sessionId) {
+      messages = [...messages, assistantMsg];
     }
   }
 
@@ -545,6 +567,16 @@
       }
     }
     modalManager.close();
+  }
+
+  async function handleCycleMode() {
+    if (!activeWorkspace) return;
+    const current = activeWorkspace.approval_mode || "auto_edit";
+    const modes: ApprovalMode[] = ["auto_edit", "yolo", "default", "plan"];
+    const nextIdx = (modes.indexOf(current) + 1) % modes.length;
+    const nextMode = modes[nextIdx];
+    const updatedWs = { ...activeWorkspace, approval_mode: nextMode };
+    await handleSaveWorkspace(updatedWs);
   }
 
   async function handleDeleteWorkspace(id: string) {
@@ -623,6 +655,7 @@
       onToolResponse={handleToolResponse}
       onExport={handleExport}
       onOpenMcpModal={() => modalManager.open("mcp")}
+      onCycleMode={handleCycleMode}
     />
   </div>
 
