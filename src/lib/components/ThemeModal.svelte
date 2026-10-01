@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { THEMES, themeManager, type ThemeId } from "$lib/theme.svelte";
-  import { X, Check, Palette } from "lucide-svelte";
+  import { THEMES, themeManager, type ThemeId, type FontSize } from "$lib/theme.svelte";
+  import { X, Check, Palette, Eye, Type, Sparkles } from "lucide-svelte";
 
   let {
     isOpen = false,
@@ -33,7 +33,7 @@
       aria-modal="true"
       aria-labelledby="theme-modal-title"
       tabindex="-1"
-      class="w-full max-w-md bg-surface border border-theme-default rounded-xl shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-150"
+      class="w-full max-w-lg bg-surface border border-theme-default rounded-xl shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-150"
       onclick={(e) => e.stopPropagation()}
       onkeydown={(e) => e.stopPropagation()}
     >
@@ -44,8 +44,8 @@
             <Palette size={18} />
           </div>
           <div>
-            <h2 id="theme-modal-title" class="text-sm font-semibold text-primary-theme">Appearance & Theme</h2>
-            <p class="text-xs text-secondary-theme">Select your preferred color scheme</p>
+            <h2 id="theme-modal-title" class="text-sm font-semibold text-primary-theme">Appearance & Eye Comfort</h2>
+            <p class="text-xs text-secondary-theme">Select your preferred color scheme and reading comfort</p>
           </div>
         </div>
         <button
@@ -57,52 +57,110 @@
         </button>
       </div>
 
-      <!-- Theme List -->
-      <div class="p-4 space-y-2.5 max-h-[60vh] overflow-y-auto">
-        {#each THEMES as theme}
-          {@const isSelected = themeManager.current === theme.id}
-          <button
-            onclick={() => themeManager.setTheme(theme.id)}
-            class="w-full p-3 rounded-lg border text-left flex items-center justify-between transition-all {isSelected ? 'border-accent-theme bg-accent-subtle shadow-xs' : 'border-subtle hover:border-theme-strong bg-surface-elevated/40 hover:bg-surface-elevated'}"
-          >
-            <div class="flex items-center gap-3">
-              <!-- Swatch Preview Bubble -->
-              <div
-                class="w-9 h-9 rounded-lg flex items-center justify-center shadow-inner border relative overflow-hidden shrink-0"
-                style="background-color: {theme.bgPreview}; border-color: {theme.borderPreview};"
-              >
-                <!-- Accent Dot / Bar -->
-                <div
-                  class="w-3.5 h-3.5 rounded-full shadow-sm"
-                  style="background-color: {theme.accent};"
-                ></div>
-              </div>
+      <!-- Scrollable Content -->
+      <div class="p-4 space-y-4 max-h-[70vh] overflow-y-auto">
+        <!-- Color Schemes -->
+        <div>
+          <div class="text-[11px] font-semibold text-secondary-theme uppercase tracking-wider mb-2 px-1 flex items-center gap-1.5">
+            <Eye size={12} class="text-accent-theme" />
+            <span>Color Palette & Contrast</span>
+          </div>
 
-              <div>
-                <div class="flex items-center gap-2">
-                  <span class="text-xs font-semibold text-primary-theme">{theme.name}</span>
+          <div class="space-y-2">
+            {#each THEMES as theme}
+              {@const isSelected = themeManager.current === theme.id}
+              <button
+                onclick={() => themeManager.setTheme(theme.id)}
+                class="w-full p-3 rounded-lg border text-left flex items-center justify-between transition-all {isSelected ? 'border-accent-theme bg-accent-subtle shadow-xs' : 'border-subtle hover:border-theme-strong bg-surface-elevated/40 hover:bg-surface-elevated'}"
+              >
+                <div class="flex items-center gap-3 min-w-0">
+                  <!-- Swatch Preview Bubble -->
+                  <div
+                    class="w-9 h-9 rounded-lg flex items-center justify-center shadow-inner border relative overflow-hidden shrink-0"
+                    style="background-color: {theme.bgPreview}; border-color: {theme.borderPreview};"
+                  >
+                    <!-- Accent Dot / Bar -->
+                    <div
+                      class="w-3.5 h-3.5 rounded-full shadow-sm"
+                      style="background-color: {theme.accent};"
+                    ></div>
+                  </div>
+
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <span class="text-xs font-semibold text-primary-theme">{theme.name}</span>
+                      {#if theme.badge}
+                        <span class="text-[9px] px-1.5 py-0.5 rounded font-medium bg-accent-subtle text-accent-theme border border-accent-subtle">
+                          {theme.badge}
+                        </span>
+                      {/if}
+                      {#if isSelected}
+                        <span class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-accent-theme text-white">
+                          Active
+                        </span>
+                      {/if}
+                    </div>
+                    <p class="text-[11px] text-secondary-theme truncate">{theme.tagline}</p>
+                  </div>
+                </div>
+
+                <!-- Checkmark Indicator -->
+                <div class="shrink-0 pl-2">
                   {#if isSelected}
-                    <span class="text-[10px] px-1.5 py-0.5 rounded font-medium bg-accent-theme text-white">
-                      Active
-                    </span>
+                    <div class="w-5 h-5 rounded-full bg-accent-theme flex items-center justify-center text-white">
+                      <Check size={12} strokeWidth={3} />
+                    </div>
+                  {:else}
+                    <div class="w-5 h-5 rounded-full border border-subtle"></div>
                   {/if}
                 </div>
-                <p class="text-[11px] text-secondary-theme">{theme.tagline}</p>
-              </div>
-            </div>
+              </button>
+            {/each}
+          </div>
+        </div>
 
-            <!-- Checkmark Indicator -->
-            <div class="shrink-0 pl-2">
-              {#if isSelected}
-                <div class="w-5 h-5 rounded-full bg-accent-theme flex items-center justify-center text-white">
-                  <Check size={12} strokeWidth={3} />
-                </div>
-              {:else}
-                <div class="w-5 h-5 rounded-full border border-subtle"></div>
-              {/if}
-            </div>
-          </button>
-        {/each}
+        <!-- Typography & Text Scale -->
+        <div class="pt-3 border-t border-subtle">
+          <div class="text-[11px] font-semibold text-secondary-theme uppercase tracking-wider mb-2 px-1 flex items-center gap-1.5">
+            <Type size={12} class="text-accent-theme" />
+            <span>Reading Comfort & Text Size</span>
+          </div>
+
+          <div class="grid grid-cols-2 gap-2">
+            <button
+              onclick={() => themeManager.setFontSize("normal")}
+              class="p-2.5 rounded-lg border text-left flex flex-col gap-1 transition-all {themeManager.fontSize === 'normal' ? 'border-accent-theme bg-accent-subtle' : 'border-subtle bg-surface-elevated/40 hover:bg-surface-elevated'}"
+            >
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-medium text-primary-theme">Standard (Compact)</span>
+                {#if themeManager.fontSize === "normal"}
+                  <Check size={14} class="text-accent-theme" />
+                {/if}
+              </div>
+              <span class="text-[11px] text-secondary-theme">Default density for laptops & high-res displays</span>
+            </button>
+
+            <button
+              onclick={() => themeManager.setFontSize("comfortable")}
+              class="p-2.5 rounded-lg border text-left flex flex-col gap-1 transition-all {themeManager.fontSize === 'comfortable' ? 'border-accent-theme bg-accent-subtle' : 'border-subtle bg-surface-elevated/40 hover:bg-surface-elevated'}"
+            >
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-medium text-primary-theme flex items-center gap-1">
+                  <span>Eye Comfort (+10%)</span>
+                </span>
+                {#if themeManager.fontSize === "comfortable"}
+                  <Check size={14} class="text-accent-theme" />
+                {/if}
+              </div>
+              <span class="text-[11px] text-secondary-theme">Spacious text and line-height to reduce eye strain</span>
+            </button>
+          </div>
+
+          <div class="mt-2.5 px-3 py-2 rounded-lg bg-surface-elevated/60 border border-subtle text-[11px] text-secondary-theme flex items-center gap-2">
+            <Sparkles size={14} class="text-amber-400 shrink-0" />
+            <span>Featuring <strong>Plus Jakarta Sans / Inter</strong> for crisp UI and <strong>JetBrains Mono</strong> for eye-friendly code reading.</span>
+          </div>
+        </div>
       </div>
 
       <!-- Footer -->

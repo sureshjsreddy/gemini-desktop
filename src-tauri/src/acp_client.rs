@@ -88,7 +88,7 @@ impl AcpSession {
             acp_to_local: Arc::new(StdMutex::new(HashMap::new())),
             active_local_session: Arc::new(StdMutex::new(None)),
             session_approval_modes: Arc::new(StdMutex::new(HashMap::new())),
-            active_approval_mode: Arc::new(StdMutex::new("auto_edit".to_string())),
+            active_approval_mode: Arc::new(StdMutex::new("default".to_string())),
         }
     }
 
@@ -174,7 +174,7 @@ impl AcpSession {
         if let Ok(guard) = self.active_approval_mode.lock() {
             return guard.clone();
         }
-        "auto_edit".to_string()
+        "default".to_string()
     }
 
     pub fn register_prompt_request(&self, request_id: u64, local_session_id: &str) {
@@ -440,6 +440,76 @@ pub fn sanitize_acp_delta(delta: &str) -> (String, Option<String>) {
     (clean_str, detected_mode)
 }
 
+/// Robustly extracts readable text content from any ACP JSON payload:
+/// strings, objects with text/content/delta/output/message, or arrays of ContentBlocks.
+pub fn extract_acp_text(val: &Value) -> String {
+    match val {
+        Value::String(s) => s.clone(),
+        Value::Array(arr) => {
+            let mut pieces = Vec::new();
+            for item in arr {
+                let piece = extract_acp_text(item);
+                if !piece.is_empty() {
+                    pieces.push(piece);
+                }
+            }
+            pieces.join("")
+        }
+        Value::Object(obj) => {
+            // Check direct "text" property
+            if let Some(text_val) = obj.get("text") {
+                let extracted = extract_acp_text(text_val);
+                if !extracted.is_empty() {
+                    return extracted;
+                }
+            }
+            // Check "delta" property (e.g. streaming delta)
+            if let Some(delta_val) = obj.get("delta") {
+                let extracted = extract_acp_text(delta_val);
+                if !extracted.is_empty() {
+                    return extracted;
+                }
+            }
+            // Check "content" property (content block, string, or array of content blocks)
+            if let Some(content_val) = obj.get("content") {
+                let extracted = extract_acp_text(content_val);
+                if !extracted.is_empty() {
+                    return extracted;
+                }
+            }
+            // Check "output" property
+            if let Some(output_val) = obj.get("output") {
+                let extracted = extract_acp_text(output_val);
+                if !extracted.is_empty() {
+                    return extracted;
+                }
+            }
+            // Check "message" property
+            if let Some(msg_val) = obj.get("message") {
+                let extracted = extract_acp_text(msg_val);
+                if !extracted.is_empty() {
+                    return extracted;
+                }
+            }
+            // Check plan "entries" property
+            if let Some(entries) = obj.get("entries").and_then(|e| e.as_array()) {
+                let mut pieces = Vec::new();
+                for entry in entries {
+                    let piece = extract_acp_text(entry);
+                    if !piece.is_empty() {
+                        pieces.push(format!("- {}\n", piece));
+                    }
+                }
+                if !pieces.is_empty() {
+                    return pieces.join("");
+                }
+            }
+            String::new()
+        }
+        _ => String::new(),
+    }
+}
+
 pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<AcpSession>, active_session_id: &str) {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -475,13 +545,9 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     }
                 }
 
-                let delta = val.pointer("/result/content/text")
-                    .or_else(|| val.pointer("/result/content"))
-                    .or_else(|| val.pointer("/result/text"))
-                    .or_else(|| val.pointer("/result/output"))
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let delta = val.get("result")
+                    .map(extract_acp_text)
+                    .unwrap_or_default();
 
                 let (clean_delta, mode_opt) = sanitize_acp_delta(&delta);
                 if let Some(mode) = mode_opt {
@@ -522,68 +588,75 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                         .or_else(|| acp_session.get_active_local_session())
                         .unwrap_or_else(|| active_session_id.to_string());
 
-                    // Check standard ACP format (update.content.text or update.delta) as well as flat fields
-                    let mut delta = val.pointer("/params/update/content/text")
-                        .or_else(|| val.pointer("/params/update/text"))
-                        .or_else(|| val.pointer("/params/update/delta"))
-                        .or_else(|| val.pointer("/params/update/content"))
-                        .or_else(|| val.pointer("/params/delta"))
-                        .or_else(|| val.pointer("/params/content"))
-                        .or_else(|| val.pointer("/params/text"))
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                    let update_type = val.pointer("/params/update/sessionUpdate").and_then(|s| s.as_str());
+                    let mut delta = String::new();
 
-                    // If delta is empty, check if this is an ACP tool execution update (in YOLO / AutoEdit mode)
-                    if delta.is_empty() {
-                        let update_type = val.pointer("/params/update/sessionUpdate").and_then(|s| s.as_str());
-                        match update_type {
-                            Some("tool_call") => {
-                                let title = val.pointer("/params/update/title")
-                                    .or_else(|| val.pointer("/params/update/toolCallId"))
+                    // Check if this update represents tool execution progress
+                    match update_type {
+                        Some("tool_call") => {
+                            let title = val.pointer("/params/update/title")
+                                .or_else(|| val.pointer("/params/update/toolCallId"))
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("tool");
+                            let status = val.pointer("/params/update/status").and_then(|s| s.as_str()).unwrap_or("in_progress");
+                            if status == "in_progress" || status == "pending" {
+                                delta = format!("\n\n> ⚙️ **Running tool:** `{}`...\n", title);
+                            }
+                        }
+                        Some("tool_call_update") => {
+                            let title = val.pointer("/params/update/title")
+                                .or_else(|| val.pointer("/params/update/toolCallId"))
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("tool");
+                            let status = val.pointer("/params/update/status").and_then(|s| s.as_str()).unwrap_or("completed");
+                            if status == "completed" {
+                                delta = format!("> ✅ **Completed:** `{}`\n\n", title);
+                            } else if status == "failed" {
+                                let err_msg = val.pointer("/params/update/content/0/content/text")
+                                    .or_else(|| val.pointer("/params/update/content/text"))
                                     .and_then(|t| t.as_str())
-                                    .unwrap_or("tool");
-                                let status = val.pointer("/params/update/status").and_then(|s| s.as_str()).unwrap_or("in_progress");
-                                if status == "in_progress" || status == "pending" {
-                                    delta = format!("\n\n> ⚙️ **Running tool:** `{}`...\n", title);
+                                    .unwrap_or("");
+                                if !err_msg.is_empty() {
+                                    delta = format!("> ❌ **Tool failed:** `{}`: {}\n\n", title, err_msg);
+                                } else {
+                                    delta = format!("> ❌ **Tool failed:** `{}`\n\n", title);
                                 }
                             }
-                            Some("tool_call_update") => {
-                                let title = val.pointer("/params/update/title")
-                                    .or_else(|| val.pointer("/params/update/toolCallId"))
-                                    .and_then(|t| t.as_str())
-                                    .unwrap_or("tool");
-                                let status = val.pointer("/params/update/status").and_then(|s| s.as_str()).unwrap_or("completed");
-                                if status == "completed" {
-                                    delta = format!("> ✅ **Completed:** `{}`\n\n", title);
-                                } else if status == "failed" {
-                                    let err_msg = val.pointer("/params/update/content/0/content/text")
-                                        .or_else(|| val.pointer("/params/update/content/text"))
-                                        .and_then(|t| t.as_str())
-                                        .unwrap_or("");
-                                    if !err_msg.is_empty() {
-                                        delta = format!("> ❌ **Tool failed:** `{}`: {}\n\n", title, err_msg);
-                                    } else {
-                                        delta = format!("> ❌ **Tool failed:** `{}`\n\n", title);
-                                    }
-                                }
+                        }
+                        Some("current_mode_update") => {
+                            if let Some(mode_id) = val.pointer("/params/update/currentModeId").and_then(|m| m.as_str()) {
+                                let _ = app_handle.emit("acp-mode-update", serde_json::json!({
+                                    "sessionId": matched_session_id,
+                                    "mode": mode_id
+                                }));
                             }
-                            Some("current_mode_update") => {
-                                if let Some(mode_id) = val.pointer("/params/update/currentModeId").and_then(|m| m.as_str()) {
-                                    let _ = app_handle.emit("acp-mode-update", serde_json::json!({
-                                        "sessionId": matched_session_id,
-                                        "mode": mode_id
-                                    }));
-                                }
-                            }
-                            _ => {}
+                        }
+                        _ => {
+                            // Extract text content from update or params
+                            delta = val.pointer("/params/update")
+                                .map(extract_acp_text)
+                                .filter(|s| !s.is_empty())
+                                .or_else(|| val.pointer("/params").map(extract_acp_text))
+                                .unwrap_or_default();
                         }
                     }
 
-                    let is_done = val.pointer("/params/done")
-                        .or_else(|| val.pointer("/params/update/done"))
-                        .and_then(|d| d.as_bool())
-                        .unwrap_or(false);
+                    // Tool execution updates must NEVER mark the turn as done.
+                    let is_tool_update = matches!(
+                        update_type,
+                        Some("tool_call") | Some("tool_call_update")
+                    );
+
+                    let is_done = if is_tool_update {
+                        false
+                    } else {
+                        val.pointer("/params/update/sessionUpdate")
+                            .and_then(|s| s.as_str())
+                            .map(|u| u == "turn_complete" || u == "prompt_complete")
+                            .unwrap_or(false)
+                            || val.pointer("/params/stopReason").is_some()
+                            || val.pointer("/params/update/stopReason").is_some()
+                    };
 
                     let (clean_delta, mode_opt) = sanitize_acp_delta(&delta);
                     if let Some(mode) = mode_opt {
@@ -787,13 +860,9 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                 .or_else(|| acp_session.get_active_local_session())
                 .unwrap_or_else(|| active_session_id.to_string());
 
-            let delta = val.pointer("/result/content/text")
-                .or_else(|| val.pointer("/result/content"))
-                .or_else(|| val.pointer("/result/text"))
-                .or_else(|| val.pointer("/result/output"))
-                .and_then(|t| t.as_str())
-                .unwrap_or("")
-                .to_string();
+            let delta = val.get("result")
+                .map(extract_acp_text)
+                .unwrap_or_default();
 
             let (clean_delta, mode_opt) = sanitize_acp_delta(&delta);
             if let Some(mode) = mode_opt {
@@ -988,7 +1057,7 @@ mod tests {
     #[test]
     fn test_session_mode_tracking() {
         let session = AcpSession::new();
-        assert_eq!(session.get_session_mode("default-session"), "auto_edit");
+        assert_eq!(session.get_session_mode("default-session"), "default");
 
         session.set_session_mode("s-1", "yolo");
         session.set_session_mode("s-2", "plan");
@@ -998,5 +1067,54 @@ mod tests {
 
         session.clear_sessions();
         assert_eq!(session.get_session_mode("s-1"), "plan"); // falls back to active_approval_mode
+    }
+
+    #[test]
+    fn test_extract_acp_text() {
+        // 1. Direct string
+        assert_eq!(extract_acp_text(&serde_json::json!("Simple text")), "Simple text");
+
+        // 2. Object with type: "text" and text
+        let block = serde_json::json!({
+            "type": "text",
+            "text": "User story overview"
+        });
+        assert_eq!(extract_acp_text(&block), "User story overview");
+
+        // 3. Array of content blocks
+        let blocks = serde_json::json!([
+            { "type": "text", "text": "Part 1: Background. " },
+            { "type": "text", "text": "Part 2: Acceptance criteria." }
+        ]);
+        assert_eq!(extract_acp_text(&blocks), "Part 1: Background. Part 2: Acceptance criteria.");
+
+        // 4. Session prompt result with content array
+        let prompt_result = serde_json::json!({
+            "stopReason": "end_turn",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "## Summary of User Story\nHere are the details."
+                }
+            ]
+        });
+        assert_eq!(extract_acp_text(&prompt_result), "## Summary of User Story\nHere are the details.");
+
+        // 5. Update notification with agent_message_chunk
+        let update_chunk = serde_json::json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": {
+                "type": "text",
+                "text": "streaming token "
+            }
+        });
+        assert_eq!(extract_acp_text(&update_chunk), "streaming token ");
+
+        // 6. Tool update without text content
+        let tool_update = serde_json::json!({
+            "sessionUpdate": "tool_call_update",
+            "status": "completed"
+        });
+        assert_eq!(extract_acp_text(&tool_update), "");
     }
 }

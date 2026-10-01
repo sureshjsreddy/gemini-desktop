@@ -29,7 +29,7 @@
     workspace = null,
     workspaceFiles = [],
     isStreaming = false,
-    approvalMode = "auto_edit",
+    approvalMode = "default",
     onSendPrompt,
     onCancelPrompt,
   }: {
@@ -118,7 +118,7 @@
   });
 
   let effectiveApprovalMode = $derived(
-    workspace?.approval_mode || approvalMode || "auto_edit"
+    workspace?.approval_mode || approvalMode || "default"
   );
   let currentModeConfig = $derived(getModeConfig(effectiveApprovalMode));
   let ModeIcon = $derived(currentModeConfig.icon);

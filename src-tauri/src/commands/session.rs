@@ -132,11 +132,11 @@ pub async fn send_prompt(
     let ws_path = ws.as_ref().map(|w| PathBuf::from(&w.path));
 
     // Resolve effective approval mode and composite process key
-    let effective_mode = match approval_mode.as_deref().unwrap_or("auto_edit") {
+    let effective_mode = match approval_mode.as_deref().unwrap_or("default") {
         "yolo" => "yolo",
-        "default" => "default",
+        "auto_edit" => "auto_edit",
         "plan" => "plan",
-        _ => "auto_edit",
+        _ => "default",
     };
     state.acp_session.set_session_mode(&session_id, effective_mode);
     let process_key = format!("{}::{}", workspace_id, effective_mode);

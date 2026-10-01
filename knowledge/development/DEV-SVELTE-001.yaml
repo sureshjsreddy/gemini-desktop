@@ -3,7 +3,7 @@ type: development_standard
 title: Svelte 5 Runes State Management & Tailwind CSS v4 Component Standard
 domain: development
 status: approved
-version: 1.3.0
+version: 1.4.0
 authority:
   level: official
   confidence: high
@@ -21,6 +21,7 @@ do:
   - "Use `$props()` for component inputs and `$state()` for local reactive state."
   - "Provide proper accessible labels (`<label for='...'>` + `<input id='...'>`) for all form controls."
   - "Use Tailwind CSS v4 theme colors (`slate-*`, `sky-*`, `emerald-*`, `rose-*`) for consistent dark-mode UI design."
+  - "Support eye-comfort themes (`soft-dark` default with low-glare charcoal slate and `warm-dusk` sepia night reading) and modern developer typography (Plus Jakarta Sans, Inter, JetBrains Mono, Cascadia Code) with optional comfortable text scaling (`data-font-size=\"comfortable\"`)."
   - "Sanitize and render markdown safely with code syntax highlighting using `marked` and `highlight.js`."
   - "Ensure streaming token updates append smoothly without triggering layout jank or memory leaks."
   - "Use `dialogManager` (`dialog.alert`, `dialog.confirm`, `dialog.prompt`) with `DialogModal.svelte` for asynchronous, theme-adaptive user confirmations instead of browser dialogs."

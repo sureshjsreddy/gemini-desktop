@@ -90,7 +90,7 @@ impl DbManager {
                 path TEXT NOT NULL,
                 model TEXT NOT NULL DEFAULT 'gemini-2.5-pro',
                 system_prompt TEXT,
-                approval_mode TEXT DEFAULT 'auto_edit',
+                approval_mode TEXT DEFAULT 'default',
                 created_at TEXT NOT NULL
             );
 
@@ -141,7 +141,7 @@ impl DbManager {
         )?;
 
         // Migration: add approval_mode to workspaces table if upgrading from older schema
-        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN approval_mode TEXT DEFAULT 'auto_edit'", []);
+        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN approval_mode TEXT DEFAULT 'default'", []);
 
         Ok(())
     }
@@ -158,7 +158,7 @@ impl DbManager {
 
             for (id, name, path, model) in default_workspaces {
                 conn.execute(
-                    "INSERT INTO workspaces (id, name, path, model, approval_mode, created_at) VALUES (?1, ?2, ?3, ?4, 'auto_edit', ?5)",
+                    "INSERT INTO workspaces (id, name, path, model, approval_mode, created_at) VALUES (?1, ?2, ?3, ?4, 'default', ?5)",
                     params![id, name, path, model, now],
                 )?;
             }
@@ -234,7 +234,7 @@ impl DbManager {
                 ws.path,
                 ws.model,
                 ws.system_prompt,
-                ws.approval_mode.as_deref().unwrap_or("auto_edit"),
+                ws.approval_mode.as_deref().unwrap_or("default"),
                 ws.created_at
             ],
         ).map_err(|e| e.to_string())?;
@@ -472,17 +472,19 @@ mod tests {
             path: "C:\\Alpha".to_string(),
             model: "gemini-2.5-pro".to_string(),
             system_prompt: Some("Custom system instruction".to_string()),
-            approval_mode: Some("auto_edit".to_string()),
+            approval_mode: None,
             created_at: now.clone(),
         };
         db.save_workspace(ws).expect("failed to save workspace");
 
         let workspaces = db.list_workspaces().unwrap();
         assert_eq!(workspaces.len(), 2); // Personal + Alpha Project
+        let personal = workspaces.iter().find(|w| w.id == "ws-personal").unwrap();
+        assert_eq!(personal.approval_mode.as_deref(), Some("default"));
         let found = workspaces.into_iter().find(|w| w.id == "ws-custom").unwrap();
         assert_eq!(found.name, "Alpha Project");
         assert_eq!(found.model, "gemini-2.5-pro");
-        assert_eq!(found.approval_mode.as_deref(), Some("auto_edit"));
+        assert_eq!(found.approval_mode.as_deref(), Some("default"));
 
         // 2. Update workspace (ON CONFLICT)
         let updated_ws = Workspace {

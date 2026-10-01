@@ -40,7 +40,7 @@
     onToggleSidebar,
     showTerminalDrawer = $bindable(false),
     showSolutionExplorer = $bindable(true),
-    approvalMode = "auto_edit",
+    approvalMode = "default",
     onSendPrompt,
     onCancelPrompt,
     onToolResponse,
@@ -73,7 +73,7 @@
   let copiedMessageId = $state<string | null>(null);
 
   let effectiveApprovalMode = $derived(
-    workspace?.approval_mode || approvalMode || "auto_edit"
+    workspace?.approval_mode || approvalMode || "default"
   );
   let currentModeConfig = $derived(getModeConfig(effectiveApprovalMode));
   let ModeIcon = $derived(currentModeConfig.icon);

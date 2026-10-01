@@ -53,6 +53,7 @@ pub fn run() {
             search_workspace_files,
             cancel_workspace_search,
             open_workspace_file,
+            check_directory_exists,
             get_mcp_config,
             save_mcp_config,
             run_terminal_command,

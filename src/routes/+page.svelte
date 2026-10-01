@@ -42,7 +42,7 @@
   let workspaceFiles = $state<WorkspaceFileEntry[]>([]);
   let updateInfo = $state<UpdateInfo | null>(null);
   let isCheckingUpdate = $state(false);
-  let approvalMode: ApprovalMode = $derived(activeWorkspace?.approval_mode || "auto_edit");
+  let approvalMode: ApprovalMode = $derived(activeWorkspace?.approval_mode || "default");
 
   let streamStates = $state<Record<string, SessionStreamState>>({});
 
@@ -144,7 +144,15 @@
         }
 
         if (cleanDelta) {
-          streamStates[session_id].streamingText += cleanDelta;
+          const current = streamStates[session_id].streamingText;
+          if (!current) {
+            streamStates[session_id].streamingText = cleanDelta;
+          } else if (cleanDelta.startsWith(current)) {
+            // Full replacement if cleanDelta is the full accumulated response
+            streamStates[session_id].streamingText = cleanDelta;
+          } else if (!current.endsWith(cleanDelta)) {
+            streamStates[session_id].streamingText += cleanDelta;
+          }
         }
         streamStates[session_id].isStreaming = !is_done;
 

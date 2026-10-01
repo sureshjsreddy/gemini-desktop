@@ -2,6 +2,7 @@
   import type { Workspace, ApprovalMode } from "$lib/types";
   import { X, Plus, Trash2, Check } from "lucide-svelte";
   import { dialogManager } from "$lib/dialog.svelte";
+  import { invoke } from "@tauri-apps/api/core";
 
   const APPROVAL_MODES: {
     value: ApprovalMode;
@@ -9,19 +10,19 @@
     description: string;
   }[] = [
     {
+      value: "default",
+      label: "Ask Permission (Default)",
+      description: "Requires explicit user confirmation before every file edit and command execution",
+    },
+    {
       value: "auto_edit",
-      label: "Auto-Edit (Recommended)",
+      label: "Auto-Edit",
       description: "Auto-approves safe file edits; interactive prompt for shell and terminal commands",
     },
     {
       value: "yolo",
       label: "YOLO (Full Autonomous)",
       description: "Auto-approves all tool actions including terminal execution and edits without prompts",
-    },
-    {
-      value: "default",
-      label: "Ask Permission",
-      description: "Requires explicit user confirmation before every file edit and command execution",
     },
     {
       value: "plan",
@@ -93,7 +94,7 @@
     name: "",
     path: "C:\\",
     model: "auto",
-    approval_mode: "auto_edit",
+    approval_mode: "default",
     system_prompt: "",
     created_at: new Date().toISOString(),
   });
@@ -101,6 +102,13 @@
   let selectedDropdownValue = $state("auto");
   let customModelInput = $state("");
   let lastSyncedWorkspaceId = $state<string | null>(null);
+  let isSaving = $state(false);
+
+  let canSave = $derived(
+    editingWorkspace.name.trim().length > 0 &&
+    editingWorkspace.path.trim().length > 0 &&
+    !isSaving
+  );
 
   let wasOpen = false;
   $effect(() => {
@@ -110,7 +118,7 @@
       if (target) {
         editingWorkspace = {
           ...target,
-          approval_mode: target.approval_mode || "auto_edit",
+          approval_mode: target.approval_mode || "default",
         };
       } else {
         startNew();
@@ -165,14 +173,14 @@
       name: "New Workspace",
       path: "C:\\",
       model: "auto",
-      approval_mode: "auto_edit",
+      approval_mode: "default",
       system_prompt: "",
       created_at: new Date().toISOString(),
     };
   }
 
-  function handleSave() {
-    if (!editingWorkspace.name.trim()) return;
+  async function handleSave() {
+    if (!canSave) return;
     if (selectedDropdownValue === "manual_custom") {
       const manualModel = customModelInput.trim();
       if (!manualModel) {
@@ -183,8 +191,25 @@
     } else {
       editingWorkspace.model = selectedDropdownValue;
     }
-    editingWorkspace.approval_mode = editingWorkspace.approval_mode || "auto_edit";
-    onSaveWorkspace({ ...editingWorkspace });
+
+    isSaving = true;
+    try {
+      const exists = await invoke<boolean>("check_directory_exists", { path: editingWorkspace.path.trim() });
+      if (!exists) {
+        await dialogManager.alert(
+          `The directory "${editingWorkspace.path.trim()}" does not exist on disk.\n\nPlease enter a valid physical folder path.`,
+          "Folder Not Found"
+        );
+        return;
+      }
+
+      editingWorkspace.approval_mode = editingWorkspace.approval_mode || "default";
+      onSaveWorkspace({ ...editingWorkspace });
+    } catch (err) {
+      await dialogManager.alert(`Failed to verify directory: ${err}`, "Validation Error");
+    } finally {
+      isSaving = false;
+    }
   }
 </script>
 
@@ -228,13 +253,13 @@
 
           {#each workspaces as ws}
             <button
-              onclick={() => (editingWorkspace = { ...ws, approval_mode: ws.approval_mode || "auto_edit" })}
+              onclick={() => (editingWorkspace = { ...ws, approval_mode: ws.approval_mode || "default" })}
               class="w-full text-left px-3 py-2 rounded-lg text-xs transition-colors {editingWorkspace.id === ws.id ? 'bg-surface-elevated text-accent-theme font-medium border border-subtle' : 'text-secondary-theme hover:bg-surface-elevated/50'}"
             >
               <div class="truncate">{ws.name}</div>
               <div class="text-[10px] text-muted-theme font-mono truncate flex items-center justify-between">
                 <span class="truncate mr-1">{ws.model}</span>
-                <span class="capitalize text-[9px] shrink-0 opacity-75">{ws.approval_mode || "auto_edit"}</span>
+                <span class="capitalize text-[9px] shrink-0 opacity-75">{ws.approval_mode || "default"}</span>
               </div>
             </button>
           {/each}
@@ -318,7 +343,7 @@
               {/each}
             </select>
             <span class="text-[11px] text-muted-theme mt-1.5 block">
-              {APPROVAL_MODES.find((m) => m.value === (editingWorkspace.approval_mode || "auto_edit"))?.description}
+              {APPROVAL_MODES.find((m) => m.value === (editingWorkspace.approval_mode || "default"))?.description}
             </span>
           </div>
 
@@ -353,10 +378,12 @@
 
             <button
               onclick={handleSave}
-              class="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-accent-theme hover:bg-accent-hover text-white font-semibold transition-colors shadow-xs"
+              disabled={!canSave}
+              class="flex items-center gap-1.5 px-4 py-1.5 rounded-lg font-semibold transition-colors shadow-xs {canSave ? 'bg-accent-theme hover:bg-accent-hover text-white cursor-pointer' : 'bg-slate-600 text-slate-400 cursor-not-allowed opacity-60'}"
+              title={!canSave ? 'Enter a workspace name and folder path to enable saving' : ''}
             >
               <Check size={14} />
-              <span>Save Workspace</span>
+              <span>{isSaving ? 'Saving…' : 'Save Workspace'}</span>
             </button>
           </div>
         </div>

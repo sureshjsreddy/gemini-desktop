@@ -14,10 +14,20 @@ export interface ApprovalModeConfig {
 
 export const APPROVAL_MODES: ApprovalModeConfig[] = [
   {
+    id: "default",
+    label: "Ask Permission",
+    shortLabel: "Ask",
+    description: "Prompts for confirmation before modifying files or executing commands",
+    icon: Shield,
+    badgeClass: "bg-sky-500/15 hover:bg-sky-500/25 text-sky-600 dark:text-sky-400 border-sky-500/30",
+    iconClass: "text-sky-500",
+    tagClass: "bg-sky-500/15 text-sky-600 dark:text-sky-400 border border-sky-500/30",
+  },
+  {
     id: "auto_edit",
     label: "Auto-Edit",
     shortLabel: "Auto-Edit",
-    description: "Auto-approves file changes; asks before running terminal commands",
+    description: "Auto-approves safe file edits; interactive prompt for shell and terminal commands",
     icon: Zap,
     badgeClass: "bg-amber-500/15 hover:bg-amber-500/25 text-amber-600 dark:text-amber-400 border-amber-500/30",
     iconClass: "text-amber-500",
@@ -32,16 +42,6 @@ export const APPROVAL_MODES: ApprovalModeConfig[] = [
     badgeClass: "bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-600 dark:text-emerald-400 border-emerald-500/30",
     iconClass: "text-emerald-500",
     tagClass: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30",
-  },
-  {
-    id: "default",
-    label: "Ask Permission",
-    shortLabel: "Ask",
-    description: "Prompts for confirmation before modifying files or executing commands",
-    icon: Shield,
-    badgeClass: "bg-sky-500/15 hover:bg-sky-500/25 text-sky-600 dark:text-sky-400 border-sky-500/30",
-    iconClass: "text-sky-500",
-    tagClass: "bg-sky-500/15 text-sky-600 dark:text-sky-400 border border-sky-500/30",
   },
   {
     id: "plan",

@@ -259,6 +259,16 @@ fn walk_search_dir(
 }
 
 #[tauri::command]
+pub fn check_directory_exists(path: String) -> Result<bool, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Ok(false);
+    }
+    let p = PathBuf::from(trimmed);
+    Ok(p.exists() && p.is_dir())
+}
+
+#[tauri::command]
 pub fn open_workspace_file(path: String, with_app: Option<String>) -> Result<(), String> {
     let p = PathBuf::from(&path);
     if !p.exists() {
@@ -526,6 +536,36 @@ mod tests {
         // Verify ignored paths are NOT present
         assert!(!relative_paths.iter().any(|p| p.starts_with(".git")));
         assert!(!relative_paths.iter().any(|p| p.starts_with("node_modules")));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_check_directory_exists() {
+        let temp_dir = std::env::temp_dir().join(format!("gemini_test_check_dir_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let file_path = temp_dir.join("some_file.txt");
+        std::fs::write(&file_path, "hello").unwrap();
+
+        // Existing directory → true
+        let result = check_directory_exists(temp_dir.to_string_lossy().to_string()).unwrap();
+        assert!(result);
+
+        // Non-existent path → false
+        let result = check_directory_exists("C:/definitely/nonexistent/path".to_string()).unwrap();
+        assert!(!result);
+
+        // File (not a directory) → false
+        let result = check_directory_exists(file_path.to_string_lossy().to_string()).unwrap();
+        assert!(!result);
+
+        // Empty string → false
+        let result = check_directory_exists("".to_string()).unwrap();
+        assert!(!result);
+
+        // Whitespace-only → false
+        let result = check_directory_exists("   ".to_string()).unwrap();
+        assert!(!result);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
