@@ -138,6 +138,7 @@ pub async fn send_prompt(
         "plan" => "plan",
         _ => "auto_edit",
     };
+    state.acp_session.set_session_mode(&session_id, effective_mode);
     let process_key = format!("{}::{}", workspace_id, effective_mode);
 
     // 3. Ensure CLI process is spawned and ACP connected

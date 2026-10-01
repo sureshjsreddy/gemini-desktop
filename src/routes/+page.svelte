@@ -189,32 +189,43 @@
           return;
         }
 
-        // 2. Auto-Edit Mode: Auto-approve file edits, while requiring prompt for shell/terminal commands
+        // 2. Auto-Edit Mode: Auto-approve file edits and safe inspection tools (reads, searches)
         if (approvalMode === "auto_edit") {
           const kind = (payload.kind || "").toLowerCase();
           const name = (payload.tool_name || "").toLowerCase();
-          const isEdit =
+          const isSafe =
             kind === "edit" ||
+            kind === "read" ||
+            kind === "search" ||
+            kind === "think" ||
+            kind === "fetch" ||
             name.includes("write") ||
             name.includes("edit") ||
             name.includes("replace") ||
             name.includes("patch") ||
-            name.includes("create");
+            name.includes("create") ||
+            name.includes("read") ||
+            name.includes("search") ||
+            name.includes("grep") ||
+            name.includes("view") ||
+            name.includes("list") ||
+            name.includes("glob") ||
+            name.includes("find");
 
-          if (isEdit) {
+          if (isSafe) {
             try {
               await invoke("respond_tool_permission", {
                 requestId: payload.request_id,
                 allowed: true,
               });
             } catch (e) {
-              console.error("Failed to auto-approve edit tool in auto_edit mode:", e);
+              console.error("Failed to auto-approve safe tool in auto_edit mode:", e);
             }
             return;
           }
         }
 
-        // 3. Ask Mode (default) or non-edit tool in Auto-Edit mode: Present interactive confirmation UI for the target session
+        // 3. Ask Mode (default) or unsafe terminal command in Auto-Edit mode: Present interactive confirmation UI for the target session
         if (sessionId) {
           if (!streamStates[sessionId]) {
             streamStates[sessionId] = {
@@ -584,6 +595,12 @@
     await handleSaveWorkspace(updatedWs);
   }
 
+  async function handleEscalateYolo() {
+    if (!activeWorkspace) return;
+    const updatedWs = { ...activeWorkspace, approval_mode: "yolo" as ApprovalMode };
+    await handleSaveWorkspace(updatedWs);
+  }
+
   async function handleDeleteWorkspace(id: string) {
     await invoke("delete_workspace", { id });
     workspaces = await invoke<Workspace[]>("get_workspaces");
@@ -662,6 +679,7 @@
       onExport={handleExport}
       onOpenMcpModal={() => modalManager.open("mcp")}
       onCycleMode={handleCycleMode}
+      onEscalateYolo={handleEscalateYolo}
     />
   </div>
 

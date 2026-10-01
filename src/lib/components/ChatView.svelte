@@ -47,6 +47,7 @@
     onExport,
     onOpenMcpModal,
     onCycleMode,
+    onEscalateYolo,
   }: {
     workspace: Workspace | null;
     session: Session | null;
@@ -66,6 +67,7 @@
     onExport: (format: string) => void;
     onOpenMcpModal?: () => void;
     onCycleMode?: () => void;
+    onEscalateYolo?: () => void;
   } = $props();
 
   let composerRef: ReturnType<typeof ChatPromptComposer> | null = $state(null);
@@ -436,7 +438,7 @@
 
   <!-- Tool Permission Confirmation Banner (ACP) -->
   {#if toolPermission}
-    <ToolPermissionCard {toolPermission} onRespond={onToolResponse} />
+    <ToolPermissionCard {toolPermission} onRespond={onToolResponse} {onEscalateYolo} />
   {/if}
 
   <!-- Prompt Input Bar -->

@@ -72,6 +72,8 @@ pub struct AcpSession {
     local_to_acp: Arc<StdMutex<HashMap<String, String>>>,
     acp_to_local: Arc<StdMutex<HashMap<String, String>>>,
     active_local_session: Arc<StdMutex<Option<String>>>,
+    session_approval_modes: Arc<StdMutex<HashMap<String, String>>>,
+    active_approval_mode: Arc<StdMutex<String>>,
 }
 
 impl AcpSession {
@@ -85,6 +87,8 @@ impl AcpSession {
             local_to_acp: Arc::new(StdMutex::new(HashMap::new())),
             acp_to_local: Arc::new(StdMutex::new(HashMap::new())),
             active_local_session: Arc::new(StdMutex::new(None)),
+            session_approval_modes: Arc::new(StdMutex::new(HashMap::new())),
+            active_approval_mode: Arc::new(StdMutex::new("auto_edit".to_string())),
         }
     }
 
@@ -147,6 +151,30 @@ impl AcpSession {
         if let Ok(mut guard) = self.active_local_session.lock() {
             *guard = None;
         }
+        if let Ok(mut modes) = self.session_approval_modes.lock() {
+            modes.clear();
+        }
+    }
+
+    pub fn set_session_mode(&self, session_id: &str, mode: &str) {
+        if let Ok(mut guard) = self.session_approval_modes.lock() {
+            guard.insert(session_id.to_string(), mode.to_string());
+        }
+        if let Ok(mut guard) = self.active_approval_mode.lock() {
+            *guard = mode.to_string();
+        }
+    }
+
+    pub fn get_session_mode(&self, session_id: &str) -> String {
+        if let Ok(guard) = self.session_approval_modes.lock() {
+            if let Some(m) = guard.get(session_id) {
+                return m.clone();
+            }
+        }
+        if let Ok(guard) = self.active_approval_mode.lock() {
+            return guard.clone();
+        }
+        "auto_edit".to_string()
     }
 
     pub fn register_prompt_request(&self, request_id: u64, local_session_id: &str) {
@@ -244,6 +272,27 @@ impl AcpSession {
         }
     }
 
+    pub async fn send_error_response(&self, id: u64, code: i64, message: &str) -> Result<(), String> {
+        let resp = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": code,
+                "message": message
+            }
+        });
+        let json_line = serde_json::to_string(&resp).map_err(|e| e.to_string())? + "\n";
+
+        let mut guard = self.stdin_writer.lock().await;
+        if let Some(writer) = guard.as_mut() {
+            writer.write_all(json_line.as_bytes()).map_err(|e| e.to_string())?;
+            writer.flush().map_err(|e| e.to_string())?;
+            Ok(())
+        } else {
+            Err("CLI stdin is not connected".to_string())
+        }
+    }
+
     pub async fn send_notification(&self, method: &str, params: Value) -> Result<(), String> {
         let notif = serde_json::json!({
             "jsonrpc": "2.0",
@@ -287,37 +336,52 @@ impl AcpSession {
     }
 
     pub async fn respond_permission(&self, request_id: u64, option_id: Option<String>, allowed: bool) -> Result<(), String> {
-        let chosen_option_id = if let Some(oid) = option_id {
-            oid
-        } else {
-            let stored_options = self.pending_permissions.lock().ok().and_then(|mut m| m.remove(&request_id));
-            if let Some(opts) = stored_options {
-                if allowed {
-                    opts.iter()
-                        .find(|o| o.kind.contains("allow"))
-                        .map(|o| o.option_id.clone())
-                        .unwrap_or_else(|| "proceed_once".to_string())
-                } else {
-                    opts.iter()
-                        .find(|o| o.kind.contains("reject") || o.kind.contains("deny"))
-                        .map(|o| o.option_id.clone())
-                        .unwrap_or_else(|| "cancel".to_string())
-                }
-            } else if allowed {
-                "proceed_once".to_string()
-            } else {
-                "cancel".to_string()
+        let stored_options = self.pending_permissions.lock().ok().and_then(|mut m| m.remove(&request_id));
+        let result = build_permission_response_payload(allowed, option_id, stored_options);
+        self.send_response(request_id, result).await
+    }
+}
+
+/// Builds the official ACP permission response JSON matching Gemini CLI's Zod schema.
+/// When allowed: outcome is "selected" with a valid ToolConfirmationOutcome ("proceed_once", "proceed_always", etc.)
+/// When rejected: outcome is "cancelled" (discriminated union) without an optionId.
+pub fn build_permission_response_payload(
+    allowed: bool,
+    option_id: Option<String>,
+    stored_options: Option<Vec<PermissionOption>>,
+) -> Value {
+    if !allowed {
+        serde_json::json!({
+            "outcome": {
+                "outcome": "cancelled"
             }
+        })
+    } else {
+        let chosen_id = if let Some(oid) = option_id {
+            match oid.as_str() {
+                "proceed_once" | "proceed_always" | "proceed_always_and_save"
+                | "proceed_always_server" | "proceed_always_tool" => oid,
+                _ => "proceed_once".to_string(),
+            }
+        } else if let Some(opts) = stored_options {
+            opts.iter()
+                .find(|o| o.kind.contains("allow"))
+                .map(|o| match o.option_id.as_str() {
+                    "proceed_once" | "proceed_always" | "proceed_always_and_save"
+                    | "proceed_always_server" | "proceed_always_tool" => o.option_id.clone(),
+                    _ => "proceed_once".to_string(),
+                })
+                .unwrap_or_else(|| "proceed_once".to_string())
+        } else {
+            "proceed_once".to_string()
         };
 
-        let result = serde_json::json!({
+        serde_json::json!({
             "outcome": {
                 "outcome": "selected",
-                "optionId": chosen_option_id
+                "optionId": chosen_id
             }
-        });
-
-        self.send_response(request_id, result).await
+        })
     }
 }
 
@@ -493,7 +557,23 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                                 if status == "completed" {
                                     delta = format!("> ✅ **Completed:** `{}`\n\n", title);
                                 } else if status == "failed" {
-                                    delta = format!("> ❌ **Tool failed:** `{}`\n\n", title);
+                                    let err_msg = val.pointer("/params/update/content/0/content/text")
+                                        .or_else(|| val.pointer("/params/update/content/text"))
+                                        .and_then(|t| t.as_str())
+                                        .unwrap_or("");
+                                    if !err_msg.is_empty() {
+                                        delta = format!("> ❌ **Tool failed:** `{}`: {}\n\n", title, err_msg);
+                                    } else {
+                                        delta = format!("> ❌ **Tool failed:** `{}`\n\n", title);
+                                    }
+                                }
+                            }
+                            Some("current_mode_update") => {
+                                if let Some(mode_id) = val.pointer("/params/update/currentModeId").and_then(|m| m.as_str()) {
+                                    let _ = app_handle.emit("acp-mode-update", serde_json::json!({
+                                        "sessionId": matched_session_id,
+                                        "mode": mode_id
+                                    }));
                                 }
                             }
                             _ => {}
@@ -524,7 +604,8 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     });
                 }
                 // Interactive tool confirmation request
-                "permission/request" | "session/permission_request" | "session/request_permission" | "tool/confirm" => {
+                "permission/request" | "session/permission_request" | "session/request_permission"
+                | "session/requestPermission" | "request_permission" | "requestPermission" | "tool/confirm" => {
                     let req_id = val.get("id").and_then(|id| id.as_u64()).unwrap_or(0);
                     let session_id = val.pointer("/params/sessionId")
                         .and_then(|s| s.as_str())
@@ -593,17 +674,74 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
 
                     if options.is_empty() {
                         options.push(PermissionOption {
-                            option_id: "allow-once".to_string(),
+                            option_id: "proceed_once".to_string(),
                             name: "Allow once".to_string(),
                             kind: "allow_once".to_string(),
                         });
                         options.push(PermissionOption {
-                            option_id: "reject-once".to_string(),
+                            option_id: "cancel".to_string(),
                             name: "Reject".to_string(),
                             kind: "reject_once".to_string(),
                         });
                     }
 
+                    // Check active approval mode for this session
+                    let current_mode = acp_session.get_session_mode(&session_id);
+
+                    // 1. YOLO Mode: Backend immediately auto-approves over stdin (0ms latency, immune to WebView2 background throttling)
+                    if current_mode == "yolo" {
+                        let response_payload = build_permission_response_payload(true, None, Some(options.clone()));
+                        let acp_clone = acp_session.clone();
+                        tokio::spawn(async move {
+                            let _ = acp_clone.send_response(req_id, response_payload).await;
+                        });
+                        let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
+                            session_id: session_id.clone(),
+                            delta: format!("\n\n> 🚀 **[YOLO Auto-approved]** `{}`\n", tool_name),
+                            is_done: false,
+                        });
+                        return;
+                    }
+
+                    // 2. Auto-Edit Mode: Auto-approve safe workspace inspection (reads, searches, listings) and file edits
+                    if current_mode == "auto_edit" {
+                        let is_safe = kind.as_deref() == Some("edit")
+                            || kind.as_deref() == Some("read")
+                            || kind.as_deref() == Some("search")
+                            || kind.as_deref() == Some("think")
+                            || kind.as_deref() == Some("fetch")
+                            || {
+                                let name_lower = tool_name.to_lowercase();
+                                name_lower.contains("read")
+                                    || name_lower.contains("write")
+                                    || name_lower.contains("edit")
+                                    || name_lower.contains("replace")
+                                    || name_lower.contains("patch")
+                                    || name_lower.contains("create")
+                                    || name_lower.contains("list")
+                                    || name_lower.contains("search")
+                                    || name_lower.contains("grep")
+                                    || name_lower.contains("view")
+                                    || name_lower.contains("glob")
+                                    || name_lower.contains("find")
+                            };
+
+                        if is_safe {
+                            let response_payload = build_permission_response_payload(true, None, Some(options.clone()));
+                            let acp_clone = acp_session.clone();
+                            tokio::spawn(async move {
+                                let _ = acp_clone.send_response(req_id, response_payload).await;
+                            });
+                            let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
+                                session_id: session_id.clone(),
+                                delta: format!("\n\n> ⚡ **[Auto-approved]** `{}`\n", tool_name),
+                                is_done: false,
+                            });
+                            return;
+                        }
+                    }
+
+                    // 3. Ask Mode (default) or unsafe terminal execution: Present interactive confirmation UI
                     acp_session.store_permission_options(req_id, options.clone());
 
                     let _ = app_handle.emit("acp-tool-permission", ToolPermissionPayload {
@@ -621,6 +759,15 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     });
                 }
                 _ => {
+                    // If this is an unhandled request (contains an id), respond with JSON-RPC Method Not Found
+                    // to prevent Gemini CLI from hanging indefinitely waiting for a response
+                    if let Some(id) = val.get("id").and_then(|i| i.as_u64()) {
+                        let acp_clone = acp_session.clone();
+                        let method_name = method.to_string();
+                        tokio::spawn(async move {
+                            let _ = acp_clone.send_error_response(id, -32601, &format!("Method '{}' not supported", method_name)).await;
+                        });
+                    }
                     // Forward generic notification
                     let _ = app_handle.emit("acp-notification", val);
                 }
@@ -774,5 +921,82 @@ mod tests {
         assert_eq!(opts.len(), 2);
         assert_eq!(opts[0].option_id, "proceed_once");
         assert_eq!(opts[1].option_id, "cancel");
+    }
+
+    #[test]
+    fn test_build_permission_response_payload() {
+        // 1. Rejected outcome must follow discriminated union: { "outcome": { "outcome": "cancelled" } }
+        let rejected = build_permission_response_payload(false, None, None);
+        assert_eq!(
+            rejected,
+            serde_json::json!({
+                "outcome": {
+                    "outcome": "cancelled"
+                }
+            })
+        );
+
+        // 2. Allowed with explicit valid optionId
+        let allowed_always = build_permission_response_payload(true, Some("proceed_always".to_string()), None);
+        assert_eq!(
+            allowed_always,
+            serde_json::json!({
+                "outcome": {
+                    "outcome": "selected",
+                    "optionId": "proceed_always"
+                }
+            })
+        );
+
+        // 3. Allowed with invalid/legacy optionId falls back to "proceed_once"
+        let allowed_invalid = build_permission_response_payload(true, Some("allow-once".to_string()), None);
+        assert_eq!(
+            allowed_invalid,
+            serde_json::json!({
+                "outcome": {
+                    "outcome": "selected",
+                    "optionId": "proceed_once"
+                }
+            })
+        );
+
+        // 4. Allowed without optionId resolves from stored options
+        let stored = vec![
+            PermissionOption {
+                option_id: "proceed_always".to_string(),
+                name: "Always allow".to_string(),
+                kind: "allow_always".to_string(),
+            },
+            PermissionOption {
+                option_id: "cancel".to_string(),
+                name: "Cancel".to_string(),
+                kind: "reject_once".to_string(),
+            },
+        ];
+        let allowed_from_stored = build_permission_response_payload(true, None, Some(stored));
+        assert_eq!(
+            allowed_from_stored,
+            serde_json::json!({
+                "outcome": {
+                    "outcome": "selected",
+                    "optionId": "proceed_always"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_session_mode_tracking() {
+        let session = AcpSession::new();
+        assert_eq!(session.get_session_mode("default-session"), "auto_edit");
+
+        session.set_session_mode("s-1", "yolo");
+        session.set_session_mode("s-2", "plan");
+
+        assert_eq!(session.get_session_mode("s-1"), "yolo");
+        assert_eq!(session.get_session_mode("s-2"), "plan");
+
+        session.clear_sessions();
+        assert_eq!(session.get_session_mode("s-1"), "plan"); // falls back to active_approval_mode
     }
 }
