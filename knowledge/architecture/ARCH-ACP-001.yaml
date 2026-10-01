@@ -3,7 +3,7 @@ type: architecture_standard
 title: Agent Client Protocol (ACP) JSON-RPC Streaming & Tool Intercepts
 domain: architecture
 status: approved
-version: 1.3.0
+version: 1.5.0
 authority:
   level: official
   confidence: high
@@ -21,6 +21,8 @@ do:
   - "Spawn the Gemini CLI with piped stdin, stdout, and stderr (`Stdio::piped()`)."
   - "Run dedicated background reader threads for stdout and stderr to handle streaming tokens and telemetry asynchronously."
   - "Emit `acp-chunk` events for delta content updates and final completion (`is_done: true`)."
+  - "Extract text robustly via `extract_acp_text` across strings, single content blocks, and arrays of ContentBlocks (`[{\"type\": \"text\", \"text\": \"...\"}]`) in both `session/update` notifications and `session/prompt` completion results, preventing dropped assistant summaries following tool execution."
+  - "Ensure `tool_call` and `tool_call_update` session updates NEVER mark `is_done: true`, preserving active stream state so subsequent model synthesis and summaries are rendered to the UI without premature turn termination."
   - "Parse `sessionUpdate: \"tool_call\"` and `\"tool_call_update\"` in `session/update` notifications to stream real-time tool execution progress (`⚙️ Running tool...`, `✅ Completed`, `❌ Tool failed`) to the chat surface, preventing silent UI stalls during autonomous tool execution."
   - "Inspect `stopReason` (`max_turn_requests`, `max_tokens`, `cancelled`) on prompt completion responses and synthesize fallback notices when the model returns without text deltas, preventing dropped assistant responses."
   - "Listen to `acp-stderr` in the frontend to surface live diagnostics when the underlying model experiences API demand spikes (503/429) and exponential backoff retries."
@@ -38,6 +40,8 @@ dont:
   - "Do not block the Tauri main thread or Tokio runtime waiting for ACP line responses."
   - "Do not auto-approve dangerous system tool calls without user permission when running in Ask (`default`) mode."
   - "Do not send invalid model parameters in ACP `session/new` or `session/prompt` payloads."
+  - "Do not assume `result.content` or `update.content` is a single string or flat object; always traverse arrays of ContentBlocks."
+  - "Do not terminate turn streaming upon tool completion (`tool_call_update`); wait for prompt RPC response completion."
 
 reason:
   "ACP allows full streaming, interactive agent pairing, cancelation, and safety guards over standard process streams without requiring network socket listeners."
