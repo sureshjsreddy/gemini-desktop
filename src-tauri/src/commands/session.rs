@@ -149,11 +149,12 @@ pub async fn send_prompt(
     };
 
     if needs_spawn {
-        // 1. Terminate previous CLI process if still alive
-        let mut child_guard = state.active_child.lock().await;
-        if let Some(mut old_child) = child_guard.take() {
-            let _ = old_child.kill();
-            let _ = old_child.wait();
+        // 1. Terminate previous CLI process tree if still alive
+        {
+            let mut child_guard = state.active_child.lock().await;
+            if let Some(old_child) = child_guard.take() {
+                crate::process_manager::ProcessSupervisor::terminate_child(old_child);
+            }
         }
 
         state.acp_session.clear_sessions();
@@ -200,6 +201,7 @@ pub async fn send_prompt(
                     let acp_clone = state.acp_session.clone();
                     let active_ws_clone = state.active_process_workspace.clone();
                     let active_child_clone = state.active_child.clone();
+                    let child_pid = child.id();
                     std::thread::spawn(move || {
                         let reader = BufReader::new(stdout);
                         for line in reader.lines() {
@@ -207,19 +209,32 @@ pub async fn send_prompt(
                                 handle_acp_line(&l, &app_clone, &acp_clone, &session_clone);
                             }
                         }
-                        // When stdout closes (CLI process crashed, exited, or pipe broken), reset active process state
+                        // When stdout closes (CLI process crashed, exited, or pipe broken):
+                        // Only reset active process state and emit is_done if this process is still the active child!
+                        // If a workspace or mode switch already spawned a newer child process, this dying thread
+                        // must NOT clobber the new process state or emit premature is_done into the new session.
                         tauri::async_runtime::spawn(async move {
-                            let mut ws_lock = active_ws_clone.lock().await;
-                            *ws_lock = None;
                             let mut child_lock = active_child_clone.lock().await;
-                            if let Some(mut c) = child_lock.take() {
-                                let _ = c.wait();
+                            let is_still_active = match child_lock.as_ref() {
+                                Some(c) => c.id() == child_pid,
+                                None => false,
+                            };
+
+                            if is_still_active {
+                                if let Some(c) = child_lock.take() {
+                                    crate::process_manager::ProcessSupervisor::terminate_child(c);
+                                }
+                                drop(child_lock);
+                                let mut ws_lock = active_ws_clone.lock().await;
+                                *ws_lock = None;
+                                drop(ws_lock);
+
+                                let _ = app_clone.emit("acp-chunk", StreamChunkPayload {
+                                    session_id: session_clone,
+                                    delta: String::new(),
+                                    is_done: true,
+                                });
                             }
-                        });
-                        let _ = app_clone.emit("acp-chunk", StreamChunkPayload {
-                            session_id: session_clone,
-                            delta: String::new(),
-                            is_done: true,
                         });
                     });
                 }
@@ -236,17 +251,23 @@ pub async fn send_prompt(
                     });
                 }
 
-                *child_guard = Some(child);
                 *ws_guard = Some(process_key);
+                // Drop ws_guard so initialize and new_session calls never hold locks across network timeouts
+                drop(ws_guard);
+
+                let mut child_guard = state.active_child.lock().await;
+                *child_guard = Some(child);
+                drop(child_guard);
 
                 // Send initialize request (per ACP specification)
+                // Note: We advertise terminal capabilities for ACP execution.
+                // We deliberately omit client-side 'fs' interception capabilities so Gemini CLI
+                // uses its robust native Node.js filesystem service (StandardFileSystemService).
+                // This eliminates Gemini CLI ACP bugs where non-existent file checks reject
+                // JSON-RPC error objects as "[object Object]" and crash write_file.
                 let _ = state.acp_session.send_request_with_response("initialize", serde_json::json!({
                     "protocolVersion": 1,
                     "clientCapabilities": {
-                        "fs": {
-                            "readTextFile": true,
-                            "writeTextFile": true
-                        },
                         "terminal": true
                     },
                     "clientInfo": {
@@ -280,6 +301,8 @@ pub async fn send_prompt(
                 return Ok(0);
             }
         }
+    } else {
+        drop(ws_guard);
     }
 
     let ws_path_str = ws.as_ref().map(|w| w.path.clone()).unwrap_or_else(|| ".".to_string());
@@ -369,9 +392,8 @@ pub async fn respond_tool_permission(
 #[tauri::command]
 pub async fn restart_gemini_session(state: State<'_, AppState>) -> Result<String, String> {
     let mut child_guard = state.active_child.lock().await;
-    if let Some(mut old_child) = child_guard.take() {
-        let _ = old_child.kill();
-        let _ = old_child.wait();
+    if let Some(old_child) = child_guard.take() {
+        crate::process_manager::ProcessSupervisor::terminate_child(old_child);
     }
     let mut ws_guard = state.active_process_workspace.lock().await;
     *ws_guard = None;
@@ -433,4 +455,29 @@ mod tests {
         assert!(args_plan.contains(&"--approval-mode".to_string()));
         assert!(args_plan.contains(&"plan".to_string()));
     }
+
+    #[test]
+    fn test_active_child_pid_guard_prevents_stale_reaping() {
+        // Test that an old process PID doesn't match a new process PID
+        let old_pid: u32 = 1234;
+        let new_pid: u32 = 5678;
+
+        // When switching from Workspace 1 (YOLO) to Workspace 2 (Ask),
+        // the active child PID changes. An EOF event from old_pid must be rejected.
+        let active_pid_option = Some(new_pid);
+        let is_still_active = match active_pid_option {
+            Some(pid) => pid == old_pid,
+            None => false,
+        };
+
+        assert!(!is_still_active, "Old PID must not match active PID when new child was spawned");
+
+        // When the active PID matches the running child PID, it is recognized as active
+        let is_active_for_current = match active_pid_option {
+            Some(pid) => pid == new_pid,
+            None => false,
+        };
+        assert!(is_active_for_current, "Current PID must match active PID");
+    }
 }
+

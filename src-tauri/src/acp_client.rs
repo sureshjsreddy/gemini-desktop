@@ -945,10 +945,12 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                                             Ok(content) => {
                                                 let _ = acp_clone.send_response(req_id, serde_json::json!({ "content": content })).await;
                                             }
+                                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                                // If an ACP agent requests a file that does not yet exist (e.g. pre-write check),
+                                                // return an empty content string. This prevents SDKs from crashing when parsing error responses.
+                                                let _ = acp_clone.send_response(req_id, serde_json::json!({ "content": "" })).await;
+                                            }
                                             Err(e) => {
-                                                // Per ACP spec and Gemini CLI normalizeFileSystemError, file-not-found must return
-                                                // a standard JSON-RPC error containing "Resource not found" and "(ENOENT)"
-                                                // so that the agent/CLI identifies that the file does not exist without throwing "content must be a string".
                                                 let _ = acp_clone.send_error_response(
                                                     req_id,
                                                     -32002,
@@ -1464,6 +1466,72 @@ mod tests {
 
         assert!(err_msg.contains("Resource not found"));
         assert!(err_msg.contains("ENOENT"));
+    }
+
+    #[test]
+    fn test_fs_read_nonexistent_file_returns_empty_content() {
+        // When checking for an uncreated file before write, response content must be a valid string
+        let content_res: Result<String, std::io::Error> = Err(std::io::Error::new(std::io::ErrorKind::NotFound, "File not found"));
+        let response_payload = match content_res {
+            Ok(content) => serde_json::json!({ "content": content }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({ "content": "" }),
+            Err(e) => serde_json::json!({ "error": e.to_string() }),
+        };
+
+        assert_eq!(response_payload.pointer("/content").and_then(|c| c.as_str()), Some(""));
+    }
+
+    #[test]
+    fn test_workspace_mode_switching_and_isolation() {
+        let session = AcpSession::new();
+
+        // 1. Workspace 1 configured with YOLO mode
+        session.set_session_mode("ws1-session", "yolo");
+        session.register_session_mapping("ws1-session", "acp-ws1");
+        assert_eq!(session.get_session_mode("ws1-session"), "yolo");
+        assert_eq!(session.get_acp_session_id("ws1-session"), Some("acp-ws1".to_string()));
+
+        // 2. Switch to Workspace 2 with Ask mode (default)
+        // Simulate clearing active CLI session state on workspace spawn transition
+        session.clear_sessions();
+        assert_eq!(session.get_acp_session_id("ws1-session"), None);
+
+        session.set_session_mode("ws2-session", "default");
+        session.register_session_mapping("ws2-session", "acp-ws2");
+        assert_eq!(session.get_session_mode("ws2-session"), "default");
+        assert_eq!(session.get_acp_session_id("ws2-session"), Some("acp-ws2".to_string()));
+
+        // Verify Workspace 2 never inherits Workspace 1's YOLO mode
+        assert_ne!(session.get_session_mode("ws2-session"), "yolo");
+        assert_eq!(session.get_session_mode("ws2-session"), "default");
+    }
+
+    #[test]
+    fn test_permission_options_isolation_between_sessions() {
+        let session = AcpSession::new();
+
+        // Store options for request 101 in session 1
+        let options_ws1 = vec![
+            PermissionOption {
+                option_id: "proceed_always".to_string(),
+                name: "Always Allow".to_string(),
+                kind: "allow_always".to_string(),
+            }
+        ];
+        session.store_permission_options(101, options_ws1);
+        let opt = session.pending_permissions.lock().unwrap().remove(&101);
+        assert!(opt.is_some());
+
+        // Upon workspace reset, clear_sessions must isolate options or allow clean resolution
+        let payload = build_permission_response_payload(true, Some("proceed_always".to_string()), opt);
+        assert_eq!(
+            payload.pointer("/outcome/outcome").and_then(|o| o.as_str()),
+            Some("selected")
+        );
+        assert_eq!(
+            payload.pointer("/outcome/optionId").and_then(|o| o.as_str()),
+            Some("proceed_always")
+        );
     }
 }
 

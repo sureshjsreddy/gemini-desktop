@@ -272,6 +272,27 @@ impl ProcessSupervisor {
 
         Ok(child)
     }
+
+    /// Gracefully kills a child process and its child processes on Windows or Unix without hanging the runtime.
+    pub fn terminate_child(mut child: Child) {
+        let pid = child.id();
+        #[cfg(target_os = "windows")]
+        {
+            // On Windows, child processes spawned via cmd.exe /c need taskkill /F /T to terminate the entire process tree.
+            let _ = Command::new("taskkill")
+                .arg("/F")
+                .arg("/T")
+                .arg("/PID")
+                .arg(pid.to_string())
+                .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                .output();
+        }
+        let _ = child.kill();
+        // Wait in a separate thread so it never blocks the async Tokio runtime if IO pipes are draining
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
 }
 
 #[cfg(test)]

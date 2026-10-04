@@ -3,7 +3,7 @@ type: architecture_standard
 title: Agent Client Protocol (ACP) JSON-RPC Streaming & Tool Intercepts
 domain: architecture
 status: approved
-version: 1.9.0
+version: 1.10.0
 authority:
   level: official
   confidence: high
@@ -23,11 +23,10 @@ do:
   - "Emit `acp-chunk` events for delta content updates and final completion (`is_done: true`)."
   - "Execute asynchronous response tasks from reader threads using `tauri::async_runtime::spawn` instead of `tokio::spawn` to prevent 'no reactor running' panics on threads outside the Tokio runtime."
   - "Handle Agent-to-Client ACP JSON-RPC requests (`fs/read_text_file`, `fs/write_text_file`, `terminal/*`) and acknowledge any request with an `id` to prevent Gemini CLI async execution loop deadlocks or `-32601` failures."
-  - "Format `fs/read_text_file` responses strictly: on success, return `{ content: string }`; on missing/unreadable files, return a standard JSON-RPC error containing `Resource not found` and `(ENOENT)` so Gemini CLI detects new files without crashing on 'content must be a string'."
+  - "Format `fs/read_text_file` responses strictly: on success or non-existent file checks (NotFound), return `{ content: string }` with an empty string for missing files so Gemini CLI and SDK callers never throw 'content must be a string' or fail `write_file`."
   - "Resolve relative file paths in `fs/read_text_file` and `fs/write_text_file` against the active workspace directory via `acp_session.get_workspace_dir()`."
-  - "Implement ACP terminal capabilities (`terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/release`, `terminal/kill`) and advertise `terminal: true` in `clientCapabilities` to support seamless subordinate command execution."
-  - "Declare explicit `clientCapabilities` (`fs: { readTextFile: true, writeTextFile: true }, terminal: true`) during ACP `initialize` handshake."
-  - "Monitor stdout reader thread EOF on process termination: reap child process, clear active workspace/child state, and emit `is_done: true` to prevent UI freezing."
+  - "Implement ACP terminal capabilities (`terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/release`, `terminal/kill`) and advertise `terminal: true` in `clientCapabilities` during the ACP `initialize` handshake, while omitting client-side `fs` capabilities to let Gemini CLI leverage its native Node.js filesystem service directly without protocol impedance."
+  - "Monitor stdout reader thread EOF on process termination: guard state cleanup and `is_done: true` emission with active child PID matching to prevent dying process threads from terminating newer sessions during workspace switches."
   - "Extract text robustly via `extract_acp_text` across strings, single content blocks, and arrays of ContentBlocks (`[{\"type\": \"text\", \"text\": \"...\"}]`) in both `session/update` notifications and `session/prompt` completion results, preventing dropped assistant summaries following tool execution."
   - "Ensure `tool_call` and `tool_call_update` session updates NEVER mark `is_done: true`, preserving active stream state so subsequent model synthesis and summaries are rendered to the UI without premature turn termination."
   - "Parse `sessionUpdate: \"tool_call\"` and `\"tool_call_update\"` in `session/update` notifications to stream real-time tool execution progress (`⚙️ Running tool...`, `✅ Completed`, `❌ Tool failed`) to the chat surface, preventing silent UI stalls during autonomous tool execution."

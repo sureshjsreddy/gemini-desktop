@@ -184,8 +184,15 @@
         const payload = event.payload;
         const sessionId = payload.session_id;
 
+        // Resolve effective approval mode specifically for the target session's workspace
+        const targetSession = sessions.find((s) => s.id === sessionId);
+        const targetWorkspace = targetSession
+          ? workspaces.find((w) => w.id === targetSession.workspace_id)
+          : activeWorkspace;
+        const targetApprovalMode: ApprovalMode = targetWorkspace?.approval_mode || approvalMode || "default";
+
         // 1. YOLO Mode: Auto-approve all tools immediately without showing permission prompt
-        if (approvalMode === "yolo") {
+        if (targetApprovalMode === "yolo") {
           try {
             await invoke("respond_tool_permission", {
               requestId: payload.request_id,
@@ -198,7 +205,7 @@
         }
 
         // 2. Auto-Edit Mode: Auto-approve file edits and safe inspection tools (reads, searches)
-        if (approvalMode === "auto_edit") {
+        if (targetApprovalMode === "auto_edit") {
           const kind = (payload.kind || "").toLowerCase();
           const name = (payload.tool_name || "").toLowerCase();
           const isSafe =

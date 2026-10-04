@@ -28,6 +28,7 @@ do:
   - "Extract `--approval-mode` flags from extra CLI arguments and inject corresponding `GEMINI_APPROVAL_MODE` environment variable when spawning the Gemini CLI process."
   - "Reap child processes (`c.wait()`), clear active workspace locks, and emit completion chunk (`is_done: true`) upon stdout EOF or process exit to eliminate hanging UI state."
   - "Provide safe session reset (`restart_gemini_session`) so updated environment variables take effect on the next prompt invocation."
+  - "When terminating active child processes on workspace or approval mode switches (`needs_spawn`), execute `ProcessSupervisor::terminate_child` using Windows `taskkill /F /T /PID` to cleanly abort the entire process tree (`cmd.exe` + Node.js CLI runtime + child tools) and detach reaping (`child.wait()`) on a background thread to prevent deadlocking Tokio async executors."
 
 dont:
   - "Do not leave child processes running in the background when the user closes the main desktop window."
