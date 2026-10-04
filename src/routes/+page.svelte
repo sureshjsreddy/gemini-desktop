@@ -458,7 +458,7 @@
 
     // Add user message to UI immediately
     const userMsg: Message = {
-      id: "temp-" + Date.now(),
+      id: "temp-" + (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2))),
       session_id: targetSessionId,
       role: "user",
       content: prompt,
@@ -504,7 +504,7 @@
     }
 
     const assistantMsg: Message = {
-      id: "msg-" + Date.now(),
+      id: "msg-" + (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2))),
       session_id: sessionId,
       role: "assistant",
       content: finalText,

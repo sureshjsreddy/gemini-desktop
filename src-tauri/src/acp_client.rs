@@ -358,19 +358,31 @@ pub fn build_permission_response_payload(
         })
     } else {
         let chosen_id = if let Some(oid) = option_id {
-            match oid.as_str() {
-                "proceed_once" | "proceed_always" | "proceed_always_and_save"
-                | "proceed_always_server" | "proceed_always_tool" => oid,
-                _ => "proceed_once".to_string(),
+            if let Some(ref opts) = stored_options {
+                if opts.iter().any(|o| o.option_id == oid) {
+                    oid
+                } else {
+                    match oid.as_str() {
+                        "proceed_once" | "proceed_always" | "proceed_always_and_save"
+                        | "proceed_always_server" | "proceed_always_tool" => oid,
+                        _ => opts.iter()
+                            .find(|o| o.kind.contains("allow") || o.option_id.contains("allow") || o.option_id.contains("proceed"))
+                            .map(|o| o.option_id.clone())
+                            .unwrap_or_else(|| "proceed_once".to_string()),
+                    }
+                }
+            } else {
+                match oid.as_str() {
+                    "proceed_once" | "proceed_always" | "proceed_always_and_save"
+                    | "proceed_always_server" | "proceed_always_tool" => oid,
+                    _ => "proceed_once".to_string(),
+                }
             }
         } else if let Some(opts) = stored_options {
             opts.iter()
-                .find(|o| o.kind.contains("allow"))
-                .map(|o| match o.option_id.as_str() {
-                    "proceed_once" | "proceed_always" | "proceed_always_and_save"
-                    | "proceed_always_server" | "proceed_always_tool" => o.option_id.clone(),
-                    _ => "proceed_once".to_string(),
-                })
+                .find(|o| o.kind.contains("allow") || o.option_id.contains("allow") || o.option_id.contains("proceed"))
+                .map(|o| o.option_id.clone())
+                .or_else(|| opts.first().map(|o| o.option_id.clone()))
                 .unwrap_or_else(|| "proceed_once".to_string())
         } else {
             "proceed_once".to_string()
@@ -832,13 +844,44 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     });
                 }
                 _ => {
-                    // If this is an unhandled request (contains an id), respond with JSON-RPC Method Not Found
-                    // to prevent Gemini CLI from hanging indefinitely waiting for a response
-                    if let Some(id) = val.get("id").and_then(|i| i.as_u64()) {
+                    // Check if this incoming message is an Agent-to-Client Request (has an 'id')
+                    // In YOLO mode or when ACP agents delegate filesystem/terminal actions,
+                    // the agent expects a JSON-RPC response. If left unanswered or returned with an error, the CLI deadlocks or crashes!
+                    if let Some(req_id) = val.get("id").and_then(|i| i.as_u64()) {
                         let acp_clone = acp_session.clone();
-                        let method_name = method.to_string();
+                        let val_clone = val.clone();
+                        let method_str = method.to_string();
                         tokio::spawn(async move {
-                            let _ = acp_clone.send_error_response(id, -32601, &format!("Method '{}' not supported", method_name)).await;
+                            match method_str.as_str() {
+                                "fs/read_text_file" => {
+                                    let path_opt = val_clone.pointer("/params/path").and_then(|p| p.as_str());
+                                    let res = if let Some(p) = path_opt {
+                                        match std::fs::read_to_string(p) {
+                                            Ok(content) => serde_json::json!({ "content": content }),
+                                            Err(e) => serde_json::json!({ "error": e.to_string() }),
+                                        }
+                                    } else {
+                                        serde_json::json!({ "content": "" })
+                                    };
+                                    let _ = acp_clone.send_response(req_id, res).await;
+                                }
+                                "fs/write_text_file" => {
+                                    let path_opt = val_clone.pointer("/params/path").and_then(|p| p.as_str());
+                                    let content_opt = val_clone.pointer("/params/content").and_then(|c| c.as_str()).unwrap_or("");
+                                    if let Some(p) = path_opt {
+                                        let path_buf = std::path::PathBuf::from(p);
+                                        if let Some(parent) = path_buf.parent() {
+                                            let _ = std::fs::create_dir_all(parent);
+                                        }
+                                        let _ = std::fs::write(&path_buf, content_opt);
+                                    }
+                                    let _ = acp_clone.send_response(req_id, serde_json::json!({})).await;
+                                }
+                                _ => {
+                                    // Acknowledge immediately with an empty result so Gemini CLI async loop never hangs
+                                    let _ = acp_clone.send_response(req_id, serde_json::json!({})).await;
+                                }
+                            }
                         });
                     }
                     // Forward generic notification

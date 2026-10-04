@@ -198,6 +198,9 @@ pub async fn send_prompt(
                     let app_clone = app.clone();
                     let session_clone = session_id.clone();
                     let acp_clone = state.acp_session.clone();
+                    let active_ws_clone = state.active_process_workspace.clone();
+                    let active_child_clone = state.active_child.clone();
+                    let rt_handle = tokio::runtime::Handle::current();
                     std::thread::spawn(move || {
                         let reader = BufReader::new(stdout);
                         for line in reader.lines() {
@@ -205,6 +208,20 @@ pub async fn send_prompt(
                                 handle_acp_line(&l, &app_clone, &acp_clone, &session_clone);
                             }
                         }
+                        // When stdout closes (CLI process crashed, exited, or pipe broken), reset active process state
+                        rt_handle.spawn(async move {
+                            let mut ws_lock = active_ws_clone.lock().await;
+                            *ws_lock = None;
+                            let mut child_lock = active_child_clone.lock().await;
+                            if let Some(mut c) = child_lock.take() {
+                                let _ = c.wait();
+                            }
+                        });
+                        let _ = app_clone.emit("acp-chunk", StreamChunkPayload {
+                            session_id: session_clone,
+                            delta: String::new(),
+                            is_done: true,
+                        });
                     });
                 }
 
@@ -226,6 +243,12 @@ pub async fn send_prompt(
                 // Send initialize request (per ACP specification)
                 let _ = state.acp_session.send_request_with_response("initialize", serde_json::json!({
                     "protocolVersion": 1,
+                    "clientCapabilities": {
+                        "fs": {
+                            "readTextFile": true,
+                            "writeTextFile": true
+                        }
+                    },
                     "clientInfo": {
                         "name": "GeminiDesktop",
                         "version": env!("CARGO_PKG_VERSION")

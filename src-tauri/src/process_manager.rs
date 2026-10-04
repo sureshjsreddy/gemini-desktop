@@ -237,6 +237,11 @@ impl ProcessSupervisor {
             cmd.env("GEMINI_MODEL", model_arg);
         }
 
+        // Ensure GEMINI_APPROVAL_MODE environment variable matches CLI --approval-mode argument if provided
+        if let Some(mode_arg) = extra_args.windows(2).find(|w| w[0] == "--approval-mode").map(|w| &w[1]) {
+            cmd.env("GEMINI_APPROVAL_MODE", mode_arg);
+        }
+
         // Enforce non-interactive pagers and CI environment to prevent blocking child tools in YOLO mode
         cmd.env("CI", "true");
         cmd.env("PAGER", "cat");
