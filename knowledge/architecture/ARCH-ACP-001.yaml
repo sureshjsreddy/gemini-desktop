@@ -3,7 +3,7 @@ type: architecture_standard
 title: Agent Client Protocol (ACP) JSON-RPC Streaming & Tool Intercepts
 domain: architecture
 status: approved
-version: 1.7.0
+version: 1.8.0
 authority:
   level: official
   confidence: high
@@ -33,10 +33,13 @@ do:
   - "Intercept tool permission requests: in YOLO mode and Auto-Edit mode (for safe inspection and edits), auto-approve immediately in the Rust backend over stdin (0ms latency, immune to Windows WebView2 background throttling); in Ask mode or for unsafe commands, emit `acp-tool-permission` to the frontend for interactive user confirmation."
   - "Format ACP permission responses strictly: when allowed, return `{ outcome: { outcome: 'selected', optionId } }` preserving agent-provided option IDs matching `allow`/`proceed`; when rejected, return `{ outcome: { outcome: 'cancelled' } }` without `optionId` to comply with Gemini CLI Zod schema validation."
   - "Track process lifecycle via a composite key (`format!(\"{}::{}\", workspace_id, effective_mode)`) so switching policy approval modes (`default`, `auto_edit`, `yolo`, `plan`) cleanly re-spawns the supervised CLI process."
-  - "Pass `--approval-mode <mode>` (or `--yolo`) and `--skip-trust` CLI flags upon spawning to govern tool policy execution."
+  - "Pass `--approval-mode <mode>` and `--skip-trust` CLI flags upon spawning to govern tool policy execution."
   - "Explicitly synchronize per-session policy approval mode via `session/set_mode` JSON-RPC requests (`modeId: \"default\" | \"autoEdit\" | \"yolo\" | \"plan\"`) to ensure ACP runtime matches workspace settings."
   - "Sanitize ACP agent chunks via `sanitize_acp_delta` to strip internal `[MODE_UPDATE] <mode>` control tags and emit `acp-mode-update` events, preventing runtime mode telemetry from polluting chat text."
   - "Explicitly configure active session models via `session/set_model` JSON-RPC requests prior to prompt dispatch."
+  - "Ensure intermediate tool execution results (`result.output`, `result.content`) in fallback JSON-RPC responses never terminate streaming (`is_done: false`); only terminate stream on prompt RPC response or explicit non-null `stopReason`."
+  - "Remove exhausted ACP session mappings on `max_turn_requests` or `max_tokens` via `acp_session.remove_session(&session_id)`, enabling prompt retries or 'continue' messages to seamlessly initialize a fresh ACP session context."
+  - "Validate `stopReason` as a non-null, non-empty string before setting `is_done: true`, preventing spurious turn terminations caused by null JSON pointers."
   - "Isolate background streams per session ID (`streamStates[session_id]`) in the frontend and resolve ACP session mappings in the backend so users can switch between chats while the CLI is processing in the background without cross-talk or UI blocking."
   - "Provide a fallback mock/offline mode if the Gemini CLI executable is absent on PATH."
 
@@ -44,8 +47,10 @@ dont:
   - "Do not block the Tauri main thread or Tokio runtime waiting for ACP line responses."
   - "Do not auto-approve dangerous system tool calls without user permission when running in Ask (`default`) mode."
   - "Do not send invalid model parameters in ACP `session/new` or `session/prompt` payloads."
+  - "Do not send `session/set_model` with `modelId: \"auto\"`."
   - "Do not assume `result.content` or `update.content` is a single string or flat object; always traverse arrays of ContentBlocks."
-  - "Do not terminate turn streaming upon tool completion (`tool_call_update`); wait for prompt RPC response completion."
+  - "Do not terminate turn streaming upon tool completion (`tool_call_update`) or intermediate tool output results; wait for prompt RPC response completion."
+  - "Do not treat null `stopReason` pointers as valid turn completion indicators."
 
 reason:
   "ACP allows full streaming, interactive agent pairing, cancelation, and safety guards over standard process streams without requiring network socket listeners."

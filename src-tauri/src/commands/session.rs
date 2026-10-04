@@ -307,7 +307,7 @@ pub async fn send_prompt(
 
     // Explicitly set the active model on this session via ACP session/set_model
     let trimmed_model = model.trim();
-    if !trimmed_model.is_empty() {
+    if !trimmed_model.is_empty() && trimmed_model != "auto" {
         let set_model_params = serde_json::json!({
             "sessionId": acp_session_id,
             "modelId": trimmed_model
@@ -340,8 +340,7 @@ pub async fn send_prompt(
         ]
     });
 
-    let req_id = state.acp_session.send_request("session/prompt", prompt_params).await?;
-    state.acp_session.register_prompt_request(req_id, &session_id);
+    let req_id = state.acp_session.send_prompt_request(&session_id, prompt_params).await?;
     Ok(req_id)
 }
 

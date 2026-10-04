@@ -212,6 +212,29 @@ impl AcpSession {
         }
     }
 
+    pub async fn send_prompt_request(&self, local_session_id: &str, params: Value) -> Result<u64, String> {
+        let id = self.next_id();
+        self.register_prompt_request(id, local_session_id);
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id,
+            method: "session/prompt".to_string(),
+            params,
+        };
+
+        let json_line = serde_json::to_string(&req).map_err(|e| e.to_string())? + "\n";
+
+        let mut guard = self.stdin_writer.lock().await;
+        if let Some(writer) = guard.as_mut() {
+            writer.write_all(json_line.as_bytes()).map_err(|e| e.to_string())?;
+            writer.flush().map_err(|e| e.to_string())?;
+            Ok(id)
+        } else {
+            self.take_prompt_session(id);
+            Err("CLI stdin is not connected".to_string())
+        }
+    }
+
     pub async fn send_request_with_response(&self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id();
         let (tx, rx) = oneshot::channel();
@@ -570,10 +593,14 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                 }
 
                 let stop_reason = val.pointer("/result/stopReason").and_then(|s| s.as_str());
+                if matches!(stop_reason, Some("max_turn_requests") | Some("max_tokens")) {
+                    acp_session.remove_session(&target_session);
+                }
+
                 let final_delta = if clean_delta.is_empty() {
                     match stop_reason {
-                        Some("max_turn_requests") => "\n\n*(Session reached maximum turn limit)*".to_string(),
-                        Some("max_tokens") => "\n\n*(Context token window limit reached)*".to_string(),
+                        Some("max_turn_requests") => "\n\n*(Session reached maximum turn limit. Next prompt will start a fresh session context.)*".to_string(),
+                        Some("max_tokens") => "\n\n*(Context token window limit reached. Next prompt will start a fresh session context.)*".to_string(),
                         Some("cancelled") => "\n\n*(Prompt cancelled)*".to_string(),
                         _ => String::new(),
                     }
@@ -666,9 +693,24 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                             .and_then(|s| s.as_str())
                             .map(|u| u == "turn_complete" || u == "prompt_complete")
                             .unwrap_or(false)
-                            || val.pointer("/params/stopReason").is_some()
-                            || val.pointer("/params/update/stopReason").is_some()
+                            || val.pointer("/params/stopReason")
+                                .and_then(|s| s.as_str())
+                                .map(|s| !s.is_empty() && s != "null")
+                                .unwrap_or(false)
+                            || val.pointer("/params/update/stopReason")
+                                .and_then(|s| s.as_str())
+                                .map(|s| !s.is_empty() && s != "null")
+                                .unwrap_or(false)
                     };
+
+                    if is_done {
+                        let stop_reason = val.pointer("/params/stopReason")
+                            .or_else(|| val.pointer("/params/update/stopReason"))
+                            .and_then(|s| s.as_str());
+                        if matches!(stop_reason, Some("max_turn_requests") | Some("max_tokens")) {
+                            acp_session.remove_session(&matched_session_id);
+                        }
+                    }
 
                     let (clean_delta, mode_opt) = sanitize_acp_delta(&delta);
                     if let Some(mode) = mode_opt {
@@ -878,8 +920,12 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                                     let _ = acp_clone.send_response(req_id, serde_json::json!({})).await;
                                 }
                                 _ => {
-                                    // Acknowledge immediately with an empty result so Gemini CLI async loop never hangs
-                                    let _ = acp_clone.send_response(req_id, serde_json::json!({})).await;
+                                    if method_str.starts_with("terminal/") {
+                                        let _ = acp_clone.send_error_response(req_id, -32601, "Terminal capability not supported by client").await;
+                                    } else {
+                                        // Acknowledge immediately with an empty result so Gemini CLI async loop never hangs
+                                        let _ = acp_clone.send_response(req_id, serde_json::json!({})).await;
+                                    }
                                 }
                             }
                         });
@@ -892,10 +938,10 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
         }
 
         // Check if response has a result containing text/content or explicit turn completion
-        if val.pointer("/result/content").is_some()
-            || val.pointer("/result/text").is_some()
-            || val.pointer("/result/output").is_some()
-            || val.pointer("/result/sessionId").is_some()
+        if val.pointer("/result/content").and_then(|v| if v.is_null() { None } else { Some(v) }).is_some()
+            || val.pointer("/result/text").and_then(|v| if v.is_null() { None } else { Some(v) }).is_some()
+            || val.pointer("/result/output").and_then(|v| if v.is_null() { None } else { Some(v) }).is_some()
+            || val.pointer("/result/sessionId").and_then(|v| if v.is_null() { None } else { Some(v) }).is_some()
         {
             let matched_session_id = val.pointer("/result/sessionId")
                 .and_then(|s| s.as_str())
@@ -915,10 +961,24 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                 }));
             }
 
+            // Intermediate tool execution results (like { result: { output: ... } }) must NEVER terminate the turn stream!
+            // Only terminate turn streaming if an explicit valid stopReason is present in the result.
+            let is_done = val.pointer("/result/stopReason")
+                .and_then(|s| s.as_str())
+                .map(|s| !s.is_empty() && s != "null")
+                .unwrap_or(false);
+
+            if is_done {
+                let stop_reason = val.pointer("/result/stopReason").and_then(|s| s.as_str());
+                if matches!(stop_reason, Some("max_turn_requests") | Some("max_tokens")) {
+                    acp_session.remove_session(&matched_session_id);
+                }
+            }
+
             let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
                 session_id: matched_session_id,
                 delta: clean_delta,
-                is_done: true,
+                is_done,
             });
             return;
         }
@@ -1003,6 +1063,11 @@ mod tests {
         assert_eq!(session.get_acp_session_id("local-123"), Some("acp-xyz".to_string()));
         assert_eq!(session.get_local_session_id("acp-xyz"), Some("local-123".to_string()));
 
+        session.remove_session("local-123");
+        assert_eq!(session.get_acp_session_id("local-123"), None);
+        assert_eq!(session.get_local_session_id("acp-xyz"), None);
+
+        session.register_session_mapping("local-123", "acp-xyz");
         session.register_prompt_request(100, "local-123");
         session.clear_sessions();
 
