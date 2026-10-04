@@ -3,7 +3,7 @@ type: architecture_standard
 title: Windows Job Objects Process Supervision & Cleanup Standard
 domain: architecture
 status: approved
-version: 1.2.0
+version: 1.3.0
 authority:
   level: official
   confidence: high
@@ -25,6 +25,8 @@ do:
   - "Inject non-interactive terminal environment flags (`CI=true`, `PAGER=cat`, `GIT_PAGER=cat`) into the Gemini CLI process to prevent subordinate tool executions (e.g. `git diff`, `git log`) from hanging on terminal pagers or interactive prompts."
   - "Parse workspace-level `.env` and `.env.local` files via `parse_dotenv_file` and automatically inject variables into spawned child processes (`spawn_gemini`, `run_terminal_command`)."
   - "Extract `--model` flags from extra CLI arguments and inject corresponding `GEMINI_MODEL` environment variable when spawning the Gemini CLI process."
+  - "Extract `--approval-mode` flags from extra CLI arguments and inject corresponding `GEMINI_APPROVAL_MODE` environment variable when spawning the Gemini CLI process."
+  - "Reap child processes (`c.wait()`), clear active workspace locks, and emit completion chunk (`is_done: true`) upon stdout EOF or process exit to eliminate hanging UI state."
   - "Provide safe session reset (`restart_gemini_session`) so updated environment variables take effect on the next prompt invocation."
 
 dont:

@@ -191,6 +191,7 @@ impl AcpSession {
         self.pending_requests.lock().ok()?.remove(&id)
     }
 
+    #[allow(dead_code)]
     pub async fn send_request(&self, method: &str, params: Value) -> Result<u64, String> {
         let id = self.next_id();
         let req = JsonRpcRequest {
@@ -1225,4 +1226,73 @@ mod tests {
         });
         assert_eq!(extract_acp_text(&tool_update), "");
     }
+
+    #[tokio::test]
+    async fn test_send_request_and_prompt_when_disconnected() {
+        let session = AcpSession::new();
+        let res = session.send_request("test_method", serde_json::json!({})).await;
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err(), "CLI stdin is not connected");
+
+        let prompt_res = session.send_prompt_request("local-sess-42", serde_json::json!({})).await;
+        assert!(prompt_res.is_err());
+        assert_eq!(prompt_res.unwrap_err(), "CLI stdin is not connected");
+    }
+
+    #[test]
+    fn test_stop_reason_turn_exhaustion_cleanup() {
+        let session = AcpSession::new();
+        let stop_reasons = vec!["max_turn_requests", "max_tokens"];
+        for reason in stop_reasons {
+            session.register_session_mapping("local-session-1", "acp-session-1");
+            assert_eq!(session.get_acp_session_id("local-session-1"), Some("acp-session-1".to_string()));
+            if matches!(Some(reason), Some("max_turn_requests") | Some("max_tokens")) {
+                session.remove_session("local-session-1");
+            }
+            assert_eq!(session.get_acp_session_id("local-session-1"), None);
+            assert_eq!(session.get_local_session_id("acp-session-1"), None);
+        }
+    }
+
+    #[test]
+    fn test_stop_reason_is_done_evaluation() {
+        // Intermediate tool result with output but no stopReason must NOT mark turn done
+        let tool_result = serde_json::json!({
+            "result": {
+                "output": "Directory listed successfully"
+            }
+        });
+        let is_done_tool = tool_result.pointer("/result/stopReason")
+            .and_then(|s| s.as_str())
+            .map(|s| !s.is_empty() && s != "null")
+            .unwrap_or(false);
+        assert!(!is_done_tool);
+
+        // Result with explicit null stopReason must NOT mark turn done
+        let null_stop_result = serde_json::json!({
+            "result": {
+                "stopReason": null,
+                "text": "Partial output"
+            }
+        });
+        let is_done_null = null_stop_result.pointer("/result/stopReason")
+            .and_then(|s| s.as_str())
+            .map(|s| !s.is_empty() && s != "null")
+            .unwrap_or(false);
+        assert!(!is_done_null);
+
+        // Result with valid stopReason "end_turn" marks turn done
+        let valid_stop_result = serde_json::json!({
+            "result": {
+                "stopReason": "end_turn",
+                "text": "Finished response"
+            }
+        });
+        let is_done_valid = valid_stop_result.pointer("/result/stopReason")
+            .and_then(|s| s.as_str())
+            .map(|s| !s.is_empty() && s != "null")
+            .unwrap_or(false);
+        assert!(is_done_valid);
+    }
 }
+
