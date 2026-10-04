@@ -246,7 +246,8 @@ pub async fn send_prompt(
                         "fs": {
                             "readTextFile": true,
                             "writeTextFile": true
-                        }
+                        },
+                        "terminal": true
                     },
                     "clientInfo": {
                         "name": "GeminiDesktop",
@@ -281,11 +282,13 @@ pub async fn send_prompt(
         }
     }
 
+    let ws_path_str = ws.as_ref().map(|w| w.path.clone()).unwrap_or_else(|| ".".to_string());
+    state.acp_session.set_workspace_dir(std::path::PathBuf::from(&ws_path_str));
+
     // 4. Establish session context & send prompt over ACP
     let acp_session_id = match state.acp_session.get_acp_session_id(&session_id) {
         Some(id) => id,
         None => {
-            let ws_path_str = ws.as_ref().map(|w| w.path.clone()).unwrap_or_else(|| ".".to_string());
             let new_session_params = serde_json::json!({
                 "cwd": ws_path_str,
                 "mcpServers": [],

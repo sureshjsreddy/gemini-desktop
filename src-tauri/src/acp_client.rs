@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{oneshot, Mutex};
@@ -74,6 +76,8 @@ pub struct AcpSession {
     active_local_session: Arc<StdMutex<Option<String>>>,
     session_approval_modes: Arc<StdMutex<HashMap<String, String>>>,
     active_approval_mode: Arc<StdMutex<String>>,
+    workspace_dir: Arc<StdMutex<Option<PathBuf>>>,
+    terminal_results: Arc<StdMutex<HashMap<String, (String, i32)>>>,
 }
 
 impl AcpSession {
@@ -89,6 +93,8 @@ impl AcpSession {
             active_local_session: Arc::new(StdMutex::new(None)),
             session_approval_modes: Arc::new(StdMutex::new(HashMap::new())),
             active_approval_mode: Arc::new(StdMutex::new("default".to_string())),
+            workspace_dir: Arc::new(StdMutex::new(None)),
+            terminal_results: Arc::new(StdMutex::new(HashMap::new())),
         }
     }
 
@@ -189,6 +195,32 @@ impl AcpSession {
 
     pub fn take_pending_request(&self, id: u64) -> Option<oneshot::Sender<Result<Value, JsonRpcError>>> {
         self.pending_requests.lock().ok()?.remove(&id)
+    }
+
+    pub fn set_workspace_dir(&self, dir: PathBuf) {
+        if let Ok(mut guard) = self.workspace_dir.lock() {
+            *guard = Some(dir);
+        }
+    }
+
+    pub fn get_workspace_dir(&self) -> Option<PathBuf> {
+        self.workspace_dir.lock().ok()?.clone()
+    }
+
+    pub fn store_terminal_result(&self, id: &str, output: String, exit_code: i32) {
+        if let Ok(mut guard) = self.terminal_results.lock() {
+            guard.insert(id.to_string(), (output, exit_code));
+        }
+    }
+
+    pub fn get_terminal_result(&self, id: &str) -> Option<(String, i32)> {
+        self.terminal_results.lock().ok()?.get(id).cloned()
+    }
+
+    pub fn remove_terminal_result(&self, id: &str) {
+        if let Ok(mut guard) = self.terminal_results.lock() {
+            guard.remove(id);
+        }
     }
 
     #[allow(dead_code)]
@@ -898,35 +930,147 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                             match method_str.as_str() {
                                 "fs/read_text_file" => {
                                     let path_opt = val_clone.pointer("/params/path").and_then(|p| p.as_str());
-                                    let res = if let Some(p) = path_opt {
-                                        match std::fs::read_to_string(p) {
-                                            Ok(content) => serde_json::json!({ "content": content }),
-                                            Err(e) => serde_json::json!({ "error": e.to_string() }),
+                                    if let Some(p) = path_opt {
+                                        let path_buf = if Path::new(p).is_relative() {
+                                            if let Some(ws_dir) = acp_clone.get_workspace_dir() {
+                                                ws_dir.join(p)
+                                            } else {
+                                                PathBuf::from(p)
+                                            }
+                                        } else {
+                                            PathBuf::from(p)
+                                        };
+
+                                        match std::fs::read_to_string(&path_buf) {
+                                            Ok(content) => {
+                                                let _ = acp_clone.send_response(req_id, serde_json::json!({ "content": content })).await;
+                                            }
+                                            Err(e) => {
+                                                // Per ACP spec and Gemini CLI normalizeFileSystemError, file-not-found must return
+                                                // a standard JSON-RPC error containing "Resource not found" and "(ENOENT)"
+                                                // so that the agent/CLI identifies that the file does not exist without throwing "content must be a string".
+                                                let _ = acp_clone.send_error_response(
+                                                    req_id,
+                                                    -32002,
+                                                    &format!("Resource not found: {} (ENOENT: {})", p, e),
+                                                ).await;
+                                            }
                                         }
                                     } else {
-                                        serde_json::json!({ "content": "" })
-                                    };
-                                    let _ = acp_clone.send_response(req_id, res).await;
+                                        let _ = acp_clone.send_error_response(
+                                            req_id,
+                                            -32602,
+                                            "Invalid params: path must be a string (ENOENT)",
+                                        ).await;
+                                    }
                                 }
                                 "fs/write_text_file" => {
                                     let path_opt = val_clone.pointer("/params/path").and_then(|p| p.as_str());
                                     let content_opt = val_clone.pointer("/params/content").and_then(|c| c.as_str()).unwrap_or("");
                                     if let Some(p) = path_opt {
-                                        let path_buf = std::path::PathBuf::from(p);
+                                        let path_buf = if Path::new(p).is_relative() {
+                                            if let Some(ws_dir) = acp_clone.get_workspace_dir() {
+                                                ws_dir.join(p)
+                                            } else {
+                                                PathBuf::from(p)
+                                            }
+                                        } else {
+                                            PathBuf::from(p)
+                                        };
                                         if let Some(parent) = path_buf.parent() {
                                             let _ = std::fs::create_dir_all(parent);
                                         }
-                                        let _ = std::fs::write(&path_buf, content_opt);
+                                        match std::fs::write(&path_buf, content_opt) {
+                                            Ok(_) => {
+                                                let _ = acp_clone.send_response(req_id, serde_json::json!({})).await;
+                                            }
+                                            Err(e) => {
+                                                let _ = acp_clone.send_error_response(
+                                                    req_id,
+                                                    -32000,
+                                                    &format!("Failed to write file {}: {}", p, e),
+                                                ).await;
+                                            }
+                                        }
+                                    } else {
+                                        let _ = acp_clone.send_error_response(req_id, -32602, "Missing file path").await;
                                     }
+                                }
+                                "terminal/create" => {
+                                    let cmd = val_clone.pointer("/params/command").and_then(|c| c.as_str()).unwrap_or("");
+                                    let args_val = val_clone.pointer("/params/args").and_then(|a| a.as_array());
+                                    let mut full_cmd = cmd.to_string();
+                                    if let Some(args) = args_val {
+                                        for arg in args {
+                                            if let Some(s) = arg.as_str() {
+                                                full_cmd.push(' ');
+                                                full_cmd.push_str(s);
+                                            }
+                                        }
+                                    }
+
+                                    let cwd = val_clone.pointer("/params/cwd")
+                                        .and_then(|c| c.as_str())
+                                        .map(PathBuf::from)
+                                        .or_else(|| acp_clone.get_workspace_dir());
+
+                                    let term_id = format!("term_{}", req_id);
+                                    let mut command = Command::new("powershell");
+                                    command.arg("-NoProfile").arg("-NonInteractive").arg("-Command").arg(&full_cmd);
+                                    if let Some(dir) = cwd {
+                                        command.current_dir(dir);
+                                    }
+
+                                    let output = command.output();
+                                    let (stdout_str, stderr_str, exit_code) = match output {
+                                        Ok(out) => {
+                                            let out_str = String::from_utf8_lossy(&out.stdout).to_string();
+                                            let err_str = String::from_utf8_lossy(&out.stderr).to_string();
+                                            let code = out.status.code().unwrap_or(0);
+                                            (out_str, err_str, code)
+                                        }
+                                        Err(e) => (String::new(), e.to_string(), 1),
+                                    };
+
+                                    let combined = if stderr_str.is_empty() {
+                                        stdout_str
+                                    } else if stdout_str.is_empty() {
+                                        stderr_str
+                                    } else {
+                                        format!("{}\n{}", stdout_str, stderr_str)
+                                    };
+
+                                    acp_clone.store_terminal_result(&term_id, combined, exit_code);
+                                    let _ = acp_clone.send_response(req_id, serde_json::json!({
+                                        "terminalId": term_id
+                                    })).await;
+                                }
+                                "terminal/output" => {
+                                    let term_id = val_clone.pointer("/params/terminalId").and_then(|t| t.as_str()).unwrap_or("");
+                                    let (output, exit_code) = acp_clone.get_terminal_result(term_id).unwrap_or((String::new(), 0));
+                                    let _ = acp_clone.send_response(req_id, serde_json::json!({
+                                        "output": output,
+                                        "truncated": false,
+                                        "exitStatus": {
+                                            "code": exit_code
+                                        }
+                                    })).await;
+                                }
+                                "terminal/wait_for_exit" => {
+                                    let term_id = val_clone.pointer("/params/terminalId").and_then(|t| t.as_str()).unwrap_or("");
+                                    let (_, exit_code) = acp_clone.get_terminal_result(term_id).unwrap_or((String::new(), 0));
+                                    let _ = acp_clone.send_response(req_id, serde_json::json!({
+                                        "exitCode": exit_code
+                                    })).await;
+                                }
+                                "terminal/release" | "terminal/kill" => {
+                                    let term_id = val_clone.pointer("/params/terminalId").and_then(|t| t.as_str()).unwrap_or("");
+                                    acp_clone.remove_terminal_result(term_id);
                                     let _ = acp_clone.send_response(req_id, serde_json::json!({})).await;
                                 }
                                 _ => {
-                                    if method_str.starts_with("terminal/") {
-                                        let _ = acp_clone.send_error_response(req_id, -32601, "Terminal capability not supported by client").await;
-                                    } else {
-                                        // Acknowledge immediately with an empty result so Gemini CLI async loop never hangs
-                                        let _ = acp_clone.send_response(req_id, serde_json::json!({})).await;
-                                    }
+                                    // Acknowledge immediately with an empty result so Gemini CLI async loop never hangs
+                                    let _ = acp_clone.send_response(req_id, serde_json::json!({})).await;
                                 }
                             }
                         });
@@ -1293,6 +1437,33 @@ mod tests {
             .map(|s| !s.is_empty() && s != "null")
             .unwrap_or(false);
         assert!(is_done_valid);
+    }
+
+    #[test]
+    fn test_workspace_dir_and_terminal_results() {
+        let session = AcpSession::new();
+        assert_eq!(session.get_workspace_dir(), None);
+
+        let ws = PathBuf::from("C:\\TestWorkspace");
+        session.set_workspace_dir(ws.clone());
+        assert_eq!(session.get_workspace_dir(), Some(ws));
+
+        assert_eq!(session.get_terminal_result("term_1"), None);
+        session.store_terminal_result("term_1", "output text".to_string(), 0);
+        assert_eq!(session.get_terminal_result("term_1"), Some(("output text".to_string(), 0)));
+
+        session.remove_terminal_result("term_1");
+        assert_eq!(session.get_terminal_result("term_1"), None);
+    }
+
+    #[test]
+    fn test_fs_read_error_format_contains_enoent() {
+        let fake_path = "summary1.txt";
+        let fake_err = "The system cannot find the file specified.";
+        let err_msg = format!("Resource not found: {} (ENOENT: {})", fake_path, fake_err);
+
+        assert!(err_msg.contains("Resource not found"));
+        assert!(err_msg.contains("ENOENT"));
     }
 }
 
