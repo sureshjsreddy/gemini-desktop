@@ -777,7 +777,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     if current_mode == "yolo" {
                         let response_payload = build_permission_response_payload(true, None, Some(options.clone()));
                         let acp_clone = acp_session.clone();
-                        tokio::spawn(async move {
+                        tauri::async_runtime::spawn(async move {
                             let _ = acp_clone.send_response(req_id, response_payload).await;
                         });
                         let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
@@ -814,7 +814,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                         if is_safe {
                             let response_payload = build_permission_response_payload(true, None, Some(options.clone()));
                             let acp_clone = acp_session.clone();
-                            tokio::spawn(async move {
+                            tauri::async_runtime::spawn(async move {
                                 let _ = acp_clone.send_response(req_id, response_payload).await;
                             });
                             let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
@@ -851,7 +851,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                         let acp_clone = acp_session.clone();
                         let val_clone = val.clone();
                         let method_str = method.to_string();
-                        tokio::spawn(async move {
+                        tauri::async_runtime::spawn(async move {
                             match method_str.as_str() {
                                 "fs/read_text_file" => {
                                     let path_opt = val_clone.pointer("/params/path").and_then(|p| p.as_str());

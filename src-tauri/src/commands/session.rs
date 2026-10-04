@@ -200,7 +200,6 @@ pub async fn send_prompt(
                     let acp_clone = state.acp_session.clone();
                     let active_ws_clone = state.active_process_workspace.clone();
                     let active_child_clone = state.active_child.clone();
-                    let rt_handle = tokio::runtime::Handle::current();
                     std::thread::spawn(move || {
                         let reader = BufReader::new(stdout);
                         for line in reader.lines() {
@@ -209,7 +208,7 @@ pub async fn send_prompt(
                             }
                         }
                         // When stdout closes (CLI process crashed, exited, or pipe broken), reset active process state
-                        rt_handle.spawn(async move {
+                        tauri::async_runtime::spawn(async move {
                             let mut ws_lock = active_ws_clone.lock().await;
                             *ws_lock = None;
                             let mut child_lock = active_child_clone.lock().await;

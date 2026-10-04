@@ -3,7 +3,7 @@ type: architecture_standard
 title: Agent Client Protocol (ACP) JSON-RPC Streaming & Tool Intercepts
 domain: architecture
 status: approved
-version: 1.6.0
+version: 1.7.0
 authority:
   level: official
   confidence: high
@@ -21,6 +21,7 @@ do:
   - "Spawn the Gemini CLI with piped stdin, stdout, and stderr (`Stdio::piped()`)."
   - "Run dedicated background reader threads for stdout and stderr to handle streaming tokens and telemetry asynchronously."
   - "Emit `acp-chunk` events for delta content updates and final completion (`is_done: true`)."
+  - "Execute asynchronous response tasks from reader threads using `tauri::async_runtime::spawn` instead of `tokio::spawn` to prevent 'no reactor running' panics on threads outside the Tokio runtime."
   - "Handle Agent-to-Client ACP JSON-RPC requests (`fs/read_text_file`, `fs/write_text_file`) and acknowledge any request with an `id` to prevent Gemini CLI async execution loop deadlocks or `-32601` failures in autonomous/YOLO mode."
   - "Declare explicit `clientCapabilities` (`fs: { readTextFile: true, writeTextFile: true }`) during ACP `initialize` handshake."
   - "Monitor stdout reader thread EOF on process termination: reap child process, clear active workspace/child state, and emit `is_done: true` to prevent UI freezing."
