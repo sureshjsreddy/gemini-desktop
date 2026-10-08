@@ -48,7 +48,14 @@ pub async fn get_gemini_auth_config(
 ) -> Result<GeminiAuthConfig, String> {
     let auth_mode = state.db.get_setting("gemini_auth_mode")
         .map_err(|e| e.to_string())?
-        .unwrap_or_else(|| "api_key".to_string());
+        .unwrap_or_else(|| {
+            if let Ok(Some(key)) = state.db.get_setting("gemini_api_key") {
+                if !key.trim().is_empty() {
+                    return "api_key".to_string();
+                }
+            }
+            "vertex_ai".to_string()
+        });
     let api_key = state.db.get_setting("gemini_api_key")
         .map_err(|e| e.to_string())?;
     let google_cloud_project = state.db.get_setting("google_cloud_project")

@@ -47,7 +47,7 @@
   let activeTab = $state<TabType>("cli");
 
   // Auth Configuration State
-  let authMode = $state<"api_key" | "vertex_ai">("api_key");
+  let authMode = $state<"api_key" | "vertex_ai">("vertex_ai");
   let apiKey = $state("");
   let showApiKey = $state(false);
   let googleCloudProject = $state("");
@@ -95,7 +95,7 @@
   async function loadSavedConfig() {
     try {
       const config = await invoke<GeminiAuthConfig>("get_gemini_auth_config");
-      authMode = config.auth_mode;
+      authMode = config.auth_mode || "vertex_ai";
       apiKey = config.api_key || "";
       googleCloudProject = config.google_cloud_project || "";
       googleCloudLocation = config.google_cloud_location || "us-central1";
@@ -416,7 +416,25 @@
                 Select Authentication Mode
               </span>
               <div class="grid grid-cols-2 gap-3">
-                <!-- Option A: Google AI Studio (API Key) -->
+                <!-- Option A: Google Cloud Vertex AI (Default) -->
+                <button
+                  type="button"
+                  onclick={() => (authMode = "vertex_ai")}
+                  class="p-3 rounded-lg border text-left transition-all cursor-pointer {authMode === 'vertex_ai' ? 'border-accent-theme bg-accent-theme/10 ring-1 ring-accent-theme/30' : 'border-subtle bg-surface hover:bg-surface-hover'}"
+                >
+                  <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-2 text-xs font-semibold {authMode === 'vertex_ai' ? 'text-accent-theme' : 'text-primary-theme'}">
+                      <Building2 size={14} />
+                      <span>Google Cloud</span>
+                    </div>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-accent-theme/20 text-accent-theme font-medium">Default</span>
+                  </div>
+                  <p class="text-[11px] text-muted-theme mt-1 leading-relaxed">
+                    Vertex AI Mode with GCP Project. Zero-dependency corporate OAuth, enterprise billing, and VPCs.
+                  </p>
+                </button>
+
+                <!-- Option B: Google AI Studio (API Key) -->
                 <button
                   type="button"
                   onclick={() => (authMode = "api_key")}
@@ -430,72 +448,10 @@
                     Personal API Key. Best for individual developers, quick prototyping, and free tier.
                   </p>
                 </button>
-
-                <!-- Option B: Google Cloud Vertex AI (Corporate) -->
-                <button
-                  type="button"
-                  onclick={() => (authMode = "vertex_ai")}
-                  class="p-3 rounded-lg border text-left transition-all cursor-pointer {authMode === 'vertex_ai' ? 'border-accent-theme bg-accent-theme/10 ring-1 ring-accent-theme/30' : 'border-subtle bg-surface hover:bg-surface-hover'}"
-                >
-                  <div class="flex items-center gap-2 text-xs font-semibold {authMode === 'vertex_ai' ? 'text-accent-theme' : 'text-primary-theme'}">
-                    <Building2 size={14} />
-                    <span>Google Cloud (Corporate)</span>
-                  </div>
-                  <p class="text-[11px] text-muted-theme mt-1 leading-relaxed">
-                    Vertex AI Mode with GCP Project. Required for corporate accounts, enterprise billing, and VPCs.
-                  </p>
-                </button>
               </div>
             </div>
 
-            <!-- Mode A Inputs: API Key -->
-            {#if authMode === "api_key"}
-              <div class="space-y-3 p-4 rounded-lg bg-surface border border-subtle">
-                <div>
-                  <div class="flex items-center justify-between mb-1.5">
-                    <label for="gemini-api-key" class="text-xs font-medium text-primary-theme flex items-center gap-1.5">
-                      <span>Gemini API Key</span>
-                      <span class="text-rose-400">*</span>
-                    </label>
-                    <a
-                      href="https://aistudio.google.com/app/apikey"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      class="text-[11px] text-accent-theme hover:underline flex items-center gap-1"
-                    >
-                      <span>Get Free API Key</span>
-                      <ExternalLink size={11} />
-                    </a>
-                  </div>
-                  <div class="relative">
-                    <input
-                      id="gemini-api-key"
-                      type={showApiKey ? "text" : "password"}
-                      bind:value={apiKey}
-                      placeholder="AIzaSy..."
-                      class="w-full px-3 py-2 pr-10 rounded-lg bg-surface-elevated border border-theme-default text-xs text-primary-theme focus:outline-none focus:border-accent-theme font-mono"
-                    />
-                    <button
-                      type="button"
-                      onclick={() => (showApiKey = !showApiKey)}
-                      class="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-theme hover:text-primary-theme p-1 rounded transition-colors cursor-pointer"
-                      title={showApiKey ? "Hide key" : "Show key"}
-                    >
-                      {#if showApiKey}
-                        <EyeOff size={14} />
-                      {:else}
-                        <Eye size={14} />
-                      {/if}
-                    </button>
-                  </div>
-                  <p class="text-[10px] text-muted-theme mt-1">
-                    Environment variable: <code class="font-mono text-secondary-theme">GEMINI_API_KEY</code>
-                  </p>
-                </div>
-              </div>
-            {/if}
-
-            <!-- Mode B Inputs: Vertex AI / Google Cloud -->
+            <!-- Mode A Inputs: Vertex AI / Google Cloud (Default) -->
             {#if authMode === "vertex_ai"}
               <div class="space-y-3.5 p-4 rounded-lg bg-surface border border-subtle">
                 <!-- GCP Project ID -->
@@ -594,6 +550,53 @@
                   />
                   <p class="text-[10px] text-muted-theme mt-1">
                     Environment variable: <code class="font-mono text-secondary-theme">GOOGLE_APPLICATION_CREDENTIALS</code>
+                  </p>
+                </div>
+              </div>
+            {/if}
+
+            <!-- Mode B Inputs: API Key -->
+            {#if authMode === "api_key"}
+              <div class="space-y-3 p-4 rounded-lg bg-surface border border-subtle">
+                <div>
+                  <div class="flex items-center justify-between mb-1.5">
+                    <label for="gemini-api-key" class="text-xs font-medium text-primary-theme flex items-center gap-1.5">
+                      <span>Gemini API Key</span>
+                      <span class="text-rose-400">*</span>
+                    </label>
+                    <a
+                      href="https://aistudio.google.com/app/apikey"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="text-[11px] text-accent-theme hover:underline flex items-center gap-1"
+                    >
+                      <span>Get Free API Key</span>
+                      <ExternalLink size={11} />
+                    </a>
+                  </div>
+                  <div class="relative">
+                    <input
+                      id="gemini-api-key"
+                      type={showApiKey ? "text" : "password"}
+                      bind:value={apiKey}
+                      placeholder="AIzaSy..."
+                      class="w-full px-3 py-2 pr-10 rounded-lg bg-surface-elevated border border-theme-default text-xs text-primary-theme focus:outline-none focus:border-accent-theme font-mono"
+                    />
+                    <button
+                      type="button"
+                      onclick={() => (showApiKey = !showApiKey)}
+                      class="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-theme hover:text-primary-theme p-1 rounded transition-colors cursor-pointer"
+                      title={showApiKey ? "Hide key" : "Show key"}
+                    >
+                      {#if showApiKey}
+                        <EyeOff size={14} />
+                      {:else}
+                        <Eye size={14} />
+                      {/if}
+                    </button>
+                  </div>
+                  <p class="text-[10px] text-muted-theme mt-1">
+                    Environment variable: <code class="font-mono text-secondary-theme">GEMINI_API_KEY</code>
                   </p>
                 </div>
               </div>

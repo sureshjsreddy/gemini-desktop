@@ -21,10 +21,10 @@ rule:
 
 do:
   - "Provide a 1-click installer and updater for `@google/gemini-cli@latest` leveraging system npm (`npm install -g @google/gemini-cli@latest`) or WinGet (`winget install Google.GeminiCLI`) without requiring manual terminal configuration."
-  - "Support Dual Authentication Modes: Google AI Studio via `GEMINI_API_KEY` and Google Cloud Vertex AI via `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, and `GOOGLE_GENAI_USE_VERTEXAI=true`."
+  - "Support Dual Authentication Modes with Google Cloud Vertex AI as the primary default mode (`vertex_ai`), and Google AI Studio (`api_key`) via `GEMINI_API_KEY`."
   - "Support Zero-Dependency Corporate Auth: Gemini CLI incorporates a built-in browser OAuth2 login flow (caching credentials in `~/.gemini/oauth_creds.json` and `~/.gemini/google_accounts.json`), meaning the full Google Cloud SDK (`gcloud` CLI) is strictly optional and not required for corporate Vertex AI operation."
   - "Auto-detect existing developer environment state: detect native Gemini CLI browser OAuth credentials (`~/.gemini/oauth_creds.json`), optional `gcloud` CLI presence, active Google Cloud project (`gcloud config get-value project`), and Application Default Credentials (ADC in `%APPDATA%\\gcloud\\application_default_credentials.json`)."
-  - "Persist global authentication settings in the local SQLite `app_settings` table and synchronize `~/.gemini/settings.json` with `security.auth.selectedType` set to `'gemini-api-key'` or `'vertex-ai'`."
+  - "Persist global authentication settings in the local SQLite `app_settings` table and synchronize `~/.gemini/settings.json` with `security.auth.selectedType` set to `'vertex-ai'` (default) or `'gemini-api-key'`."
   - "Allow users to optionally sync credentials into the active workspace `.env.local` file for team and repository portability."
   - "Inject `--skip-trust` into all headless and ACP executions (`test_gemini_cli`, `spawn_gemini`) and automatically register workspace directories into `~/.gemini/trustedFolders.json` via `ensure_folder_trusted` to prevent 'Directory is not trusted' prompt halts."
   - "Enforce the 3-Tier Enterprise Working Directory Hierarchy for process execution and diagnostics: Priority 1 = User's Active Project Workspace; Priority 2 = User Home Directory (`%USERPROFILE%`, e.g. `C:\\Users\\<username>`); Priority 3 = LocalAppData persistent directory (`%LOCALAPPDATA%\\GeminiDesktop`)."

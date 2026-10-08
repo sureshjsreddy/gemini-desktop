@@ -3,7 +3,7 @@ type: product_standard
 title: WinGet Update Detection & Interactive User Notification
 domain: product
 status: approved
-version: 1.1.0
+version: 1.2.0
 authority:
   level: official
   confidence: high
@@ -19,12 +19,13 @@ rule:
   "The desktop client must automatically check the Windows Package Manager (WinGet) catalog for available updates and display a non-intrusive interactive notification banner when a newer release is published. When the user chooses to upgrade, the application must confirm, release file locks by exiting gracefully, execute the upgrade in a detached batch console, and automatically relaunch upon success."
 
 do:
+  - "Configure WinGet community package manifests with `InstallerType: wix` (.msi) rather than `portable` to ensure clean enterprise installation into `C:\\Program Files\\Gemini Desktop`, preventing EDR/CrowdStrike volatile `%TEMP%` execution alerts."
   - "Query the local WinGet catalog asynchronously using `winget show SureshJanakiReddy.GeminiDesktop --accept-source-agreements` via `tokio::task::spawn_blocking` to avoid blocking the UI."
   - "Trigger automatic background update checks with a 3-second delay on application startup."
   - "Compare the latest version from WinGet against the current application version using semantic versioning."
   - "Provide a non-intrusive floating `UpdateNotificationBanner` presenting the new version number and 1-click update action."
   - "Prompt for user confirmation via `dialogManager.confirm` before closing the application to apply updates."
-  - "Generate an external updater script (`gemini_desktop_updater.bat` in `%TEMP%`) that waits for process termination (`timeout /t 2` and `taskkill`), runs `winget upgrade --id SureshJanakiReddy.GeminiDesktop`, and automatically relaunches `gemini-desktop.exe` on exit code 0."
+  - "Generate an external updater script (`gemini_desktop_updater.bat` staged in `%LOCALAPPDATA%\\GeminiDesktop\\updates\\` rather than volatile `%TEMP%`) that waits for process termination (`timeout /t 2` and `taskkill`), runs `winget upgrade --id SureshJanakiReddy.GeminiDesktop`, and automatically relaunches `gemini-desktop.exe` on exit code 0."
   - "Exit the Tauri process gracefully (`app.exit(0)`) with a short 600ms delay after spawning the updater to release all Windows file handles and prevent `ERROR_SHARING_VIOLATION` / `Access is denied` errors."
   - "Provide a 1-click 'Copy Command' button to copy the upgrade command to clipboard."
   - "Support version-specific dismissal stored in `localStorage` so users are not repeatedly prompted for the same version once dismissed."
