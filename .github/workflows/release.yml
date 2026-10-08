@@ -41,24 +41,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "Gemini Desktop v__VERSION__"
-          releaseBody: "Automated release build of Gemini Desktop.\n\n- **GeminiDesktop-Portable.exe**: Standalone executable (no installation required).\n- **Setup Installer (`.exe` / `.msi`)**: Standard Windows setup installers."
+          releaseBody: "Automated release build of Gemini Desktop.\n\n- **Gemini.Desktop_0.2.31_x64_en-US.msi**: Official Windows WiX Installer (installs to Program Files).\n- **Setup (`.exe` / `.msi`)**: Standard Windows setup installers."
           releaseDraft: false
           prerelease: false
-
-      - name: Upload Standalone Portable Executable to Release
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          Copy-Item "src-tauri/target/release/gemini-desktop.exe" "GeminiDesktop-Portable.exe"
-          $tag = "${{ steps.tauri_build.outputs.releaseTag }}"
-          if (-not $tag) {
-            $tag = "${{ github.ref_name }}"
-          }
-          if (-not $tag -or $tag -eq "main") {
-            $json = Get-Content "src-tauri/tauri.conf.json" | ConvertFrom-Json
-            $tag = "v$($json.version)"
-          }
-          Write-Host "Uploading GeminiDesktop-Portable.exe to release $tag..."
-          gh release upload $tag "GeminiDesktop-Portable.exe" --clobber
 
