@@ -185,6 +185,7 @@ impl ProcessSupervisor {
         gemini_binary: &Path,
         working_dir: Option<PathBuf>,
         extra_args: &[String],
+        extra_envs: &[(String, String)],
     ) -> Result<Child, String> {
         let path_str = gemini_binary.to_string_lossy().to_string();
         let is_batch = path_str.to_lowercase().ends_with(".cmd")
@@ -195,10 +196,12 @@ impl ProcessSupervisor {
             let mut c = Command::new("cmd.exe");
             c.arg("/c");
             c.arg(&path_str);
+            c.arg("--skip-trust");
             c.arg("--acp");
             c
         } else {
             let mut c = Command::new(&path_str);
+            c.arg("--skip-trust");
             c.arg("--acp");
             c
         };
@@ -206,6 +209,7 @@ impl ProcessSupervisor {
         #[cfg(not(target_os = "windows"))]
         let mut cmd = {
             let mut c = Command::new(&path_str);
+            c.arg("--skip-trust");
             c.arg("--acp");
             c
         };
@@ -214,8 +218,14 @@ impl ProcessSupervisor {
             cmd.arg(arg);
         }
 
+        // Inject global credentials and extra environment variables
+        for (k, v) in extra_envs {
+            cmd.env(k, v);
+        }
+
         if let Some(dir) = working_dir {
             if dir.exists() {
+                ensure_folder_trusted(&dir);
                 cmd.current_dir(&dir);
 
                 // Auto-inject workspace .env and .env.local into Gemini CLI and its child tools
@@ -292,6 +302,34 @@ impl ProcessSupervisor {
         std::thread::spawn(move || {
             let _ = child.wait();
         });
+    }
+}
+
+/// Adds a workspace directory to ~/.gemini/trustedFolders.json so Gemini CLI treats it as trusted.
+pub fn ensure_folder_trusted(path: &Path) {
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok();
+    if let Some(h) = home {
+        let gemini_dir = PathBuf::from(h).join(".gemini");
+        let tf_path = gemini_dir.join("trustedFolders.json");
+        let mut map: serde_json::Map<String, serde_json::Value> = if tf_path.is_file() {
+            std::fs::read_to_string(&tf_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .and_then(|v: serde_json::Value| v.as_object().cloned())
+                .unwrap_or_default()
+        } else {
+            serde_json::Map::new()
+        };
+
+        let norm_path = path.to_string_lossy().replace('\\', "/").to_lowercase();
+        let trimmed_path = norm_path.trim_end_matches('/').to_string();
+        if !trimmed_path.is_empty() {
+            map.insert(trimmed_path, serde_json::Value::String("TRUST_FOLDER".to_string()));
+            if let Ok(json_str) = serde_json::to_string_pretty(&map) {
+                let _ = std::fs::create_dir_all(&gemini_dir);
+                let _ = std::fs::write(&tf_path, json_str);
+            }
+        }
     }
 }
 

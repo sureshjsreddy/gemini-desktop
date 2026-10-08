@@ -29,15 +29,19 @@ do:
   - "Reap child processes (`c.wait()`), clear active workspace locks, and emit completion chunk (`is_done: true`) upon stdout EOF or process exit to eliminate hanging UI state."
   - "Provide safe session reset (`restart_gemini_session`) so updated environment variables take effect on the next prompt invocation."
   - "When terminating active child processes on workspace or approval mode switches (`needs_spawn`), execute `ProcessSupervisor::terminate_child` using Windows `taskkill /F /T /PID` to cleanly abort the entire process tree (`cmd.exe` + Node.js CLI runtime + child tools) and detach reaping (`child.wait()`) on a background thread to prevent deadlocking Tokio async executors."
+  - "Pass `--skip-trust` to all spawned Gemini CLI instances (`spawn_gemini`, `test_gemini_cli`) and register directories into `~/.gemini/trustedFolders.json` via `ensure_folder_trusted` to prevent non-interactive prompt hangs on unapproved folders."
+  - "Enforce an enterprise-safe working directory hierarchy (Priority 1: Active Workspace, Priority 2: `%USERPROFILE%`, Priority 3: `%LOCALAPPDATA%\\GeminiDesktop`), strictly avoiding `%TEMP%` to prevent CrowdStrike Falcon volatile-directory network IOA alerts and `Program Files` to prevent UAC `ERROR_ACCESS_DENIED` and privilege-escalation heuristics."
 
 dont:
   - "Do not leave child processes running in the background when the user closes the main desktop window."
   - "Do not rely exclusively on SIGTERM or soft cancellation mechanisms that fail during abrupt application termination."
+  - "Do not execute child processes or diagnostic tests with current working directory set to `%TEMP%` or `C:\\Program Files`."
 
 reason:
-  "Windows Job Objects guarantee at the OS kernel level that all child processes and their spawned sub-processes are immediately killed when the parent app terminates, preventing memory leaks and orphaned background processes."
+  "Windows Job Objects guarantee at the OS kernel level that all child processes and their spawned sub-processes are immediately killed when the parent app terminates, preventing memory leaks and orphaned background processes. Proper working directory isolation prevents enterprise EDR false positives and UAC permission failures."
 
 related_items:
   - ARCH-SYS-001
   - ARCH-ACP-001
+  - PROD-SETUP-001
   - ADR-003

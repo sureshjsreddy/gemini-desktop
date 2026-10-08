@@ -1,8 +1,8 @@
 # Gemini Desktop Master Knowledge Graph & Index
 system_name: GeminiDesktop
 repository_root: "c:/AIFiles/gemini-desktop"
-knowledge_units_count: 19
-last_updated: "2026-10-05"
+knowledge_units_count: 20
+last_updated: "2026-10-08"
 
 knowledge_units:
   architecture:
@@ -55,6 +55,9 @@ knowledge_units:
     - id: PROD-UPDATE-001
       file: "knowledge/product/PROD-UPDATE-001.yaml"
       title: "WinGet Update Detection & Interactive User Notification"
+    - id: PROD-SETUP-001
+      file: "knowledge/product/PROD-SETUP-001.yaml"
+      title: "In-App Gemini CLI Setup, Dual Authentication & CrowdStrike EDR Safe Execution Standard"
 
   decisions:
     - id: ADR-001

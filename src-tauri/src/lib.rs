@@ -60,7 +60,12 @@ pub fn run() {
             restart_gemini_session,
             check_app_update,
             launch_winget_upgrade,
-            get_app_version
+            get_app_version,
+            get_gemini_auth_config,
+            save_gemini_auth_config,
+            install_gemini_cli,
+            detect_gcloud_status,
+            test_gemini_cli
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

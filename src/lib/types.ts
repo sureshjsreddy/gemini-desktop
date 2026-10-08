@@ -138,3 +138,36 @@ export interface UpdateInfo {
 
 export type ApprovalMode = "default" | "auto_edit" | "yolo" | "plan";
 
+export type GeminiAuthMode = "api_key" | "vertex_ai";
+
+export interface GeminiAuthConfig {
+  auth_mode: GeminiAuthMode;
+  api_key?: string;
+  google_cloud_project?: string;
+  google_cloud_location?: string;
+  google_app_credentials?: string;
+}
+
+export interface CliInstallResult {
+  success: boolean;
+  message: string;
+  installed_path?: string;
+  version?: string;
+}
+
+export interface CliTestResult {
+  success: boolean;
+  latency_ms: number;
+  message: string;
+  details?: string;
+}
+
+export interface GCloudStatus {
+  installed: boolean;
+  active_project?: string;
+  active_account?: string;
+  has_adc: boolean;
+  has_gemini_oauth?: boolean;
+  path?: string;
+}
+

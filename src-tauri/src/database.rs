@@ -137,6 +137,11 @@ impl DbManager {
             CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
                 DELETE FROM messages_fts WHERE message_id = old.id;
             END;
+
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             "
         )?;
 
@@ -153,7 +158,7 @@ impl DbManager {
         if count == 0 {
             let now = Utc::now().to_rfc3339();
             let default_workspaces = vec![
-                ("ws-personal", "Personal", "C:\\", "gemini-2.5-flash"),
+                ("ws-personal", "Personal", "C:\\", "gemini-3.8-flash"),
             ];
 
             for (id, name, path, model) in default_workspaces {
@@ -401,6 +406,26 @@ impl DbManager {
         Ok(list)
     }
 
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT value FROM app_settings WHERE key = ?1").map_err(|e| e.to_string())?;
+        let mut rows = stmt.query(params![key]).map_err(|e| e.to_string())?;
+        if let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            Ok(Some(row.get(0).map_err(|e| e.to_string())?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub fn new_in_memory() -> Result<Self, String> {
         let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
@@ -569,6 +594,18 @@ mod tests {
         let sessions = db.list_sessions("ws-personal").unwrap();
         let target = sessions.into_iter().find(|s| s.id == session.id).expect("session not found");
         assert_eq!(target.title, "Finalized Architecture Plan");
+    }
+
+    #[test]
+    fn test_app_settings_get_set() {
+        let db = DbManager::new_in_memory().expect("in-memory db initialization failed");
+        assert_eq!(db.get_setting("gemini_auth_mode").unwrap(), None);
+
+        db.set_setting("gemini_auth_mode", "vertex_ai").unwrap();
+        assert_eq!(db.get_setting("gemini_auth_mode").unwrap().as_deref(), Some("vertex_ai"));
+
+        db.set_setting("gemini_auth_mode", "api_key").unwrap();
+        assert_eq!(db.get_setting("gemini_auth_mode").unwrap().as_deref(), Some("api_key"));
     }
 }
 

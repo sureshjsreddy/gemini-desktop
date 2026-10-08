@@ -23,6 +23,7 @@
   import TemplatesModal from "$lib/components/TemplatesModal.svelte";
   import ThemeModal from "$lib/components/ThemeModal.svelte";
   import McpModal from "$lib/components/McpModal.svelte";
+  import CliSetupModal from "$lib/components/CliSetupModal.svelte";
   import UpdateNotificationBanner from "$lib/components/UpdateNotificationBanner.svelte";
   import { themeManager } from "$lib/theme.svelte";
   import { dialogManager } from "$lib/dialog.svelte";
@@ -647,6 +648,7 @@
     onOpenWorkspaceModal={() => modalManager.open("workspace")}
     onOpenThemeModal={() => modalManager.open("theme")}
     onOpenMcpModal={() => modalManager.open("mcp")}
+    onOpenCliSetup={() => modalManager.open("cli-setup")}
     onToggleTerminal={() => (showTerminalDrawer = !showTerminalDrawer)}
     onToggleExplorer={() => (showSolutionExplorer = !showSolutionExplorer)}
     onCheckUpdate={() => handleCheckUpdate(true)}
@@ -739,5 +741,15 @@
     isOpen={modalManager.isOpen("mcp")}
     {activeWorkspace}
     onClose={() => modalManager.close()}
+  />
+
+  <CliSetupModal
+    isOpen={modalManager.isOpen("cli-setup")}
+    {envStatus}
+    {activeWorkspace}
+    onClose={() => modalManager.close()}
+    onEnvStatusUpdated={(newStatus) => {
+      envStatus = newStatus;
+    }}
   />
 </div>

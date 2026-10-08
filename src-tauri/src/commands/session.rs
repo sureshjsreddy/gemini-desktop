@@ -189,7 +189,39 @@ pub async fn send_prompt(
 
         let extra_args = build_gemini_extra_args(&model, effective_mode);
 
-        match state.supervisor.spawn_gemini(&gemini_bin, ws_path.clone(), &extra_args) {
+        let mut global_envs = Vec::new();
+        if let Ok(Some(mode)) = state.db.get_setting("gemini_auth_mode") {
+            if mode == "vertex_ai" {
+                global_envs.push(("GOOGLE_GENAI_USE_VERTEXAI".to_string(), "true".to_string()));
+                if let Ok(Some(proj)) = state.db.get_setting("google_cloud_project") {
+                    if !proj.trim().is_empty() {
+                        global_envs.push(("GOOGLE_CLOUD_PROJECT".to_string(), proj.trim().to_string()));
+                    }
+                }
+                if let Ok(Some(loc)) = state.db.get_setting("google_cloud_location") {
+                    if !loc.trim().is_empty() {
+                        global_envs.push(("GOOGLE_CLOUD_LOCATION".to_string(), loc.trim().to_string()));
+                    }
+                }
+                if let Ok(Some(creds)) = state.db.get_setting("google_app_credentials") {
+                    if !creds.trim().is_empty() {
+                        global_envs.push(("GOOGLE_APPLICATION_CREDENTIALS".to_string(), creds.trim().to_string()));
+                    }
+                }
+            } else {
+                if let Ok(Some(key)) = state.db.get_setting("gemini_api_key") {
+                    if !key.trim().is_empty() {
+                        global_envs.push(("GEMINI_API_KEY".to_string(), key.trim().to_string()));
+                    }
+                }
+            }
+        } else if let Ok(Some(key)) = state.db.get_setting("gemini_api_key") {
+            if !key.trim().is_empty() {
+                global_envs.push(("GEMINI_API_KEY".to_string(), key.trim().to_string()));
+            }
+        }
+
+        match state.supervisor.spawn_gemini(&gemini_bin, ws_path.clone(), &extra_args, &global_envs) {
             Ok(mut child) => {
                 if let Some(stdin) = child.stdin.take() {
                     state.acp_session.set_stdin(Box::new(stdin)).await;

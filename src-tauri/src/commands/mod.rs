@@ -4,6 +4,7 @@ pub mod workspace;
 pub mod mcp;
 pub mod terminal;
 pub mod updater;
+pub mod setup;
 
 pub use db::*;
 pub use session::*;
@@ -11,6 +12,7 @@ pub use workspace::*;
 pub use mcp::*;
 pub use terminal::*;
 pub use updater::*;
+pub use setup::*;
 
 use crate::acp_client::AcpSession;
 use crate::database::DbManager;

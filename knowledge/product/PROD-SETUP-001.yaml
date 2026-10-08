@@ -1,0 +1,59 @@
+id: PROD-SETUP-001
+type: product_standard
+title: In-App Gemini CLI Setup, Dual Authentication & CrowdStrike EDR Safe Execution Standard
+domain: product
+status: approved
+version: 1.0.0
+authority:
+  level: official
+  confidence: high
+owner:
+  team: product_security_team
+
+applies_to:
+  - frontend
+  - backend
+  - process_manager
+  - security
+
+rule:
+  "The desktop application must provide an in-app setup assistant enabling users to install the latest Gemini CLI, configure authentication for both Google AI Studio (API Key) and Google Cloud Vertex AI (Corporate Project), and run non-interactive connection verification tests under a strict enterprise directory hierarchy that prevents CrowdStrike Falcon and EDR Indicators of Attack (IOAs)."
+
+do:
+  - "Provide a 1-click installer and updater for `@google/gemini-cli@latest` leveraging system npm (`npm install -g @google/gemini-cli@latest`) or WinGet (`winget install Google.GeminiCLI`) without requiring manual terminal configuration."
+  - "Support Dual Authentication Modes: Google AI Studio via `GEMINI_API_KEY` and Google Cloud Vertex AI via `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, and `GOOGLE_GENAI_USE_VERTEXAI=true`."
+  - "Support Zero-Dependency Corporate Auth: Gemini CLI incorporates a built-in browser OAuth2 login flow (caching credentials in `~/.gemini/oauth_creds.json` and `~/.gemini/google_accounts.json`), meaning the full Google Cloud SDK (`gcloud` CLI) is strictly optional and not required for corporate Vertex AI operation."
+  - "Auto-detect existing developer environment state: detect native Gemini CLI browser OAuth credentials (`~/.gemini/oauth_creds.json`), optional `gcloud` CLI presence, active Google Cloud project (`gcloud config get-value project`), and Application Default Credentials (ADC in `%APPDATA%\\gcloud\\application_default_credentials.json`)."
+  - "Persist global authentication settings in the local SQLite `app_settings` table and synchronize `~/.gemini/settings.json` with `security.auth.selectedType` set to `'gemini-api-key'` or `'vertex-ai'`."
+  - "Allow users to optionally sync credentials into the active workspace `.env.local` file for team and repository portability."
+  - "Inject `--skip-trust` into all headless and ACP executions (`test_gemini_cli`, `spawn_gemini`) and automatically register workspace directories into `~/.gemini/trustedFolders.json` via `ensure_folder_trusted` to prevent 'Directory is not trusted' prompt halts."
+  - "Enforce the 3-Tier Enterprise Working Directory Hierarchy for process execution and diagnostics: Priority 1 = User's Active Project Workspace; Priority 2 = User Home Directory (`%USERPROFILE%`, e.g. `C:\\Users\\<username>`); Priority 3 = LocalAppData persistent directory (`%LOCALAPPDATA%\\GeminiDesktop`)."
+  - "Perform lightweight diagnostic pings (`gemini --skip-trust -p \"Respond with 'OK'\" --model <selected_model> --output-format text`) defaulting to `gemini-3.8-flash` (or `auto`) rather than deprecated `gemini-2.5-flash`, with structured diagnostic reporting, timing latency in milliseconds and mapping API errors (missing keys, invalid credentials, disabled Vertex AI API, quota exhaustion, deprecated model) into actionable recommendations."
+
+dont:
+  - "Never execute the diagnostic test or CLI processes with current working directory set to `%TEMP%` (`C:\\Users\\<user>\\AppData\\Local\\Temp`), which triggers CrowdStrike Falcon's volatile directory network connection IOAs."
+  - "Never set the current working directory to `C:\\Program Files` or raw drive roots (`C:\\`), which fails with Windows UAC `ERROR_ACCESS_DENIED (OS error 5)` or triggers EDR DLL hijacking / privilege escalation alerts."
+  - "Never drop temporary batch or script files into user directories to run diagnostic checks; invoke the legitimate, installed CLI executable directly."
+  - "Never prompt users for Windows Administrator elevation just to run or verify developer CLI tools."
+
+edr_and_crowdstrike_security:
+  threat_intelligence:
+    - mechanism: "CrowdStrike Falcon Heuristic IOA: Network Activity from Volatile Folder"
+      risk: "When a process (such as cmd.exe or node.exe) executes with CWD rooted in %TEMP% and initiates outbound HTTPS traffic to Google Cloud endpoints, CrowdStrike Falcon Prevent flags the pattern as an active dropper/C2 communication, resulting in process termination and enterprise SOC alerts."
+      mitigation: "Strictly avoid %TEMP%. Route fallback executions to %USERPROFILE% (User Home Directory), which is the standard default for Windows shells and pre-whitelisted in developer EDR profiles."
+    - mechanism: "Windows UAC & NTFS ACL Access Violations in Program Files"
+      risk: "C:\\Program Files is strictly read-only for standard user processes (Medium Integrity). If an app sets its working directory or attempts database/log writes in Program Files, Windows returns ERROR_ACCESS_DENIED, and CrowdStrike flags potential privilege escalation or DLL search-order tampering."
+      mitigation: "Strictly isolate binaries in Program Files, user databases in %LOCALAPPDATA%\\GeminiDesktop, and process executions in the User's Project Workspace or %USERPROFILE%."
+    - mechanism: "Workspace Trust Prompts in Headless Execution"
+      risk: "Gemini CLI security blocks prompt execution on unapproved folders when run in headless mode (-p), printing 'Directory is not trusted'."
+      mitigation: "Always pass --skip-trust and automatically write folder entries to ~/.gemini/trustedFolders.json."
+
+reason:
+  "Corporate developers require frictionless CLI setup and Vertex AI integration without falling foul of enterprise Endpoint Detection and Response (EDR) software such as CrowdStrike Falcon, SentinelOne, or Microsoft Defender for Endpoint."
+
+related_items:
+  - ARCH-SYS-001
+  - ARCH-PROC-001
+  - ARCH-ACP-001
+  - DEV-SVELTE-001
+  - DEV-RUST-001

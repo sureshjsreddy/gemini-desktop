@@ -19,6 +19,7 @@
     PanelLeftClose,
     PanelLeftOpen,
     RefreshCw,
+    Cpu,
   } from "lucide-svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { APP_VERSION_FALLBACK } from "$lib/version";
@@ -47,6 +48,7 @@
     envStatus = null,
     onCheckUpdate,
     isCheckingUpdate = false,
+    onOpenCliSetup,
   }: {
     isOpen?: boolean;
     workspaces: Workspace[];
@@ -71,6 +73,7 @@
     envStatus: any;
     onCheckUpdate?: () => void;
     isCheckingUpdate?: boolean;
+    onOpenCliSetup?: () => void;
   } = $props();
 
   let showWorkspaceMenu = $state(false);
@@ -172,6 +175,20 @@
         </Tooltip>
       {/if}
 
+      <!-- CLI & Auth Setup -->
+      {#if onOpenCliSetup}
+        <Tooltip text="CLI & Auth Setup" position="right">
+          <button
+            type="button"
+            onclick={onOpenCliSetup}
+            class="w-8 h-8 rounded-lg flex items-center justify-center text-secondary-theme hover:text-accent-theme hover:bg-surface transition-colors cursor-pointer"
+            aria-label="CLI and Auth setup"
+          >
+            <Cpu size={15} />
+          </button>
+        </Tooltip>
+      {/if}
+
       <!-- Terminal Console Drawer Toggle -->
       {#if onToggleTerminal}
         <Tooltip text="Terminal Console" shortcut="Ctrl+`" position="right">
@@ -264,14 +281,18 @@
         <Tooltip
           text={envStatus?.installed ? "Gemini CLI Connected" : "Mock / Standby Mode"}
           subtext={envStatus?.installed
-            ? "Gemini CLI is installed and communicating via the Agent Client Protocol (ACP) JSON-RPC."
-            : "Gemini CLI not detected in system PATH. Operating in mock mode."}
+            ? "Gemini CLI is installed and communicating via ACP JSON-RPC. Click to manage CLI & Auth."
+            : "Gemini CLI not detected in system PATH. Click to setup CLI & credentials."}
           position="right"
         >
-          <div class="flex items-center gap-1.5 text-[11px] text-muted-theme cursor-help">
+          <button
+            type="button"
+            onclick={onOpenCliSetup}
+            class="flex items-center gap-1.5 text-[11px] text-muted-theme hover:text-primary-theme transition-colors cursor-pointer text-left"
+          >
             <span class="inline-block w-1.5 h-1.5 rounded-full {envStatus?.installed ? 'bg-emerald-400' : 'bg-amber-400'}"></span>
-            <span>{envStatus?.installed ? 'CLI Connected' : 'Mock / Standby'}</span>
-          </div>
+            <span>{envStatus?.installed ? 'CLI Connected' : 'Setup CLI'}</span>
+          </button>
         </Tooltip>
       </div>
     </div>
@@ -426,6 +447,27 @@
         <span class="ml-auto text-[10px] text-muted-theme font-mono">Ctrl+M</span>
       </button>
     </Tooltip>
+
+    <!-- CLI & Auth Setup -->
+    {#if onOpenCliSetup}
+      <Tooltip
+        class="w-full block"
+        text="CLI & Auth Setup"
+        subtext="Install Gemini CLI, configure Google AI Studio key or Corporate Vertex AI Project"
+        position="right"
+      >
+        <button
+          onclick={onOpenCliSetup}
+          class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-surface-hover text-secondary-theme hover:text-primary-theme text-xs transition-colors cursor-pointer"
+        >
+          <Cpu size={14} class="text-accent-theme" />
+          <span>CLI & Auth Setup</span>
+          <span class="ml-auto flex items-center gap-1">
+            <span class="inline-block w-1.5 h-1.5 rounded-full {envStatus?.installed ? 'bg-emerald-400' : 'bg-amber-400'}"></span>
+          </span>
+        </button>
+      </Tooltip>
+    {/if}
 
     {#if onToggleTerminal}
       <Tooltip
