@@ -3,7 +3,7 @@ type: product_standard
 title: Integrated Terminal Drawer, PowerShell Workspace Execution & Session Sync
 domain: product
 status: approved
-version: 1.0.0
+version: 1.1.0
 authority:
   level: official
   confidence: high
@@ -17,11 +17,13 @@ applies_to:
   - process_manager
 
 rule:
-  "The desktop app must provide an integrated workspace terminal drawer (`Ctrl+` `) that executes commands directly in the active workspace root with exit code, duration tracking, and environment synchronization."
+  "The desktop app must provide an integrated workspace terminal drawer (`Ctrl+` `) that executes commands directly in the active workspace root with exit code, duration tracking, environment synchronization, and enterprise EDR-safe execution posture."
 
 do:
   - "Provide a collapsible bottom drawer toggleable via shortcut (`Ctrl+` `) or UI buttons with height expansion controls."
   - "Execute commands via native shell (`powershell.exe` on Windows, `sh` on Unix) bound to the current workspace root directory."
+  - "Execute Windows PowerShell commands without `-ExecutionPolicy Bypass` (using standard `-NoProfile -NonInteractive -Command`) to prevent triggering CrowdStrike Falcon MITRE T1059.001 Scripting Policy Bypass IOAs."
+  - "Enforce a 3-tier safe fallback directory hierarchy (`fallback_safe_terminal_dir`: active workspace directory -> `%USERPROFILE%` -> `%LOCALAPPDATA%\\GeminiDesktop`), strictly prohibiting drive roots, `%WINDIR%`, `Program Files`, and `%TEMP%` as terminal working directories."
   - "Automatically check for, parse, and inject workspace `.env` and `.env.local` files into the shell process environment on every command execution."
   - "Capture and format stdout, stderr, exit code, and millisecond execution duration in a scrollable console."
   - "Support command history recall via keyboard (`↑`/`↓`) and console clearing (`clear`/`cls`)."
@@ -31,9 +33,11 @@ do:
 dont:
   - "Do not block the webview UI thread during terminal execution."
   - "Do not run terminal commands without binding to the active workspace directory when configured."
+  - "Do not execute PowerShell commands with `-ExecutionPolicy Bypass`, which triggers enterprise EDR behavioral detection rules."
+  - "Do not spawn terminal processes with working directories set to system roots (`C:\\`, `C:\\Windows`), `Program Files`, or volatile `%TEMP%`."
 
 reason:
-  "Developers frequently need to inspect repository status, verify build scripts, or check git diffs alongside conversation with the AI model without switching to external terminal windows."
+  "Developers frequently need to inspect repository status, verify build scripts, or check git diffs alongside conversation with the AI model without switching to external terminal windows. Removing script bypass flags and isolating working directories ensures smooth operation in corporate environments monitored by CrowdStrike Falcon or Microsoft Defender."
 
 related_items:
   - PROD-WS-001

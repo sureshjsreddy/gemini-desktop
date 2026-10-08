@@ -30,8 +30,6 @@ pub async fn run_terminal_command(
         let mut c = std::process::Command::new("powershell.exe");
         c.arg("-NoProfile")
             .arg("-NonInteractive")
-            .arg("-ExecutionPolicy")
-            .arg("Bypass")
             .arg("-Command")
             .arg(trimmed);
         c
@@ -41,11 +39,9 @@ pub async fn run_terminal_command(
         c
     };
 
-    if let Some(ref wp) = workspace_path {
+    let safe_cwd = if let Some(ref wp) = workspace_path {
         let p = PathBuf::from(wp);
         if p.is_dir() {
-            cmd.current_dir(&p);
-
             // Auto-inject workspace .env and .env.local into terminal commands
             let dot_env = p.join(".env");
             if dot_env.is_file() {
@@ -57,8 +53,14 @@ pub async fn run_terminal_command(
                 let envs = ProcessSupervisor::parse_dotenv_file(&dot_env_local);
                 cmd.envs(&envs);
             }
+            p
+        } else {
+            fallback_safe_terminal_dir()
         }
-    }
+    } else {
+        fallback_safe_terminal_dir()
+    };
+    cmd.current_dir(&safe_cwd);
 
     #[cfg(target_os = "windows")]
     {
@@ -81,6 +83,23 @@ pub async fn run_terminal_command(
         exit_code,
         duration_ms,
     })
+}
+
+fn fallback_safe_terminal_dir() -> PathBuf {
+    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+        let p = PathBuf::from(home);
+        if p.is_dir() {
+            return p;
+        }
+    }
+    if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
+        let p = PathBuf::from(local_app).join("GeminiDesktop");
+        let _ = std::fs::create_dir_all(&p);
+        if p.is_dir() {
+            return p;
+        }
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 #[cfg(test)]

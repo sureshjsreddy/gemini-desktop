@@ -3,7 +3,7 @@ type: product_standard
 title: Workspace Context Profiles & Working Directory Isolation
 domain: product
 status: approved
-version: 1.3.0
+version: 1.4.0
 authority:
   level: official
   confidence: high
@@ -14,24 +14,27 @@ applies_to:
   - frontend
   - backend
   - database
+  - security
 
 rule:
-  "Workspaces provide isolated context profiles. Each workspace binds to a specific directory path, a preferred model, and optional custom system instructions."
+  "Workspaces provide isolated context profiles. Each workspace binds to a specific directory path, a preferred model, and optional custom system instructions, strictly validated against enterprise EDR boundaries."
 
 do:
   - "Seed exactly one default workspace (`Personal`) on initial install."
   - "Allow users to create, edit, and delete custom workspace profiles via the Workspace Management modal."
-  - "Support model selection using grouped presets (Auto, Gemini 3 / 3.5, Gemini 2.5, Legacy 1.5) and manual custom model names, decoupling reactive input state to prevent typing clobbering."
+  - "Support model selection using grouped presets (Auto, Gemini 3 / 3.5 / 3.8, Gemini 2.5, Legacy 1.5) and manual custom model names, decoupling reactive input state to prevent typing clobbering."
+  - "Default new workspace creations to safe developer directories (`%USERPROFILE%\\Projects` or user home) via `get_default_workspace_dir` instead of the root drive (`C:\\`)."
+  - "Enforce strict Enterprise EDR & UAC directory validation via `validate_workspace_path`: verify physical existence on disk and proactively reject dangerous paths including root drives (`C:\\`), Windows system folders (`C:\\Windows`, `System32`), Program Files, and volatile temp folders (`%TEMP%`)."
   - "Pass the workspace's target working directory when spawning the Gemini CLI process so project-level `GEMINI.md` files are recognized automatically."
   - "Enforce cascade deletion of associated chat sessions and messages when a workspace profile is deleted."
   - "Persist the last active workspace ID locally across app sessions and reload it automatically on application startup instead of defaulting to the first workspace."
   - "Disable the Save button until both workspace name and folder path fields are non-empty, using `$derived` reactive validation (`canSave`)."
-  - "Validate that the workspace directory physically exists on disk before saving by invoking the `check_directory_exists` Tauri command, and show a dialog alert if the path is invalid."
 
 dont:
   - "Do not seed cluttered or redundant demo workspaces by default."
   - "Do not allow deleting the currently active workspace without switching to an existing profile first."
   - "Do not allow saving a workspace with an empty name, empty path, or a path pointing to a non-existent physical folder."
+  - "Do not allow workspaces rooted directly at root drives (`C:\\`), `C:\\Windows`, `C:\\Program Files`, or `%TEMP%`, which trigger CrowdStrike Falcon EDR mass traversal and volatile execution IOAs."
 
 reason:
   "Clean workspace boundaries allow developers to switch between multiple repositories and projects with isolated histories and context."

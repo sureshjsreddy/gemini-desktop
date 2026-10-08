@@ -149,6 +149,24 @@ impl ProcessSupervisor {
         }
     }
 
+    /// Resolves a safe working directory complying with enterprise EDR standards.
+    pub fn fallback_safe_dir() -> PathBuf {
+        if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+            let p = PathBuf::from(home);
+            if p.is_dir() {
+                return p;
+            }
+        }
+        if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
+            let p = PathBuf::from(local_app).join("GeminiDesktop");
+            let _ = std::fs::create_dir_all(&p);
+            if p.is_dir() {
+                return p;
+            }
+        }
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    }
+
     /// Reads and parses KEY=VALUE environment variables from a .env file.
     pub fn parse_dotenv_file(path: &Path) -> std::collections::HashMap<String, String> {
         let mut map = std::collections::HashMap::new();
@@ -223,10 +241,9 @@ impl ProcessSupervisor {
             cmd.env(k, v);
         }
 
-        if let Some(dir) = working_dir {
+        let safe_cwd = if let Some(dir) = working_dir {
             if dir.exists() {
                 ensure_folder_trusted(&dir);
-                cmd.current_dir(&dir);
 
                 // Auto-inject workspace .env and .env.local into Gemini CLI and its child tools
                 let dot_env = dir.join(".env");
@@ -239,8 +256,14 @@ impl ProcessSupervisor {
                     let envs = Self::parse_dotenv_file(&dot_env_local);
                     cmd.envs(&envs);
                 }
+                dir
+            } else {
+                Self::fallback_safe_dir()
             }
-        }
+        } else {
+            Self::fallback_safe_dir()
+        };
+        cmd.current_dir(&safe_cwd);
 
         // Ensure GEMINI_MODEL environment variable matches CLI --model argument if provided
         if let Some(model_arg) = extra_args.windows(2).find(|w| w[0] == "--model").map(|w| &w[1]) {

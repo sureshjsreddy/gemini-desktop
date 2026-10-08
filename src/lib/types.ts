@@ -171,3 +171,9 @@ export interface GCloudStatus {
   path?: string;
 }
 
+export interface WorkspacePathValidation {
+  is_valid: boolean;
+  exists: boolean;
+  error_message?: string;
+}
+

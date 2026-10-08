@@ -258,6 +258,109 @@ fn walk_search_dir(
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspacePathValidation {
+    pub is_valid: bool,
+    pub exists: bool,
+    pub error_message: Option<String>,
+}
+
+#[tauri::command]
+pub fn validate_workspace_path(path: String) -> Result<WorkspacePathValidation, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Ok(WorkspacePathValidation {
+            is_valid: false,
+            exists: false,
+            error_message: Some("Workspace folder path cannot be empty.".to_string()),
+        });
+    }
+
+    let p = PathBuf::from(trimmed);
+    if !p.exists() || !p.is_dir() {
+        return Ok(WorkspacePathValidation {
+            is_valid: false,
+            exists: false,
+            error_message: Some("Directory does not exist on disk.".to_string()),
+        });
+    }
+
+    // Check dangerous/restricted directories that trigger EDR / CrowdStrike / UAC alerts
+    let path_str = p.to_string_lossy().to_string();
+    let norm = path_str.replace('/', "\\").to_lowercase();
+    let clean_norm = norm.trim_end_matches('\\');
+
+    // 1. Root drives (e.g. "c:", "c:\", "d:\")
+    if (clean_norm.len() <= 2 && clean_norm.ends_with(':')) || norm == "c:\\" || norm == "d:\\" || norm == "/" {
+        return Ok(WorkspacePathValidation {
+            is_valid: false,
+            exists: true,
+            error_message: Some("Cannot use root drive as a workspace. Please select a specific project or subfolder to prevent enterprise security and filesystem crawl alerts.".to_string()),
+        });
+    }
+
+    // 2. Windows / System directories
+    if let Ok(windir) = std::env::var("WINDIR") {
+        let win_norm = windir.replace('/', "\\").to_lowercase();
+        if clean_norm == win_norm || clean_norm.starts_with(&(win_norm + "\\")) {
+            return Ok(WorkspacePathValidation {
+                is_valid: false,
+                exists: true,
+                error_message: Some("Access to Windows system directories is restricted for security and EDR threat prevention.".to_string()),
+            });
+        }
+    } else if clean_norm.starts_with("c:\\windows") {
+        return Ok(WorkspacePathValidation {
+            is_valid: false,
+            exists: true,
+            error_message: Some("Access to Windows system directories is restricted for security and EDR threat prevention.".to_string()),
+        });
+    }
+
+    // 3. Program Files
+    if clean_norm.starts_with("c:\\program files") {
+        return Ok(WorkspacePathValidation {
+            is_valid: false,
+            exists: true,
+            error_message: Some("Program Files is read-only for standard users and monitored by enterprise EDR. Please select a development folder.".to_string()),
+        });
+    }
+
+    // 4. Temporary volatile folders
+    if let Ok(temp) = std::env::var("TEMP") {
+        let temp_norm = temp.replace('/', "\\").to_lowercase();
+        if clean_norm == temp_norm || clean_norm.starts_with(&(temp_norm + "\\")) {
+            return Ok(WorkspacePathValidation {
+                is_valid: false,
+                exists: true,
+                error_message: Some("Temporary directories are monitored by CrowdStrike / EDR software for volatile script execution. Please choose a permanent project folder.".to_string()),
+            });
+        }
+    }
+
+    Ok(WorkspacePathValidation {
+        is_valid: true,
+        exists: true,
+        error_message: None,
+    })
+}
+
+#[tauri::command]
+pub fn get_default_workspace_dir() -> Result<String, String> {
+    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+        let projects = PathBuf::from(&home).join("Projects");
+        if projects.is_dir() {
+            return Ok(projects.to_string_lossy().to_string());
+        }
+        let dev = PathBuf::from(&home).join("Development");
+        if dev.is_dir() {
+            return Ok(dev.to_string_lossy().to_string());
+        }
+        return Ok(home);
+    }
+    Ok(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).to_string_lossy().to_string())
+}
+
 #[tauri::command]
 pub fn check_directory_exists(path: String) -> Result<bool, String> {
     let trimmed = path.trim();
@@ -568,5 +671,46 @@ mod tests {
         assert!(!result);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_validate_workspace_path() {
+        // Empty path
+        let empty_res = validate_workspace_path("".to_string()).unwrap();
+        assert!(!empty_res.is_valid);
+        assert!(!empty_res.exists);
+
+        // Non-existent path
+        let non_exist = validate_workspace_path("C:/definitely/not_a_real_folder_xyz_123".to_string()).unwrap();
+        assert!(!non_exist.is_valid);
+        assert!(!non_exist.exists);
+
+        // Root drive rejection
+        let root_c = validate_workspace_path("C:\\".to_string()).unwrap();
+        assert!(!root_c.is_valid);
+        assert!(root_c.error_message.unwrap().contains("root drive"));
+
+        // Valid temp subfolder
+        let temp_dir = std::env::temp_dir().join(format!("gemini_test_ws_val_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let val_temp = validate_workspace_path(temp_dir.to_string_lossy().to_string()).unwrap();
+        // Since it's inside %TEMP%, it should be flagged as temporary directory
+        assert!(!val_temp.is_valid);
+        assert!(val_temp.error_message.unwrap().contains("Temporary"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        // Valid user folder
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            let home_val = validate_workspace_path(home).unwrap();
+            assert!(home_val.is_valid);
+            assert!(home_val.exists);
+        }
+    }
+
+    #[test]
+    fn test_get_default_workspace_dir() {
+        let dir = get_default_workspace_dir().unwrap();
+        assert!(!dir.is_empty());
     }
 }

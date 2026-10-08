@@ -164,15 +164,30 @@ pub fn launch_winget_upgrade(app: AppHandle, auto_close: Option<bool>) -> Result
 
         let batch_content = generate_updater_batch_script(WINGET_PACKAGE_ID, exe_path_str);
 
-        let temp_bat = std::env::temp_dir().join("gemini_desktop_updater.bat");
-        std::fs::write(&temp_bat, batch_content)
+        // Store updater batch script in persistent LocalAppData instead of %TEMP%
+        // to avoid CrowdStrike Falcon volatile directory script execution IOAs.
+        let updates_dir = if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
+            let p = std::path::PathBuf::from(local_app).join("GeminiDesktop").join("updates");
+            let _ = std::fs::create_dir_all(&p);
+            p
+        } else if let Ok(home) = std::env::var("USERPROFILE") {
+            let p = std::path::PathBuf::from(home).join(".gemini").join("updates");
+            let _ = std::fs::create_dir_all(&p);
+            p
+        } else {
+            std::env::temp_dir()
+        };
+
+        let bat_file = updates_dir.join("gemini_desktop_updater.bat");
+        std::fs::write(&bat_file, batch_content)
             .map_err(|e| format!("Failed to create updater script: {}", e))?;
 
-        let bat_path = temp_bat.to_string_lossy().to_string();
+        let bat_path = bat_file.to_string_lossy().to_string();
 
-        Command::new("cmd.exe")
-            .args(["/c", "start", "cmd.exe", "/c", &bat_path])
-            .spawn()
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/c", "start", "cmd.exe", "/c", &bat_path])
+            .current_dir(&updates_dir);
+        cmd.spawn()
             .map_err(|e| format!("Failed to launch updater: {}", e))?;
 
         if auto_close.unwrap_or(true) {

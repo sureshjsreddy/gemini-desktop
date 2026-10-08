@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Workspace, ApprovalMode } from "$lib/types";
+  import type { Workspace, ApprovalMode, WorkspacePathValidation } from "$lib/types";
   import { X, Plus, Trash2, Check } from "lucide-svelte";
   import { dialogManager } from "$lib/dialog.svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -167,11 +167,18 @@
     editingWorkspace.model = target.value.trim();
   }
 
-  function startNew() {
+  async function startNew() {
+    let defaultPath = "";
+    try {
+      defaultPath = await invoke<string>("get_default_workspace_dir");
+    } catch {
+      defaultPath = "";
+    }
+
     editingWorkspace = {
       id: "ws-" + Math.random().toString(36).substring(2, 9),
       name: "New Workspace",
-      path: "C:\\",
+      path: defaultPath,
       model: "auto",
       approval_mode: "default",
       system_prompt: "",
@@ -194,11 +201,11 @@
 
     isSaving = true;
     try {
-      const exists = await invoke<boolean>("check_directory_exists", { path: editingWorkspace.path.trim() });
-      if (!exists) {
+      const val = await invoke<WorkspacePathValidation>("validate_workspace_path", { path: editingWorkspace.path.trim() });
+      if (!val.is_valid) {
         await dialogManager.alert(
-          `The directory "${editingWorkspace.path.trim()}" does not exist on disk.\n\nPlease enter a valid physical folder path.`,
-          "Folder Not Found"
+          val.error_message || `The path "${editingWorkspace.path.trim()}" is invalid for a workspace.`,
+          val.exists ? "Restricted Directory (EDR Security Protection)" : "Folder Not Found"
         );
         return;
       }
