@@ -78,6 +78,7 @@ pub struct AcpSession {
     active_approval_mode: Arc<StdMutex<String>>,
     workspace_dir: Arc<StdMutex<Option<PathBuf>>>,
     terminal_results: Arc<StdMutex<HashMap<String, (String, i32)>>>,
+    track_file_changes: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AcpSession {
@@ -95,6 +96,7 @@ impl AcpSession {
             active_approval_mode: Arc::new(StdMutex::new("default".to_string())),
             workspace_dir: Arc::new(StdMutex::new(None)),
             terminal_results: Arc::new(StdMutex::new(HashMap::new())),
+            track_file_changes: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -195,6 +197,14 @@ impl AcpSession {
 
     pub fn take_pending_request(&self, id: u64) -> Option<oneshot::Sender<Result<Value, JsonRpcError>>> {
         self.pending_requests.lock().ok()?.remove(&id)
+    }
+
+    pub fn set_track_file_changes(&self, enabled: bool) {
+        self.track_file_changes.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn is_track_file_changes_enabled(&self) -> bool {
+        self.track_file_changes.load(Ordering::Relaxed)
     }
 
     pub fn set_workspace_dir(&self, dir: PathBuf) {
@@ -414,6 +424,81 @@ impl AcpSession {
         let result = build_permission_response_payload(allowed, option_id, stored_options);
         self.send_response(request_id, result).await
     }
+}
+
+pub fn extract_file_paths_from_acp_update(val: &Value) -> Vec<String> {
+    let mut paths = Vec::new();
+
+    // 1. Check locations
+    for ptr in &[
+        "/params/update/locations",
+        "/params/locations",
+        "/params/toolCall/locations",
+    ] {
+        if let Some(locs) = val.pointer(ptr).and_then(|v| v.as_array()) {
+            for loc in locs {
+                if let Some(uri) = loc.get("uri").and_then(|u| u.as_str()) {
+                    if let Some(stripped) = uri.strip_prefix("file:///") {
+                        paths.push(stripped.replace('/', "\\"));
+                    } else if let Some(stripped) = uri.strip_prefix("file://") {
+                        paths.push(stripped.to_string());
+                    }
+                }
+                if let Some(p) = loc.get("path").and_then(|p| p.as_str()) {
+                    paths.push(p.to_string());
+                }
+            }
+        }
+    }
+
+    // 2. Check objects: rawInput, parameters, input, arguments
+    for ptr in &[
+        "/params/update/rawInput",
+        "/params/update/parameters",
+        "/params/update/input",
+        "/params/update/arguments",
+        "/params/rawInput",
+        "/params/parameters",
+        "/params/input",
+        "/params/arguments",
+        "/params/toolCall/rawInput",
+        "/params/toolCall/parameters",
+        "/params/toolCall/input",
+        "/params/toolCall/arguments",
+    ] {
+        if let Some(obj) = val.pointer(ptr).and_then(|v| v.as_object()) {
+            for key in &["filePath", "file_path", "path", "target_path", "targetPath", "file", "filename", "destination", "source"] {
+                if let Some(f) = obj.get(*key).and_then(|v| v.as_str()) {
+                    paths.push(f.to_string());
+                }
+            }
+        }
+    }
+
+    // 3. Check title / tool name patterns
+    for ptr in &[
+        "/params/update/title",
+        "/params/title",
+        "/params/toolCall/title",
+        "/params/update/name",
+        "/params/name",
+    ] {
+        if let Some(title) = val.pointer(ptr).and_then(|v| v.as_str()) {
+            for prefix in &["writing to ", "editing ", "creating ", "overwriting ", "modifying ", "updating ", "reading "] {
+                if let Some(idx) = title.to_lowercase().find(prefix) {
+                    let cand = &title[idx + prefix.len()..];
+                    let trimmed = cand.trim().trim_matches(|c| c == '`' || c == '"' || c == '\'' || c == '.' || c == ':');
+                    if !trimmed.is_empty() {
+                        paths.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 /// Builds the official ACP permission response JSON matching Gemini CLI's Zod schema.
@@ -795,6 +880,20 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                                 .cloned();
                             let summary = generate_concise_tool_summary(tool_name, title, status, None, None);
 
+                            // Snapshot file before modification if tracking is enabled for this workspace
+                            if acp_session.is_track_file_changes_enabled() {
+                                for f in extract_file_paths_from_acp_update(&val) {
+                                    if let Some(ws_dir) = acp_session.get_workspace_dir() {
+                                        let _ = crate::commands::session_diff::snapshot_file_before_edit(&matched_session_id, &ws_dir, &f);
+                                    }
+                                }
+                                if status == "completed" {
+                                    let _ = app_handle.emit("session-files-updated", serde_json::json!({
+                                        "session_id": matched_session_id,
+                                    }));
+                                }
+                            }
+
                             let _ = app_handle.emit("acp-tool-call", serde_json::json!({
                                 "session_id": matched_session_id,
                                 "tool_call_id": tool_call_id,
@@ -832,6 +931,13 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
 
                             // Deterministic context reduction: prune output stored in tool telemetry to 4KB max
                             let pruned_out = raw_out.as_ref().map(|s| prune_terminal_output(s, 4096).0);
+                            if acp_session.is_track_file_changes_enabled() {
+                                for f in extract_file_paths_from_acp_update(&val) {
+                                    if let Some(ws_dir) = acp_session.get_workspace_dir() {
+                                        let _ = crate::commands::session_diff::snapshot_file_before_edit(&matched_session_id, &ws_dir, &f);
+                                    }
+                                }
+                            }
                             let summary = generate_concise_tool_summary(
                                 tool_name,
                                 title,
@@ -839,6 +945,12 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                                 err_msg.as_deref(),
                                 pruned_out.as_deref(),
                             );
+
+                            if status == "completed" && acp_session.is_track_file_changes_enabled() {
+                                let _ = app_handle.emit("session-files-updated", serde_json::json!({
+                                    "session_id": matched_session_id,
+                                }));
+                            }
 
                             let _ = app_handle.emit("acp-tool-call", serde_json::json!({
                                 "session_id": matched_session_id,
@@ -894,6 +1006,11 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     };
 
                     if is_done {
+                        if acp_session.is_track_file_changes_enabled() {
+                            let _ = app_handle.emit("session-files-updated", serde_json::json!({
+                                "session_id": matched_session_id,
+                            }));
+                        }
                         let stop_reason = val.pointer("/params/stopReason")
                             .or_else(|| val.pointer("/params/update/stopReason"))
                             .and_then(|s| s.as_str());
@@ -959,6 +1076,18 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                         .or_else(|| val.pointer("/params/parameters"))
                         .cloned()
                         .unwrap_or(Value::Null);
+
+                    if acp_session.is_track_file_changes_enabled() {
+                        if let Some(obj) = parameters.as_object() {
+                            for key in &["filePath", "file_path", "path", "target_path", "targetPath", "file", "filename", "destination"] {
+                                if let Some(f) = obj.get(*key).and_then(|v| v.as_str()) {
+                                    if let Some(ws_dir) = acp_session.get_workspace_dir() {
+                                        let _ = crate::commands::session_diff::snapshot_file_before_edit(&session_id, &ws_dir, f);
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     let locations = val.pointer("/params/toolCall/locations")
                         .or_else(|| val.pointer("/params/locations"))
@@ -1083,6 +1212,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                         let acp_clone = acp_session.clone();
                         let val_clone = val.clone();
                         let method_str = method.to_string();
+                        let session_id_owned = active_session_id.to_string();
                         tauri::async_runtime::spawn(async move {
                             match method_str.as_str() {
                                 "fs/read_text_file" => {
@@ -1127,6 +1257,11 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                                     let path_opt = val_clone.pointer("/params/path").and_then(|p| p.as_str());
                                     let content_opt = val_clone.pointer("/params/content").and_then(|c| c.as_str()).unwrap_or("");
                                     if let Some(p) = path_opt {
+                                        if acp_clone.is_track_file_changes_enabled() {
+                                            if let Some(ws_dir) = acp_clone.get_workspace_dir() {
+                                                let _ = crate::commands::session_diff::snapshot_file_before_edit(&session_id_owned, &ws_dir, p);
+                                            }
+                                        }
                                         let path_buf = if Path::new(p).is_relative() {
                                             if let Some(ws_dir) = acp_clone.get_workspace_dir() {
                                                 ws_dir.join(p)

@@ -1,6 +1,6 @@
 [package]
 name = "gemini-desktop"
-version = "0.2.40"
+version = "0.2.41"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -41,6 +41,7 @@ windows-sys = { version = "0.59", features = [
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.8", features = ["v4", "serde"] }
 open = "5"
+similar = { version = "2.6", features = ["inline"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

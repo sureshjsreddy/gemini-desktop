@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Workspace, ApprovalMode, WorkspacePathValidation } from "$lib/types";
-  import { X, Plus, Trash2, Check, Bell, BellRing } from "lucide-svelte";
+  import { X, Plus, Trash2, Check, Bell, BellRing, FileDiff } from "lucide-svelte";
   import { isNotificationSettingEnabled, setNotificationSetting, notifyBackgroundTaskComplete } from "$lib/utils/notifications";
   import { dialogManager } from "$lib/dialog.svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -96,6 +96,7 @@
     path: "C:\\",
     model: "auto",
     approval_mode: "default",
+    track_file_changes: false,
     system_prompt: "",
     created_at: new Date().toISOString(),
   });
@@ -135,6 +136,7 @@
         editingWorkspace = {
           ...target,
           approval_mode: target.approval_mode || "default",
+          track_file_changes: target.track_file_changes ?? false,
         };
       } else {
         startNew();
@@ -197,6 +199,7 @@
       path: defaultPath,
       model: "auto",
       approval_mode: "default",
+      track_file_changes: false,
       system_prompt: "",
       created_at: new Date().toISOString(),
     };
@@ -381,6 +384,39 @@
             ></textarea>
           </div>
 
+          <!-- Session File Changes & Snapshots Tracking (Optional Non-Git Feature) -->
+          <div class="p-3 bg-app border border-subtle rounded-lg space-y-2">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <FileDiff size={14} class="text-amber-400" />
+                <span class="font-medium text-primary-theme">Track Session File Changes & Snapshots</span>
+              </div>
+              <div class="flex items-center gap-2.5">
+                <span class="text-xs font-mono font-semibold transition-colors duration-150 {editingWorkspace.track_file_changes ? 'text-emerald-400' : 'text-muted-theme'}">
+                  {editingWorkspace.track_file_changes ? 'ON' : 'OFF'}
+                </span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={editingWorkspace.track_file_changes ?? false}
+                  aria-label="Toggle Track Session File Changes"
+                  onclick={() => {
+                    editingWorkspace.track_file_changes = !editingWorkspace.track_file_changes;
+                  }}
+                  class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 {editingWorkspace.track_file_changes ? 'bg-emerald-500' : 'bg-slate-400/40 dark:bg-slate-700'}"
+                >
+                  <span
+                    aria-hidden="true"
+                    class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out {editingWorkspace.track_file_changes ? 'translate-x-5' : 'translate-x-0'}"
+                  ></span>
+                </button>
+              </div>
+            </div>
+            <p class="text-[11px] text-muted-theme">
+              Recommended for folders not under Git source control. Snapshots files before agent edits, calculates visual line diffs (+/-), and enables 1-click restore. Keep disabled for Git repositories to ensure maximum file operation speed.
+            </p>
+          </div>
+
           <!-- Windows Desktop Toast Notifications -->
           <div class="p-3 bg-app border border-subtle rounded-lg space-y-2">
             <div class="flex items-center justify-between">
@@ -388,19 +424,27 @@
                 <Bell size={14} class="text-accent-theme" />
                 <span class="font-medium text-primary-theme">Desktop Toast Notifications</span>
               </div>
-              <label class="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={notificationsEnabled}
-                  onchange={(e) => {
-                    const checked = (e.target as HTMLInputElement).checked;
-                    notificationsEnabled = checked;
-                    setNotificationSetting(checked);
+              <div class="flex items-center gap-2.5">
+                <span class="text-xs font-mono font-semibold transition-colors duration-150 {notificationsEnabled ? 'text-emerald-400' : 'text-muted-theme'}">
+                  {notificationsEnabled ? 'ON' : 'OFF'}
+                </span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={notificationsEnabled}
+                  aria-label="Toggle Desktop Toast Notifications"
+                  onclick={() => {
+                    notificationsEnabled = !notificationsEnabled;
+                    setNotificationSetting(notificationsEnabled);
                   }}
-                  class="sr-only peer"
-                />
-                <div class="w-8 h-4 bg-surface-hover peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-accent-theme"></div>
-              </label>
+                  class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 {notificationsEnabled ? 'bg-emerald-500' : 'bg-slate-400/40 dark:bg-slate-700'}"
+                >
+                  <span
+                    aria-hidden="true"
+                    class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out {notificationsEnabled ? 'translate-x-5' : 'translate-x-0'}"
+                  ></span>
+                </button>
+              </div>
             </div>
             <p class="text-[11px] text-muted-theme">
               Receive native Windows toast notifications when background turns finish or require tool permission while you are working in other apps.

@@ -1,0 +1,59 @@
+id: PROD-DIFF-001
+type: product_standard
+title: Session File Changes, In-Memory Snapshots & Visual Diff Standard
+domain: product
+status: approved
+version: 1.2.0
+authority:
+  level: official
+  confidence: high
+owner:
+  team: product_ux_team
+
+applies_to:
+  - frontend
+  - backend
+  - acp_client
+  - components
+  - session_diff
+
+rule:
+  "Gemini Desktop must provide complete file change inspection, unified line diffing, and 1-click reverting for any Windows workspace folder, regardless of whether the folder is under Git source control. This feature is opt-in per workspace (`track_file_changes: boolean`, default `false`). When disabled, all ACP client handlers and background workers must completely skip snapshotting, file copying, manifest writing, and event broadcasting to guarantee zero overhead for Git-managed repositories. When enabled, changes must be strictly scoped to files touched by the conversation, guard against heavy files (> 10 MB) to protect disk and memory, and provide native Windows opening options via right-click context menu."
+
+do:
+  - "Default `track_file_changes` to `false` on new and existing workspaces, enabling users to opt-in from Workspace Settings modal."
+  - "Provide high-contrast, accessible toggle switches in Workspace Settings modal showing green (`bg-emerald-500` + `ON`) when enabled and grey (`bg-slate-400/40 dark:bg-slate-700` + `OFF`) when disabled."
+  - "Strictly enforce zero-overhead execution: all ACP tool handlers (`tool_call`, `tool_call_update`, `request_permission`, and `fs/write_text_file`) MUST verify `acp_session.is_track_file_changes_enabled()` before executing any snapshotting, manifest operations, or emitting `session-files-updated`."
+  - "Take an immutable baseline snapshot of any targeted file before ACP tool writes (e.g. write_file, edit_file, apply_diff) occur during an active session only when enabled."
+  - "Preserve the initial conversation baseline: if a file has already been snapshotted during the active session, do not overwrite the snapshot on subsequent tool calls."
+  - "Strictly scope tracked changes to files touched by tool calls and assistant turns in the active conversation; never pull in external files created or edited by other applications."
+  - "Cap snapshots at 10 MB (MAX_SNAPSHOT_FILE_SIZE) to prevent disk and memory exhaustion when large files (e.g. databases, binaries, media) are encountered."
+  - "Detect binary files and render concise size/binary status instead of running expensive text diffs."
+  - "Compute additions, deletions, and standard unified line diffs in native Rust using `similar::TextDiff::from_lines` with context radius 3."
+  - "Surface a `[ 📝 Changes (N) +X -Y ]` badge in the ChatView header whenever one or more files have been modified or created during the active conversation and tracking is enabled."
+  - "Provide an interactive `SessionChangesModal` featuring a selectable file list, status badges (Modified, Created, Deleted), line numbers, and color-coded insertions and deletions."
+  - "Provide right-click context menu and diff header quick actions matching Workspace Explorer: Open with Default App, Open with Notepad, Reveal in Windows Explorer, Copy Relative Path, and Copy Full Path."
+  - "Support single-file revert and all-files revert, cleanly restoring original file contents or deleting files created by the agent."
+  - "Emit `session-files-updated` events over Tauri IPC upon ACP tool completion and prompt completion only when tracking is enabled to keep frontend diff counters and badges updated in real time."
+  - "Cleanly purge session snapshot directories (`%LOCALAPPDATA%\\GeminiDesktop\\snapshots\\<session_id>\\`) when a conversation is deleted."
+
+dont:
+  - "Never execute file snapshots, disk copying, manifest loading/saving, or IPC diff broadcasts when `track_file_changes` is false for the active workspace."
+  - "Never pull in external files created by the user or other applications outside the conversation."
+  - "Never copy heavy files (> 10 MB) into snapshot cache to prevent disk exhaustion."
+  - "Never require Git, Git CLI, or any external binary to track, diff, or revert conversation file modifications."
+  - "Never overwrite an initial pre-edit session snapshot with an intermediate edit state; the snapshot must always reflect the pre-conversation baseline."
+  - "Never execute diffing scripts or shell commands in `%TEMP%` or arbitrary external processes."
+  - "Never leave orphan snapshot folders on disk after a user deletes a session."
+
+reason:
+  "Many enterprise and developer users open standard Windows directories, network shares, or scratch folders not bound to Git source control. They need absolute certainty regarding what files the agent modified and the exact line-by-line differences, with the guaranteed safety of 1-click restoration to baseline and native Windows right-click workflows without file pollution or disk bloat. Meanwhile, Git repositories need the guaranteed zero-overhead performance of ignoring snapshot operations."
+
+related_items:
+  - ARCH-SYS-001
+  - ARCH-ACP-001
+  - PROD-TOOL-001
+  - PROD-WS-001
+  - PROD-EXPLORER-001
+  - DEV-SVELTE-001
+  - DEV-RUST-001

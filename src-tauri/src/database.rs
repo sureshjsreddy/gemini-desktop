@@ -14,6 +14,7 @@ pub struct Workspace {
     pub model: String,
     pub system_prompt: Option<String>,
     pub approval_mode: Option<String>,
+    pub track_file_changes: Option<bool>,
     pub created_at: String,
 }
 
@@ -91,6 +92,7 @@ impl DbManager {
                 model TEXT NOT NULL DEFAULT 'gemini-2.5-pro',
                 system_prompt TEXT,
                 approval_mode TEXT DEFAULT 'default',
+                track_file_changes INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL
             );
 
@@ -147,6 +149,7 @@ impl DbManager {
 
         // Migration: add approval_mode to workspaces table if upgrading from older schema
         let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN approval_mode TEXT DEFAULT 'default'", []);
+        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN track_file_changes INTEGER DEFAULT 0", []);
 
         Ok(())
     }
@@ -200,10 +203,11 @@ impl DbManager {
 
     pub fn list_workspaces(&self) -> Result<Vec<Workspace>, String> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, path, model, system_prompt, approval_mode, created_at FROM workspaces ORDER BY name ASC")
+        let mut stmt = conn.prepare("SELECT id, name, path, model, system_prompt, approval_mode, track_file_changes, created_at FROM workspaces ORDER BY name ASC")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt.query_map([], |row| {
+            let track_int: Option<i64> = row.get(6)?;
             Ok(Workspace {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -211,7 +215,8 @@ impl DbManager {
                 model: row.get(3)?,
                 system_prompt: row.get(4)?,
                 approval_mode: row.get(5)?,
-                created_at: row.get(6)?,
+                track_file_changes: track_int.map(|v| v != 0),
+                created_at: row.get(7)?,
             })
         }).map_err(|e| e.to_string())?;
 
@@ -225,14 +230,15 @@ impl DbManager {
     pub fn save_workspace(&self, ws: Workspace) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO workspaces (id, name, path, model, system_prompt, approval_mode, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO workspaces (id, name, path, model, system_prompt, approval_mode, track_file_changes, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 path = excluded.path,
                 model = excluded.model,
                 system_prompt = excluded.system_prompt,
-                approval_mode = excluded.approval_mode",
+                approval_mode = excluded.approval_mode,
+                track_file_changes = excluded.track_file_changes",
             params![
                 ws.id,
                 ws.name,
@@ -240,6 +246,7 @@ impl DbManager {
                 ws.model,
                 ws.system_prompt,
                 ws.approval_mode.as_deref().unwrap_or("default"),
+                ws.track_file_changes.map(|b| if b { 1 } else { 0 }).unwrap_or(0),
                 ws.created_at
             ],
         ).map_err(|e| e.to_string())?;
@@ -548,6 +555,7 @@ mod tests {
             model: "gemini-2.5-pro".to_string(),
             system_prompt: None,
             approval_mode: Some("default".to_string()),
+            track_file_changes: None,
             created_at: Utc::now().to_rfc3339(),
         }).unwrap();
 
@@ -670,6 +678,7 @@ mod tests {
             model: "gemini-2.5-pro".to_string(),
             system_prompt: Some("Custom system instruction".to_string()),
             approval_mode: None,
+            track_file_changes: None,
             created_at: now.clone(),
         };
         db.save_workspace(ws).expect("failed to save workspace");
@@ -691,6 +700,7 @@ mod tests {
             model: "gemini-3.5-flash".to_string(),
             system_prompt: None,
             approval_mode: Some("yolo".to_string()),
+            track_file_changes: Some(true),
             created_at: now,
         };
         db.save_workspace(updated_ws).expect("failed to update workspace");

@@ -5,6 +5,7 @@ export interface Workspace {
   model: string;
   system_prompt?: string;
   approval_mode?: ApprovalMode;
+  track_file_changes?: boolean;
   created_at: string;
 }
 
@@ -239,6 +240,16 @@ export interface PlanTaskItem {
   text: string;
   completed: boolean;
   category?: string;
+}
+
+export interface SessionFileChange {
+  file_path: string;
+  status: "created" | "modified" | "deleted";
+  additions: number;
+  deletions: number;
+  diff_text: string;
+  original_content: string;
+  current_content: string;
 }
 
 

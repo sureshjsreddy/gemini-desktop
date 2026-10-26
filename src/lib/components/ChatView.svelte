@@ -10,7 +10,11 @@
     FileSnippetResult,
     ToolExecutionStep,
     PlanTaskItem,
+    SessionFileChange,
   } from "$lib/types";
+  import { invoke } from "@tauri-apps/api/core";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import SessionChangesModal from "$lib/components/SessionChangesModal.svelte";
   import ToolCallNode from "$lib/components/ToolCallNode.svelte";
   import { parseToolSteps, cleanMessageContent } from "$lib/utils/toolSteps";
   import ToolPermissionCard from "$lib/components/ToolPermissionCard.svelte";
@@ -38,8 +42,9 @@
     PanelLeftOpen,
     FileText,
     ListTodo,
+    FileDiff,
   } from "lucide-svelte";
-  import { tick } from "svelte";
+  import { tick, onMount, onDestroy } from "svelte";
 
   let {
     workspace = null,
@@ -121,6 +126,84 @@
       ? sessionPlanTasks[currentSessionId]
       : []
   );
+
+  let sessionChanges = $state<SessionFileChange[]>([]);
+  let isChangesModalOpen = $state(false);
+
+  let totalAdditions = $derived(sessionChanges.reduce((acc, c) => acc + c.additions, 0));
+  let totalDeletions = $derived(sessionChanges.reduce((acc, c) => acc + c.deletions, 0));
+
+  async function loadSessionChanges() {
+    if (!workspace?.track_file_changes || !currentSessionId || !workspace?.path) {
+      sessionChanges = [];
+      return;
+    }
+    try {
+      const res = await invoke<SessionFileChange[]>("get_session_file_changes", {
+        sessionId: currentSessionId,
+        workspacePath: workspace.path,
+      });
+      sessionChanges = res || [];
+    } catch (e) {
+      console.warn("Failed to load session file changes", e);
+    }
+  }
+
+  $effect(() => {
+    const _len = messages.length;
+    const _streaming = isStreaming;
+    if (workspace?.track_file_changes && currentSessionId && workspace?.path) {
+      loadSessionChanges();
+    } else {
+      sessionChanges = [];
+    }
+  });
+
+  let unlistenFileUpdates: UnlistenFn | null = null;
+  onMount(async () => {
+    try {
+      unlistenFileUpdates = await listen<{ session_id: string }>("session-files-updated", (event: { payload: { session_id: string } }) => {
+        if (workspace?.track_file_changes && (!event.payload?.session_id || event.payload.session_id === currentSessionId)) {
+          loadSessionChanges();
+        }
+      });
+    } catch (e) {
+      console.warn("Failed to setup session-files-updated listener", e);
+    }
+  });
+
+  onDestroy(() => {
+    if (unlistenFileUpdates) {
+      unlistenFileUpdates();
+    }
+  });
+
+  async function handleRevertFile(filePath: string) {
+    if (!currentSessionId || !workspace?.path) return;
+    try {
+      await invoke("revert_session_file", {
+        sessionId: currentSessionId,
+        workspacePath: workspace.path,
+        filePath,
+      });
+      await loadSessionChanges();
+    } catch (e) {
+      console.error("Failed to revert file", e);
+    }
+  }
+
+  async function handleRevertAll() {
+    if (!currentSessionId || !workspace?.path) return;
+    try {
+      await invoke("revert_all_session_files", {
+        sessionId: currentSessionId,
+        workspacePath: workspace.path,
+      });
+      await loadSessionChanges();
+    } catch (e) {
+      console.error("Failed to revert all files", e);
+    }
+  }
 
   let lastPlanContent = $derived.by(() => {
     if (isStreaming && streamingText && (streamingText.includes("- [ ]") || streamingText.includes("- [x]") || streamingText.includes("Step 1:"))) {
@@ -414,6 +497,33 @@
             {#if currentTasks.length > 0}
               <span class="ml-0.5 px-1.5 py-0.2 rounded-full text-[10px] {currentTasks.every(t => t.completed) ? 'bg-emerald-500/20 text-emerald-300' : 'bg-sky-500/20 text-sky-300'} font-semibold">
                 {currentTasks.filter(t => t.completed).length}/{currentTasks.length}
+              </span>
+            {/if}
+          </button>
+        </Tooltip>
+      {/if}
+
+      <!-- Session File Changes Badge (Works in non-git Windows folders when enabled in Workspace Settings) -->
+      {#if workspace?.track_file_changes && sessionChanges.length > 0}
+        <Tooltip
+          text="Inspect Session File Changes"
+          subtext={`${sessionChanges.length} file(s) modified in this session (+${totalAdditions} -${totalDeletions})`}
+          position="bottom"
+        >
+          <button
+            type="button"
+            onclick={() => (isChangesModalOpen = true)}
+            class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border font-medium shadow-xs transition-colors cursor-pointer bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20"
+          >
+            <FileDiff size={13} class="text-amber-400" />
+            <span>Changes</span>
+            <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-amber-500/20 text-amber-200 font-semibold font-mono">
+              {sessionChanges.length}
+            </span>
+            {#if totalAdditions > 0 || totalDeletions > 0}
+              <span class="text-[10px] font-mono opacity-80 hidden md:inline">
+                <span class="text-emerald-400">+{totalAdditions}</span>
+                <span class="text-rose-400">-{totalDeletions}</span>
               </span>
             {/if}
           </button>
@@ -744,4 +854,14 @@
 
   <!-- Terminal Drawer -->
   <TerminalDrawer bind:isOpen={showTerminalDrawer} {workspace} />
+
+  <!-- Session Changes & Visual Diff Modal -->
+  <SessionChangesModal
+    isOpen={isChangesModalOpen}
+    changes={sessionChanges}
+    workspacePath={workspace?.path}
+    onClose={() => (isChangesModalOpen = false)}
+    onRevertFile={handleRevertFile}
+    onRevertAll={handleRevertAll}
+  />
 </div>

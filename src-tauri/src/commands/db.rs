@@ -35,6 +35,7 @@ pub fn rename_session(state: State<AppState>, session_id: String, title: String)
 #[tauri::command]
 pub fn delete_session(state: State<AppState>, session_id: String) -> Result<(), String> {
     state.acp_session.remove_session(&session_id);
+    let _ = crate::commands::session_diff::clear_session_snapshots(session_id.clone());
     state.db.delete_session(&session_id)
 }
 

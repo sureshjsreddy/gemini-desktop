@@ -351,6 +351,8 @@ pub async fn send_prompt(
 
     let ws_path_str = ws.as_ref().map(|w| w.path.clone()).unwrap_or_else(|| ".".to_string());
     state.acp_session.set_workspace_dir(std::path::PathBuf::from(&ws_path_str));
+    let should_track = ws.as_ref().and_then(|w| w.track_file_changes).unwrap_or(false);
+    state.acp_session.set_track_file_changes(should_track);
 
     // 4. Establish session context & send prompt over ACP
     let acp_session_id = match state.acp_session.get_acp_session_id(&session_id) {

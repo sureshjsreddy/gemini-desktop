@@ -82,7 +82,11 @@ pub fn run() {
             read_file_snippet,
             get_clipboard_text,
             show_toast_notification,
-            focus_app_window
+            focus_app_window,
+            get_session_file_changes,
+            revert_session_file,
+            revert_all_session_files,
+            clear_session_snapshots
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

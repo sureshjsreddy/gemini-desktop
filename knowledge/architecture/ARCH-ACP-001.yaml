@@ -3,7 +3,7 @@ type: architecture_standard
 title: Agent Client Protocol (ACP) JSON-RPC Streaming & Tool Intercepts
 domain: architecture
 status: approved
-version: 1.11.0
+version: 1.12.0
 authority:
   level: official
   confidence: high
@@ -13,9 +13,10 @@ owner:
 applies_to:
   - backend
   - acp_client
+  - session_diff
 
 rule:
-  "Communication with the underlying Gemini CLI process must adhere to the Agent Client Protocol (ACP) over standard I/O using JSON-RPC 2.0. Incoming stream deltas and tool execution requests must be parsed line-by-line and routed via Tauri events."
+  "Communication with the underlying Gemini CLI process must adhere to the Agent Client Protocol (ACP) over standard I/O using JSON-RPC 2.0. Incoming stream deltas and tool execution requests must be parsed line-by-line and routed via Tauri events. All ACP client tool methods and handlers that intercept, modify, or snapshot workspace files MUST strictly check and respect the workspace's `track_file_changes` setting (`acp_session.is_track_file_changes_enabled()`), completely skipping baseline snapshotting, disk I/O, and change-event broadcasts when disabled to ensure zero performance overhead for Git-managed repositories."
 
 do:
   - "Spawn the Gemini CLI with piped stdin, stdout, and stderr (`Stdio::piped()`)."
@@ -23,6 +24,8 @@ do:
   - "Emit `acp-chunk` events for delta content updates and final completion (`is_done: true`)."
   - "Execute asynchronous response tasks from reader threads using `tauri::async_runtime::spawn` instead of `tokio::spawn` to prevent 'no reactor running' panics on threads outside the Tokio runtime."
   - "Handle Agent-to-Client ACP JSON-RPC requests (`fs/read_text_file`, `fs/write_text_file`, `terminal/*`) and acknowledge any request with an `id` to prevent Gemini CLI async execution loop deadlocks or `-32601` failures."
+  - "Enforce strict zero-overhead guards across all ACP tool handlers: whenever intercepting file paths in `tool_call`, `tool_call_update`, `request_permission`, or agent-to-client `fs/write_text_file`, ALWAYS guard snapshot calls with `if acp_session.is_track_file_changes_enabled()` before performing any file discovery, manifest loading, or disk copying."
+  - "Guard IPC diff broadcast emissions: only emit `session-files-updated` upon tool completion or turn termination if `acp_session.is_track_file_changes_enabled()` is true."
   - "Format `fs/read_text_file` responses strictly: on success or non-existent file checks (NotFound), return `{ content: string }` with an empty string for missing files so Gemini CLI and SDK callers never throw 'content must be a string' or fail `write_file`."
   - "Resolve relative file paths in `fs/read_text_file` and `fs/write_text_file` against the active workspace directory via `acp_session.get_workspace_dir()`."
   - "Implement ACP terminal capabilities (`terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/release`, `terminal/kill`) and advertise `terminal: true` in `clientCapabilities` during the ACP `initialize` handshake, while omitting client-side `fs` capabilities to let Gemini CLI leverage its native Node.js filesystem service directly without protocol impedance."
@@ -49,6 +52,7 @@ do:
   - "Provide a fallback mock/offline mode if the Gemini CLI executable is absent on PATH."
 
 dont:
+  - "Do not execute file snapshots, disk copying, manifest updates, or emit `session-files-updated` events in any ACP handler when `track_file_changes` is disabled for the workspace profile."
   - "Do not block the Tauri main thread or Tokio runtime waiting for ACP line responses."
   - "Do not auto-approve dangerous system tool calls without user permission when running in Ask (`default`) mode."
   - "Do not send invalid model parameters in ACP `session/new` or `session/prompt` payloads."
@@ -59,9 +63,10 @@ dont:
   - "Do not treat null `stopReason` pointers as valid turn completion indicators."
 
 reason:
-  "ACP allows full streaming, interactive agent pairing, cancelation, and safety guards over standard process streams without requiring network socket listeners."
+  "ACP allows full streaming, interactive agent pairing, cancelation, and safety guards over standard process streams without requiring network socket listeners. Zero-overhead file tracking guards ensure Git repositories run at full native speed without unwanted disk copying."
 
 related_items:
   - ARCH-SYS-001
   - ARCH-PROC-001
   - PROD-TOOL-001
+  - PROD-DIFF-001
