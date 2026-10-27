@@ -25,7 +25,7 @@
   import { APP_VERSION_FALLBACK } from "$lib/version";
 
   let {
-    isOpen = true,
+    isOpen = false,
     workspaces = [],
     activeWorkspace = null,
     sessions = [],

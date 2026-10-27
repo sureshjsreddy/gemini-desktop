@@ -42,7 +42,7 @@
   let {
     workspace = null,
     workspaceFiles = [],
-    isOpen = true,
+    isOpen = false,
     onToggle,
     onRefresh,
     onInsertMention,

@@ -3,15 +3,26 @@ import type { PlanTaskItem } from "$lib/types";
 /**
  * Parses markdown text to extract implementation plan tasks (checkboxes or numbered steps).
  */
-export function extractTasksFromMarkdown(md: string): PlanTaskItem[] {
+export function extractTasksFromMarkdown(md: string, existingTasks: PlanTaskItem[] = []): PlanTaskItem[] {
   if (!md || !md.trim()) return [];
 
   const lines = md.split("\n");
   const extracted: PlanTaskItem[] = [];
   let currentCategory = "Implementation Steps";
+  let inCodeBlock = false;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
+    const rawLine = lines[i];
+    const line = rawLine.trim();
+
+    // Skip fenced code blocks
+    if (line.startsWith("```")) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    if (inCodeBlock) {
+      continue;
+    }
 
     // Heading category
     if (line.startsWith("### ") || line.startsWith("## ")) {
@@ -22,24 +33,37 @@ export function extractTasksFromMarkdown(md: string): PlanTaskItem[] {
     // Checkbox tasks (- [ ] or - [x] or * [ ])
     const checkMatch = line.match(/^[-*]\s*\[([ xX])\]\s*(.*)$/);
     if (checkMatch && checkMatch[2].trim().length > 2) {
+      const taskText = checkMatch[2].trim();
+      const isCompleted = checkMatch[1].toLowerCase() === "x";
+      const existing = existingTasks.find(
+        (t) => t.text.toLowerCase() === taskText.toLowerCase()
+      );
+
       extracted.push({
-        id: `task-${Date.now()}-${extracted.length}`,
-        text: checkMatch[2].trim(),
-        completed: checkMatch[1].toLowerCase() === "x",
+        id: existing?.id || `task-${extracted.length}-${taskText.slice(0, 16).replace(/[^a-zA-Z0-9]/g, "") || "item"}`,
+        text: taskText,
+        completed: existing !== undefined ? existing.completed : isCompleted,
         category: currentCategory,
       });
       continue;
     }
 
-    // Step items (e.g. "Step 1: ...")
-    const numMatch = line.match(/^(?:(?:\bStep\s+\d+:?))\s*(.*)$/i);
-    if (numMatch && numMatch[1].length > 5 && !line.includes("```")) {
-      extracted.push({
-        id: `task-${Date.now()}-${extracted.length}`,
-        text: numMatch[1].trim(),
-        completed: false,
-        category: currentCategory,
-      });
+    // Step items (e.g. "Step 1: ...", "1. Step 1: ...", "**Step 1:** ...", "- Step 1: ...")
+    const stepMatch = line.match(/^(?:[-*]|\d+[\.)])?\s*\*{0,2}(?:Step\s+\d+:?)\*{0,2}\s*[:\-–—]?\s*(.*)$/i);
+    if (stepMatch && stepMatch[1].trim().length > 3) {
+      const taskText = stepMatch[1].trim().replace(/^[:\-–—*`_]+\s*/, "").trim();
+      if (taskText.length > 2) {
+        const existing = existingTasks.find(
+          (t) => t.text.toLowerCase() === taskText.toLowerCase()
+        );
+
+        extracted.push({
+          id: existing?.id || `task-${extracted.length}-${taskText.slice(0, 16).replace(/[^a-zA-Z0-9]/g, "") || "item"}`,
+          text: taskText,
+          completed: existing !== undefined ? existing.completed : false,
+          category: currentCategory,
+        });
+      }
     }
   }
 
@@ -55,9 +79,16 @@ export function syncTasksCompletionFromMarkdown(tasks: PlanTaskItem[], md: strin
 
   const lines = md.split("\n");
   const completedTexts: string[] = [];
+  let inCodeBlock = false;
 
   for (const line of lines) {
     const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    if (inCodeBlock) continue;
+
     const match = trimmed.match(/^[-*]\s*\[[xX]\]\s*(.*)$/);
     if (match && match[1].trim()) {
       completedTexts.push(match[1].trim().toLowerCase());

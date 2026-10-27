@@ -81,10 +81,53 @@
 
   let envStatus: GeminiEnvStatus | null = $state(null);
 
-  // Panels & Drawers
+  const SIDEBAR_OPEN_KEY = "gemini_sidebar_open";
+  const EXPLORER_OPEN_KEY = "gemini_explorer_open";
+
+  function getInitialSidebarOpen(): boolean {
+    if (typeof window === "undefined") return false;
+    try {
+      const saved = localStorage.getItem(SIDEBAR_OPEN_KEY);
+      return saved !== null ? saved === "true" : false;
+    } catch {
+      return false;
+    }
+  }
+
+  function getInitialExplorerOpen(): boolean {
+    if (typeof window === "undefined") return false;
+    try {
+      const saved = localStorage.getItem(EXPLORER_OPEN_KEY);
+      return saved !== null ? saved === "true" : false;
+    } catch {
+      return false;
+    }
+  }
+
+  // Panels & Drawers (default to collapsed; state persisted across app restarts)
   let showTerminalDrawer = $state(false);
-  let showSolutionExplorer = $state(true);
-  let showSidebar = $state(true);
+  let showSolutionExplorer = $state(getInitialExplorerOpen());
+  let showSidebar = $state(getInitialSidebarOpen());
+
+  $effect(() => {
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem(SIDEBAR_OPEN_KEY, String(showSidebar));
+      } catch (e) {
+        console.warn("Failed to persist sidebar state:", e);
+      }
+    }
+  });
+
+  $effect(() => {
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem(EXPLORER_OPEN_KEY, String(showSolutionExplorer));
+      } catch (e) {
+        console.warn("Failed to persist explorer state:", e);
+      }
+    }
+  });
 
   let chatViewRef = $state<ReturnType<typeof ChatView> | null>(null);
   let solutionExplorerRef = $state<ReturnType<typeof SolutionExplorer> | null>(null);

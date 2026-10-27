@@ -56,7 +56,7 @@
     streamingToolCalls = [],
     streamingSteeringHints = [],
     toolPermission = null,
-    showSidebar = true,
+    showSidebar = false,
     onToggleSidebar,
     showTerminalDrawer = $bindable(false),
     showSolutionExplorer = $bindable(true),
@@ -251,7 +251,7 @@
     if (sid && lastPlanContent && lastPlanContent !== lastParsedPlanContent[sid]) {
       lastParsedPlanContent[sid] = lastPlanContent;
       if (!sessionPlanTasks[sid] || sessionPlanTasks[sid].length === 0) {
-        const extracted = extractTasksFromMarkdown(lastPlanContent);
+        const extracted = extractTasksFromMarkdown(lastPlanContent, sessionPlanTasks[sid] || []);
         if (extracted.length > 0) {
           sessionPlanTasks[sid] = extracted;
           try {
@@ -272,12 +272,12 @@
     if (!sid) return;
 
     if (streamingText && (streamingText.includes("- [ ]") || streamingText.includes("Step 1:"))) {
-      if (!hasAutoOpenedForStreamingPlan) {
-        hasAutoOpenedForStreamingPlan = true;
-        isPlanWorkbenchOpen = true;
-      }
-      const liveExtracted = extractTasksFromMarkdown(streamingText);
+      const liveExtracted = extractTasksFromMarkdown(streamingText, sessionPlanTasks[sid] || []);
       if (liveExtracted.length > 0) {
+        if (!hasAutoOpenedForStreamingPlan) {
+          hasAutoOpenedForStreamingPlan = true;
+          isPlanWorkbenchOpen = true;
+        }
         sessionPlanTasks[sid] = liveExtracted;
         try {
           localStorage.setItem(`gemini_plan_tasks_${sid}`, JSON.stringify(liveExtracted));
