@@ -1,8 +1,8 @@
 # Gemini Desktop Master Knowledge Graph & Index
 system_name: GeminiDesktop
 repository_root: "c:/AIFiles/gemini-desktop"
-knowledge_units_count: 24
-last_updated: "2026-10-26"
+knowledge_units_count: 26
+last_updated: "2026-10-28"
 
 knowledge_units:
   architecture:
@@ -70,6 +70,12 @@ knowledge_units:
     - id: PROD-DIFF-001
       file: "knowledge/product/PROD-DIFF-001.yaml"
       title: "Session File Changes, In-Memory Snapshots & Visual Diff Standard"
+    - id: PROD-SETTINGS-001
+      file: "knowledge/product/PROD-SETTINGS-001.yaml"
+      title: "Global Gemini CLI Settings GUI & Configuration Standard"
+    - id: PROD-COMPACT-001
+      file: "knowledge/product/PROD-COMPACT-001.yaml"
+      title: "Session Context Compaction & 1M Ceiling Continuation Recovery Standard"
 
   decisions:
     - id: ADR-001

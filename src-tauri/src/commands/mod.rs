@@ -8,6 +8,7 @@ pub mod setup;
 pub mod debug_doctor;
 pub mod notification;
 pub mod session_diff;
+pub mod settings;
 
 pub use db::*;
 pub use session::*;
@@ -19,6 +20,7 @@ pub use setup::*;
 pub use debug_doctor::*;
 pub use notification::*;
 pub use session_diff::*;
+pub use settings::*;
 
 use crate::acp_client::AcpSession;
 use crate::database::DbManager;

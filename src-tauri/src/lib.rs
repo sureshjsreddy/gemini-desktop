@@ -86,7 +86,10 @@ pub fn run() {
             get_session_file_changes,
             revert_session_file,
             revert_all_session_files,
-            clear_session_snapshots
+            clear_session_snapshots,
+            get_global_cli_settings,
+            save_global_cli_settings,
+            create_continuation_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

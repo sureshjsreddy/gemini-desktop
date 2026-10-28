@@ -1,0 +1,44 @@
+id: PROD-COMPACT-001
+type: product_standard
+title: Session Context Compaction & 1M Ceiling Continuation Recovery Standard
+domain: product
+status: approved
+version: 1.0.0
+authority:
+  level: official
+  confidence: high
+owner:
+  team: product_ux_team
+
+applies_to:
+  - frontend
+  - backend
+  - commands
+  - session
+  - chat
+
+rule:
+  "Gemini Desktop must provide both manual and automated context management to prevent token exhaustion and preserve critical conversation history. Users must be able to trigger deterministic milestone summaries on demand via a dedicated 'Compress Context' UI button or slash commands (`/compress`, `/compact`), and when a conversation hits the 1M token ceiling, the system must support zero-drop session continuation by transferring summarized milestone state into a linked successor session."
+
+do:
+  - "Provide a dedicated 'Compress Context' button in the ChatView header alongside token metrics whenever active session messages exist."
+  - "Support slash command expansion: intercept `/compress` and `/compact` in prompt preprocessing and expand them into explicit milestone summarization instructions covering: Project Goal & Scope, Key Architectural Decisions, Files Created/Modified, Active State/Unresolved Tasks, and Critical Constraints."
+  - "Persist the generated milestone summary into the conversation history and local SQLite database (`messages` table) so subsequent turns retain full continuity within a trimmed token budget."
+  - "Provide automated continuation session creation (`create_continuation_session` in `src-tauri/src/commands/session.rs`): when a session reaches token exhaustion, construct a new session seeded with the consolidated milestone summary, transferring workspace configuration and linking parent session ID for seamless auditing."
+  - "Emit frontend notifications or modal prompts upon token ceiling detection, allowing 1-click continuation without losing work or manual copy-pasting."
+
+dont:
+  - "Never discard original conversation records or messages from SQLite during compaction; compactions are additive checkpoint messages within the session."
+  - "Never execute lossy, blind truncation of messages without generating structured milestone summaries."
+  - "Never block or interrupt an in-progress agent turn during compression requests."
+
+reason:
+  "Long-running developer tasks, complex multi-file refactoring, and extensive debugging sessions naturally approach the 1M token window limit. Systematic context compaction ensures models maintain sharp focus without drift, while continuation recovery guarantees zero disruption when sessions exceed model capacity."
+
+related_items:
+  - ARCH-SYS-001
+  - ARCH-ACP-001
+  - ARCH-DATA-001
+  - PROD-MODEL-001
+  - DEV-SVELTE-001
+  - DEV-RUST-001

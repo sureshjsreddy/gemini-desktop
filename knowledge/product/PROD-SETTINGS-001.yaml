@@ -1,0 +1,45 @@
+id: PROD-SETTINGS-001
+type: product_standard
+title: Global Gemini CLI Settings GUI & Configuration Standard
+domain: product
+status: approved
+version: 1.0.0
+authority:
+  level: official
+  confidence: high
+owner:
+  team: product_ux_team
+
+applies_to:
+  - frontend
+  - backend
+  - commands
+  - settings
+  - CliSettingsModal
+
+rule:
+  "Gemini Desktop must provide a first-class, interactive settings modal for viewing and modifying official Gemini CLI global configurations (`~/.gemini/settings.json`). The UI must support bidirectional synchronization between graphical form controls and an inline editable JSON viewer, validate all syntax, preserve user-defined unknown JSON keys, and guarantee atomic read/write operations without corrupting user configs."
+
+do:
+  - "Read and write official Gemini CLI settings from `%USERPROFILE%/.gemini/settings.json` via backend IPC commands `get_gemini_cli_settings` and `save_gemini_cli_settings`."
+  - "Preserve all existing unrecognized top-level and nested settings keys during updates by merging form changes onto the existing parsed JSON DOM."
+  - "Provide dedicated GUI form sections for core CLI preferences: default model override (`general.model`), temperature (`general.temperature`), maximum output tokens (`general.maxOutputTokens`), Git ignore filtering (`fileFiltering.respectGitIgnore`), and usage telemetry (`telemetry.enabled`)."
+  - "Provide a live Raw JSON tab with syntax highlighting, indentation, and real-time JSON validation before permitting save actions."
+  - "Provide a 1-click 'Restore Defaults' action resetting form values to recommended baseline values without immediately overwriting disk until confirmed."
+  - "Surface accessible entry points in both the expanded sidebar menu ('CLI Settings') and collapsed sidebar icon strip (`w-8 h-8` icon button with tooltip)."
+  - "Gracefully handle missing `~/.gemini/settings.json` by initializing standard defaults and creating parent directories on save."
+
+dont:
+  - "Never discard user-defined custom settings or third-party CLI flags present in `~/.gemini/settings.json` when saving from GUI forms."
+  - "Never write invalid JSON to `~/.gemini/settings.json`; reject malformed syntax and present inline error feedback to the user."
+  - "Never lock or freeze the UI thread while reading or saving disk settings."
+
+reason:
+  "Users need a convenient, error-free way to configure their underlying Gemini CLI runtime environment (including `.gitignore` filtering, model overrides, and token ceilings) directly inside Gemini Desktop without having to locate and manually edit hidden dotfiles in text editors."
+
+related_items:
+  - ARCH-SYS-001
+  - PROD-SETUP-001
+  - PROD-MODEL-001
+  - DEV-SVELTE-001
+  - DEV-RUST-001

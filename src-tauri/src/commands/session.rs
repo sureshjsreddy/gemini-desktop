@@ -736,9 +736,137 @@ pub async fn restart_gemini_session(state: State<'_, AppState>) -> Result<String
     Ok("Gemini CLI session reset successfully. Next prompt will launch with updated environment.".to_string())
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinuationResult {
+    pub new_session: crate::database::Session,
+    pub continuation_message: Message,
+}
+
+#[tauri::command]
+pub async fn create_continuation_session(
+    state: State<'_, AppState>,
+    exhausted_session_id: String,
+    workspace_path: Option<String>,
+) -> Result<ContinuationResult, String> {
+    let session = state
+        .db
+        .get_session(&exhausted_session_id)?
+        .ok_or_else(|| format!("Session {} not found", exhausted_session_id))?;
+
+    let messages = state.db.list_messages(&exhausted_session_id)?;
+
+    // 1. Extract recent user goals
+    let recent_user_prompts: Vec<String> = messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .rev()
+        .take(3)
+        .map(|m| {
+            let trimmed = m.content.trim();
+            let first_line = trimmed.lines().next().unwrap_or(trimmed);
+            if first_line.len() > 100 {
+                format!("{}...", &first_line[..97])
+            } else {
+                first_line.to_string()
+            }
+        })
+        .collect();
+
+    // 2. Extract touched files
+    let ws_path = workspace_path.as_deref().map(std::path::Path::new);
+    let touched_files = if let Some(ws) = ws_path {
+        extract_files_from_messages(&messages, ws)
+    } else {
+        Vec::new()
+    };
+
+    // 3. Format structured brief
+    let mut brief = format!(
+        "### 🔄 Context Continuation Summary\n\n*This session was automatically continued from **{}** after reaching the 1,000,000 token context limit.*\n\n",
+        session.title
+    );
+
+    if !recent_user_prompts.is_empty() {
+        brief.push_str("#### Recent Objectives:\n");
+        for p in recent_user_prompts.iter().rev() {
+            brief.push_str(&format!("- {}\n", p));
+        }
+        brief.push('\n');
+    }
+
+    if !touched_files.is_empty() {
+        brief.push_str("#### Modified & Inspected Files:\n");
+        for f in touched_files.iter().take(10) {
+            brief.push_str(&format!("- `{f}`\n"));
+        }
+        if touched_files.len() > 10 {
+            brief.push_str(&format!("- *(and {} more files)*\n", touched_files.len() - 10));
+        }
+        brief.push('\n');
+    }
+
+    brief.push_str("---\n*All previous state is captured in your project files. You can continue working directly from here!*");
+
+    // 4. Create new continuation session
+    let continuation_title = if session.title.ends_with("(Continuation)") {
+        format!("{} (Part 2)", session.title)
+    } else {
+        format!("{} (Continuation)", session.title)
+    };
+
+    let new_session = state.db.create_session(&session.workspace_id, &continuation_title)?;
+
+    // 5. Save synthetic assistant message
+    let continuation_message = Message {
+        id: format!("msg-{}", Uuid::new_v4()),
+        session_id: new_session.id.clone(),
+        role: "assistant".to_string(),
+        token_count: (brief.len() / 4) as i64,
+        tool_calls_json: None,
+        content: brief,
+        created_at: Utc::now().to_rfc3339(),
+    };
+    state.db.save_message(continuation_message.clone())?;
+
+    // Clean up old ACP session mapping so new session creates fresh context
+    state.acp_session.remove_session(&exhausted_session_id);
+
+    Ok(ContinuationResult {
+        new_session,
+        continuation_message,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_continuation_result_serialization() {
+        let res = ContinuationResult {
+            new_session: crate::database::Session {
+                id: "sess-100".to_string(),
+                workspace_id: "ws-1".to_string(),
+                title: "Sprint 2 (Continuation)".to_string(),
+                created_at: "2026-10-28T12:00:00Z".to_string(),
+                updated_at: "2026-10-28T12:00:00Z".to_string(),
+            },
+            continuation_message: Message {
+                id: "msg-100".to_string(),
+                session_id: "sess-100".to_string(),
+                role: "assistant".to_string(),
+                content: "Continuation brief".to_string(),
+                tool_calls_json: None,
+                token_count: 50,
+                created_at: "2026-10-28T12:00:00Z".to_string(),
+            },
+        };
+        let serialized = serde_json::to_string(&res).unwrap();
+        assert!(serialized.contains("newSession"));
+        assert!(serialized.contains("continuationMessage"));
+        assert!(serialized.contains("Sprint 2 (Continuation)"));
+    }
 
     #[test]
     fn test_rewind_result_serialization() {

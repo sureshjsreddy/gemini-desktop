@@ -43,6 +43,7 @@
     FileText,
     ListTodo,
     FileDiff,
+    Minimize2,
   } from "lucide-svelte";
   import { tick, onMount, onDestroy } from "svelte";
 
@@ -526,6 +527,25 @@
                 <span class="text-rose-400">-{totalDeletions}</span>
               </span>
             {/if}
+          </button>
+        </Tooltip>
+      {/if}
+
+      <!-- Compress Context Button -->
+      {#if messages.length >= 2}
+        <Tooltip
+          text="Compress Context"
+          subtext="Distill conversation history using Gemini CLI native compaction to free up tokens"
+          position="bottom"
+        >
+          <button
+            onclick={() => onSendPrompt("/compress")}
+            disabled={isStreaming}
+            class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-secondary-theme hover:text-accent-theme rounded-lg bg-surface hover:bg-surface-hover transition-colors border border-theme-default cursor-pointer disabled:opacity-50"
+            aria-label="Compress context"
+          >
+            <Minimize2 size={13} class="text-accent-theme" />
+            <span>Compress</span>
           </button>
         </Tooltip>
       {/if}

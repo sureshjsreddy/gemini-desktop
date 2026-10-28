@@ -1,4 +1,4 @@
-export type ModalType = "search" | "workspace" | "templates" | "theme" | "mcp" | "cli-setup" | "rewind";
+export type ModalType = "search" | "workspace" | "templates" | "theme" | "mcp" | "cli-setup" | "rewind" | "cli-settings";
 
 class ModalManager {
   active = $state<ModalType | null>(null);

@@ -259,6 +259,28 @@ impl DbManager {
         Ok(())
     }
 
+    pub fn get_session(&self, session_id: &str) -> Result<Option<Session>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id, workspace_id, title, created_at, updated_at FROM sessions WHERE id = ?1")
+            .map_err(|e| e.to_string())?;
+
+        let mut rows = stmt.query_map(params![session_id], |row| {
+            Ok(Session {
+                id: row.get(0)?,
+                workspace_id: row.get(1)?,
+                title: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        }).map_err(|e| e.to_string())?;
+
+        if let Some(r) = rows.next() {
+            Ok(Some(r.map_err(|e| e.to_string())?))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn list_sessions(&self, workspace_id: &str) -> Result<Vec<Session>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT id, workspace_id, title, created_at, updated_at FROM sessions WHERE workspace_id = ?1 ORDER BY updated_at DESC")

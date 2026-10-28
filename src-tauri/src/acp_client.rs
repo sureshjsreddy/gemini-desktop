@@ -429,6 +429,27 @@ impl AcpSession {
 pub fn extract_file_paths_from_acp_update(val: &Value) -> Vec<String> {
     let mut paths = Vec::new();
 
+    // 0. Explicit read-only tool guard: do not extract paths for read-only tools
+    for ptr in &[
+        "/params/update/name",
+        "/params/name",
+        "/params/toolCall/name",
+        "/params/tool",
+    ] {
+        if let Some(name) = val.pointer(ptr).and_then(|v| v.as_str()) {
+            let name_lower = name.to_lowercase();
+            for ro in &[
+                "read_file", "read_text_file", "view_file", "grep_search", "search_files",
+                "find_by_name", "list_directory", "list_dir", "dir_list", "fs/read_text_file",
+                "fs/list_directory", "glob", "search",
+            ] {
+                if name_lower == *ro || name_lower.starts_with(ro) {
+                    return Vec::new();
+                }
+            }
+        }
+    }
+
     // 1. Check locations
     for ptr in &[
         "/params/update/locations",
@@ -484,7 +505,7 @@ pub fn extract_file_paths_from_acp_update(val: &Value) -> Vec<String> {
         "/params/name",
     ] {
         if let Some(title) = val.pointer(ptr).and_then(|v| v.as_str()) {
-            for prefix in &["writing to ", "editing ", "creating ", "overwriting ", "modifying ", "updating ", "reading "] {
+            for prefix in &["writing to ", "editing ", "creating ", "overwriting ", "modifying ", "updating ", "patching ", "deleting "] {
                 if let Some(idx) = title.to_lowercase().find(prefix) {
                     let cand = &title[idx + prefix.len()..];
                     let trimmed = cand.trim().trim_matches(|c| c == '`' || c == '"' || c == '\'' || c == '.' || c == ':');
@@ -824,6 +845,10 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                 let stop_reason = val.pointer("/result/stopReason").and_then(|s| s.as_str());
                 if matches!(stop_reason, Some("max_turn_requests") | Some("max_tokens")) {
                     acp_session.remove_session(&target_session);
+                    let _ = app_handle.emit("acp-session-limit-reached", serde_json::json!({
+                        "sessionId": target_session,
+                        "stopReason": stop_reason,
+                    }));
                 }
 
                 let final_delta = if clean_delta.is_empty() {
@@ -1016,6 +1041,10 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                             .and_then(|s| s.as_str());
                         if matches!(stop_reason, Some("max_turn_requests") | Some("max_tokens")) {
                             acp_session.remove_session(&matched_session_id);
+                            let _ = app_handle.emit("acp-session-limit-reached", serde_json::json!({
+                                "sessionId": matched_session_id,
+                                "stopReason": stop_reason,
+                            }));
                         }
                     }
 
@@ -1077,7 +1106,8 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                         .cloned()
                         .unwrap_or(Value::Null);
 
-                    if acp_session.is_track_file_changes_enabled() {
+                    let is_mutating = crate::commands::session_diff::is_mutating_tool(Some(&tool_name), title.as_deref());
+                    if acp_session.is_track_file_changes_enabled() && is_mutating {
                         if let Some(obj) = parameters.as_object() {
                             for key in &["filePath", "file_path", "path", "target_path", "targetPath", "file", "filename", "destination"] {
                                 if let Some(f) = obj.get(*key).and_then(|v| v.as_str()) {

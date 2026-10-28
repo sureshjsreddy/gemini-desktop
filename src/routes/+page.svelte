@@ -18,6 +18,7 @@
     FileSnippetResult,
     ToolCallPayload,
     PlanTaskItem,
+    ContinuationResult,
   } from "$lib/types";
   import { parseDebugError } from "$lib/utils/debugParser";
   import { notifyBackgroundTaskComplete, setupNotificationActionListener } from "$lib/utils/notifications";
@@ -30,6 +31,7 @@
   import ThemeModal from "$lib/components/ThemeModal.svelte";
   import McpModal from "$lib/components/McpModal.svelte";
   import CliSetupModal from "$lib/components/CliSetupModal.svelte";
+  import CliSettingsModal from "$lib/components/CliSettingsModal.svelte";
   import RewindModal from "$lib/components/RewindModal.svelte";
   import UpdateNotificationBanner from "$lib/components/UpdateNotificationBanner.svelte";
   import { themeManager } from "$lib/theme.svelte";
@@ -133,6 +135,7 @@
   let solutionExplorerRef = $state<ReturnType<typeof SolutionExplorer> | null>(null);
 
   let unlistenChunk: UnlistenFn | null = null;
+  let unlistenLimitReached: UnlistenFn | null = null;
   let unlistenTool: UnlistenFn | null = null;
   let unlistenToolCall: UnlistenFn | null = null;
   let unlistenError: UnlistenFn | null = null;
@@ -441,6 +444,38 @@
       }
     });
 
+    // 4.4. ACP Session Limit Reached (1M Token Context Ceiling)
+    try {
+      unlistenLimitReached = await listen<{ sessionId: string; stopReason: string }>(
+        "acp-session-limit-reached",
+        async (event) => {
+          const exhaustedId = event.payload?.sessionId;
+          if (!exhaustedId) return;
+
+          try {
+            const res = await invoke<ContinuationResult>("create_continuation_session", {
+              exhaustedSessionId: exhaustedId,
+              workspacePath: activeWorkspace?.path,
+            });
+
+            // Update sessions immutably and switch to new session
+            sessions = [res.newSession, ...sessions];
+            activeSessionId = res.newSession.id;
+            messages = [res.continuationMessage];
+
+            await invoke("show_toast_notification", {
+              title: "Context Ceiling Reached (1M Tokens)",
+              body: `Seamlessly continued "${res.newSession.title}" with summarized state.`,
+            }).catch(() => {});
+          } catch (err) {
+            console.error("Failed to automatically continue session", err);
+          }
+        }
+      );
+    } catch (e) {
+      console.warn("Could not setup acp-session-limit-reached listener:", e);
+    }
+
     // 4.5. Instant Debug Doctor (Global OS Hotkey Ctrl+Alt+D & Window Focus)
     try {
       unlistenDebugDoctor = await listen("instant-debug-doctor", () => {
@@ -595,6 +630,7 @@
     if (unlistenModeUpdate) unlistenModeUpdate();
     if (unlistenStderr) unlistenStderr();
     if (unlistenDebugDoctor) unlistenDebugDoctor();
+    if (unlistenLimitReached) unlistenLimitReached();
     if (unlistenSteer) (unlistenSteer as any)();
     if (unlistenRewind) (unlistenRewind as any)();
     window.removeEventListener("focus", handleWindowFocus);
@@ -839,12 +875,31 @@
       );
     }
 
+    // Intercept slash commands like /compress or /compact over ACP
+    const isCompressionCommand =
+      prompt.trim().toLowerCase() === "/compress" ||
+      prompt.trim().toLowerCase() === "/compact";
+
+    const promptToSend = isCompressionCommand
+      ? `Please perform a context compression and milestone summary of our conversation so far:
+1. Primary Objectives: What we set out to accomplish and what has been completed.
+2. Modified & Touched Files: List files created, modified, or reviewed with key changes.
+3. Architecture & Technical Decisions: Key decisions made and current working state.
+4. Immediate Next Steps: Pending tasks or unresolved questions.
+
+Keep this summary dense, structured, and actionable so it serves as our clean working context moving forward.`
+      : prompt;
+
+    const displayPrompt = isCompressionCommand
+      ? "🔄 /compress: Summarize and compress conversation context"
+      : prompt;
+
     // Add user message to UI immediately
     const userMsg: Message = {
       id: "msg-" + (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2))),
       session_id: targetSessionId,
       role: "user",
-      content: prompt,
+      content: displayPrompt,
       token_count: 0,
       created_at: now,
     };
@@ -872,7 +927,7 @@
       await invoke("send_prompt", {
         sessionId: targetSessionId,
         workspaceId: targetWorkspaceId,
-        prompt,
+        prompt: promptToSend,
         model: targetModel,
         approvalMode,
         messageId: userMsg.id,
@@ -1056,6 +1111,7 @@
     onOpenThemeModal={() => modalManager.open("theme")}
     onOpenMcpModal={() => modalManager.open("mcp")}
     onOpenCliSetup={() => modalManager.open("cli-setup")}
+    onOpenCliSettings={() => modalManager.open("cli-settings")}
     onToggleTerminal={() => (showTerminalDrawer = !showTerminalDrawer)}
     onToggleExplorer={() => (showSolutionExplorer = !showSolutionExplorer)}
     onCheckUpdate={() => handleCheckUpdate(true)}
@@ -1180,5 +1236,10 @@
     onEnvStatusUpdated={(newStatus) => {
       envStatus = newStatus;
     }}
+  />
+
+  <CliSettingsModal
+    isOpen={modalManager.isOpen("cli-settings")}
+    onClose={() => modalManager.close()}
   />
 </div>

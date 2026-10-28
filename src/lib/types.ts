@@ -252,5 +252,43 @@ export interface SessionFileChange {
   current_content: string;
 }
 
+export interface ChatCompressionConfig {
+  enabled: boolean;
+  contextPercentageThreshold: number;
+}
+
+export interface FileFilteringConfig {
+  respectGitIgnore: boolean;
+  respectGeminiIgnore: boolean;
+}
+
+export interface SessionRetentionConfig {
+  enabled: boolean;
+  maxAge: string;
+  maxCount?: number;
+}
+
+export interface GlobalCliSettings {
+  filePath: string;
+  chatCompression: ChatCompressionConfig;
+  maxSessionTurns: number;
+  fileFiltering: FileFilteringConfig;
+  sessionRetention: SessionRetentionConfig;
+  rawJson: string;
+}
+
+export interface SaveGlobalCliSettingsPayload {
+  chatCompression?: ChatCompressionConfig;
+  maxSessionTurns?: number;
+  fileFiltering?: FileFilteringConfig;
+  sessionRetention?: SessionRetentionConfig;
+  rawJson?: string;
+}
+
+export interface ContinuationResult {
+  newSession: Session;
+  continuationMessage: Message;
+}
+
 
 

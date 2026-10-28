@@ -20,6 +20,7 @@
     PanelLeftOpen,
     RefreshCw,
     Cpu,
+    Sliders,
   } from "lucide-svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { APP_VERSION_FALLBACK } from "$lib/version";
@@ -49,6 +50,7 @@
     onCheckUpdate,
     isCheckingUpdate = false,
     onOpenCliSetup,
+    onOpenCliSettings,
   }: {
     isOpen?: boolean;
     workspaces: Workspace[];
@@ -74,6 +76,7 @@
     onCheckUpdate?: () => void;
     isCheckingUpdate?: boolean;
     onOpenCliSetup?: () => void;
+    onOpenCliSettings?: () => void;
   } = $props();
 
   let showWorkspaceMenu = $state(false);
@@ -185,6 +188,20 @@
             aria-label="CLI and Auth setup"
           >
             <Cpu size={15} />
+          </button>
+        </Tooltip>
+      {/if}
+
+      <!-- CLI Global Settings -->
+      {#if onOpenCliSettings}
+        <Tooltip text="CLI Settings" position="right">
+          <button
+            type="button"
+            onclick={onOpenCliSettings}
+            class="w-8 h-8 rounded-lg flex items-center justify-center text-secondary-theme hover:text-accent-theme hover:bg-surface transition-colors cursor-pointer"
+            aria-label="CLI global settings"
+          >
+            <Sliders size={15} />
           </button>
         </Tooltip>
       {/if}
@@ -465,6 +482,24 @@
           <span class="ml-auto flex items-center gap-1">
             <span class="inline-block w-1.5 h-1.5 rounded-full {envStatus?.installed ? 'bg-emerald-400' : 'bg-amber-400'}"></span>
           </span>
+        </button>
+      </Tooltip>
+    {/if}
+
+    <!-- CLI Global Settings -->
+    {#if onOpenCliSettings}
+      <Tooltip
+        class="w-full block"
+        text="Gemini CLI Settings"
+        subtext="Configure context compression, turn limits, and token retention in ~/.gemini/settings.json"
+        position="right"
+      >
+        <button
+          onclick={onOpenCliSettings}
+          class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-surface-hover text-secondary-theme hover:text-primary-theme text-xs transition-colors cursor-pointer"
+        >
+          <Sliders size={14} class="text-accent-theme" />
+          <span>CLI Settings</span>
         </button>
       </Tooltip>
     {/if}
