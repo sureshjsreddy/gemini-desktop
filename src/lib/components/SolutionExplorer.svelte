@@ -30,12 +30,16 @@
     Search,
     X,
     CornerDownLeft,
+    FolderGit2,
   } from "lucide-svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
   import { dialogManager } from "$lib/dialog.svelte";
   import { getFileIconMeta } from "$lib/utils/fileIcons";
   import { isNodeVisible } from "$lib/utils/fileFilters";
+  import GitChangesWindow from "$lib/components/GitChangesWindow.svelte";
+  import SessionChangesModal from "$lib/components/SessionChangesModal.svelte";
+  import type { SessionFileChange, GitStatusResult } from "$lib/types";
 
   export type { TreeNode };
 
@@ -438,29 +442,134 @@
       searchInputEl.select();
     }
   }
+
+  // Visual Studio Tool Window Tabs State (Explorer vs Git Changes)
+  let activeTab = $state<"explorer" | "git">("explorer");
+  let gitStatus = $state<GitStatusResult>({
+    is_git_repo: false,
+    repo_name: "",
+    active_branch: "",
+    staged: [],
+    unstaged: [],
+  });
+  let isGitLoading = $state(false);
+  let gitChangesCount = $derived(
+    (gitStatus.staged?.length || 0) + (gitStatus.unstaged?.length || 0)
+  );
+  let gitDiffChanges = $state<SessionFileChange[]>([]);
+  let isGitDiffModalOpen = $state(false);
+
+  export function switchTab(tab: "explorer" | "git") {
+    activeTab = tab;
+    if (tab === "git") {
+      refreshGitStatus();
+    }
+  }
+
+  export async function refreshGitStatus() {
+    if (!workspace?.path) {
+      gitStatus = {
+        is_git_repo: false,
+        repo_name: "",
+        active_branch: "",
+        staged: [],
+        unstaged: [],
+      };
+      return;
+    }
+    isGitLoading = true;
+    try {
+      const status = await invoke<GitStatusResult>("git_get_status", {
+        workspaceDir: workspace.path,
+      });
+      gitStatus = status;
+    } catch {
+      gitStatus = {
+        is_git_repo: false,
+        repo_name: "",
+        active_branch: "",
+        staged: [],
+        unstaged: [],
+      };
+    } finally {
+      isGitLoading = false;
+    }
+  }
+
+  $effect(() => {
+    if (workspace?.path) {
+      refreshGitStatus();
+    }
+  });
+
+  async function handleCompareGitFile(relPath: string, isStaged: boolean) {
+    if (!workspace?.path) return;
+    try {
+      const diffSummary = await invoke<SessionFileChange>("git_get_file_diff", {
+        workspaceDir: workspace.path,
+        path: relPath,
+        isStaged,
+      });
+      gitDiffChanges = [diffSummary];
+      isGitDiffModalOpen = true;
+    } catch (err) {
+      console.error("Failed to get git file diff:", err);
+    }
+  }
 </script>
 
 {#if !isOpen}
   <!-- Workspace Explorer Auto-Hide Collapsed Dock Tab on the Right Margin -->
   <aside
-    class="w-7 h-full bg-sidebar border-l border-subtle flex flex-col items-center py-3 select-none z-10 transition-colors hover:bg-surface"
-    aria-label="Workspace Explorer collapsed dock"
+    class="w-8 h-full bg-sidebar border-l border-subtle flex flex-col items-center py-3 select-none z-10 transition-colors hover:bg-surface gap-3"
+    aria-label="Collapsed right dock"
   >
     <Tooltip text="Expand Workspace Explorer" shortcut="Ctrl+Alt+L" position="left">
       <button
         type="button"
-        onclick={onToggle}
-        class="w-full flex flex-col items-center gap-3 text-secondary-theme hover:text-accent-theme cursor-pointer group focus:outline-none"
+        onclick={() => {
+          activeTab = "explorer";
+          onToggle();
+        }}
+        class="w-full flex flex-col items-center gap-2 text-secondary-theme hover:text-accent-theme cursor-pointer group focus:outline-none"
         aria-label="Expand Workspace Explorer panel"
       >
         <div class="p-1 rounded group-hover:bg-surface-elevated text-accent-theme">
           <Layers size={14} class="text-[#a855f7]" />
         </div>
         <span
-          class="text-[11px] font-medium tracking-wide uppercase text-muted-theme group-hover:text-primary-theme"
+          class="text-[10px] font-medium tracking-wide uppercase text-muted-theme group-hover:text-primary-theme"
           style="writing-mode: vertical-rl; transform: rotate(180deg);"
         >
-          Workspace Explorer
+          Explorer
+        </span>
+      </button>
+    </Tooltip>
+
+    <div class="w-4 h-px bg-subtle/60 my-1"></div>
+
+    <Tooltip text="Expand Git Changes" shortcut="Ctrl+Shift+G" position="left">
+      <button
+        type="button"
+        onclick={() => {
+          activeTab = "git";
+          onToggle();
+          refreshGitStatus();
+        }}
+        class="w-full flex flex-col items-center gap-2 text-secondary-theme hover:text-emerald-400 cursor-pointer group focus:outline-none"
+        aria-label="Expand Git Changes panel"
+      >
+        <div class="p-1 rounded group-hover:bg-surface-elevated text-emerald-400 relative">
+          <FolderGit2 size={14} />
+          {#if gitChangesCount > 0}
+            <span class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-sidebar"></span>
+          {/if}
+        </div>
+        <span
+          class="text-[10px] font-medium tracking-wide uppercase text-muted-theme group-hover:text-emerald-400"
+          style="writing-mode: vertical-rl; transform: rotate(180deg);"
+        >
+          Git Changes
         </span>
       </button>
     </Tooltip>
@@ -480,8 +589,64 @@
       class="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-accent-theme transition-colors z-20 {isDragging ? 'bg-accent-theme' : 'bg-transparent'}"
     ></button>
 
-    <!-- Top Header: Workspace Explorer Title & Toolbar -->
-    <header class="h-[34px] min-h-[34px] px-2.5 bg-surface border-b border-subtle flex items-center justify-between gap-1 relative z-20">
+    <!-- Top Tool Window Tabs: Solution Explorer vs Git Changes -->
+    <div class="h-[34px] min-h-[34px] px-2 bg-surface border-b border-subtle flex items-center justify-between gap-1 relative z-20">
+      <div class="flex items-center gap-1">
+        <button
+          type="button"
+          onclick={() => (activeTab = "explorer")}
+          class="flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors cursor-pointer {activeTab === 'explorer' ? 'bg-surface-elevated text-primary-theme font-semibold shadow-xs border border-subtle' : 'text-muted-theme hover:text-primary-theme hover:bg-surface-hover'}"
+        >
+          <Layers size={13} class="text-[#a855f7]" />
+          <span>Explorer</span>
+        </button>
+
+        <button
+          type="button"
+          onclick={() => {
+            activeTab = "git";
+            refreshGitStatus();
+          }}
+          class="flex items-center gap-1.5 px-2 py-1 text-xs rounded transition-colors cursor-pointer {activeTab === 'git' ? 'bg-surface-elevated text-primary-theme font-semibold shadow-xs border border-subtle' : 'text-muted-theme hover:text-primary-theme hover:bg-surface-hover'}"
+        >
+          <FolderGit2 size={13} class="text-emerald-400" />
+          <span>Git Changes</span>
+          {#if gitChangesCount > 0}
+            <span class="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/30">
+              {gitChangesCount}
+            </span>
+          {/if}
+        </button>
+      </div>
+
+      <Tooltip text="Collapse to Right" shortcut="Ctrl+Alt+L" position="bottom">
+        <button
+          type="button"
+          onclick={onToggle}
+          class="p-1 rounded hover:bg-surface-hover hover:text-primary-theme transition-colors cursor-pointer text-muted-theme"
+          aria-label="Collapse panel to right"
+        >
+          <PanelRightClose size={13} />
+        </button>
+      </Tooltip>
+    </div>
+
+    <!-- Git Changes View (kept mounted in DOM to preserve state, commit message & accordions) -->
+    <div class="flex-1 min-h-0 overflow-hidden flex flex-col {activeTab === 'git' ? '' : 'hidden'}">
+      <GitChangesWindow
+        {workspace}
+        isOpen={isOpen && activeTab === 'git'}
+        {gitStatus}
+        isLoading={isGitLoading}
+        onRefresh={refreshGitStatus}
+        onCompareFile={handleCompareGitFile}
+      />
+    </div>
+
+    <!-- Solution Explorer Tree View -->
+    <div class="flex-1 min-h-0 overflow-hidden flex flex-col {activeTab === 'explorer' ? '' : 'hidden'}">
+      <!-- Top Header: Workspace Explorer Title & Toolbar -->
+      <header class="h-[34px] min-h-[34px] px-2.5 bg-surface border-b border-subtle flex items-center justify-between gap-1 relative z-20">
       <div class="flex items-center gap-1.5 truncate">
         <!-- Explorer Cube Icon -->
         <div class="w-4 h-4 flex items-center justify-center text-[#a855f7] shrink-0">
@@ -816,8 +981,19 @@
         </span>
       </div>
     </footer>
+    </div>
   </aside>
 {/if}
+
+<!-- Git Changes Visual Line Diff Modal -->
+<SessionChangesModal
+  isOpen={isGitDiffModalOpen}
+  changes={gitDiffChanges}
+  workspacePath={workspace?.path}
+  onClose={() => (isGitDiffModalOpen = false)}
+  onRevertFile={() => {}}
+  onRevertAll={() => {}}
+/>
 
 <!-- Context Menu Popup -->
 <ExplorerContextMenu

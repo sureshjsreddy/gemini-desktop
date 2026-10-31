@@ -1,0 +1,143 @@
+id: PROD-GIT-001
+type: product_feature
+title: "Visual Studio Git Changes Tool Window, Staging & AI Conventional Commits Standard"
+domain: product
+status: approved
+version: 1.1.0
+authority:
+  level: official
+  confidence: high
+owner:
+  team: product_team
+
+applies_to:
+  - frontend
+  - backend
+  - git
+  - components
+
+rule: "Gemini Desktop provides an integrated Visual Studio-style Git Changes tool window for inspecting repository status, staging/unstaging files, discarding uncommitted modifications, comparing against HEAD/unmodified baselines, and committing changes with AI Conventional Commit generation directly over standard system Git without external library dependencies."
+
+do:
+  - "Query system Git CLI directly via `run_git_command` under Windows `CREATE_NO_WINDOW` (0x08000000) without spawning visible console windows."
+  - "Display active repository root folder and checked-out branch name (e.g. `🌿 main`)."
+  - "Gracefully handle non-git workspace directories by rendering a clean fallback banner ('Not a Git repository')."
+  - "Group working directory modifications into Staged Changes and Changes (unstaged) using `git status --porcelain=v1 -uall`."
+  - "Parse porcelain status codes and map them to Visual Studio color-coded glyph badges: `[A]` (emerald/green for Added), `[M]` (sky/blue for Modified), `[D]` (rose/red for Deleted with strikethrough styling), `[U]` (emerald-300 for Untracked), `[R]` (amber for Renamed), and `[!]` (red for Merge Conflict)."
+  - "Provide rich hover tooltips on each badge clarifying the exact status meaning (e.g. `Added — New file in Git index`, `Deleted — File was removed`)."
+  - "Display file type extension icons beside status badges matching the Solution Explorer hierarchy."
+  - "Provide 1-click `[+]` Stage All / `[-]` Unstage All and per-item Stage / Unstage actions."
+  - "Provide safe Undo Changes with destructive confirmation dialogs before invoking `git restore` or `git clean -fd`."
+  - "Enforce Visual Studio commit priority logic: if staged files exist, commit only staged changes (`git commit -m`); if no staged files exist, commit all changes (`git commit -a -m`)."
+  - "Dynamically label the commit button based on staged status: `Commit Staged (N)` when staged changes exist, or `Commit All (N)` when no staged changes exist."
+  - "Analyze `git diff --cached` (or `git diff HEAD`) to generate conventional commit messages on clicking `[✨ AI Generate]`."
+  - "Support right-click context menu actions with a top header displaying the file name, status badge, and Staged/Unstaged indicator: Stage, Unstage, Undo Changes, Compare with HEAD/Unmodified, Open File, Open with Notepad, Reveal in Explorer, and Copy Path."
+  - "Support double-clicking any file to inspect unified line-by-line diffs via `git_get_file_diff` in `SessionChangesModal`."
+  - "Keep both Solution Explorer and Git Changes views persistently mounted in the DOM to prevent state or draft commit message loss during tab switches."
+  - "Maintain single source of truth in `SolutionExplorer.svelte` and automatically refresh Git status when ACP agent turns complete, when mutating tools finish, and when the application window regains focus."
+  - "Integrate seamless dock switching between Solution Explorer and Git Changes tabs on the right tool window, including keyboard shortcut `Ctrl+Shift+G`."
+
+dont:
+  - "Do not require native C Git bindings, libgit2, or external daemon services; rely solely on system `git` on PATH."
+  - "Do not commit empty messages or commit without uncommitted changes."
+  - "Do not destroy uncommitted modifications without explicit user confirmation."
+  - "Do not maintain duplicate disconnected `gitStatus` state objects that can cause badge counters and change lists to desynchronize."
+
+examples:
+  porcelain_status_parsing:
+    description: "Mapping raw `git status --porcelain=v1 -uall` output to Visual Studio change items and UI badges"
+    raw_git_output: |
+      M  src/lib/components/ChatView.svelte
+       M src-tauri/src/commands/git.rs
+      A  src/lib/components/GitChangesWindow.svelte
+      ?? scratch/notes.md
+       D obsolete_test.rs
+      R  old_name.ts -> new_name.ts
+      UU src/merge_conflict.rs
+    parsed_ui_mapping:
+      - path: "src/lib/components/ChatView.svelte"
+        section: "Staged Changes"
+        status: "modified"
+        badge: "[M] (sky-300)"
+        tooltip: "Modified — File has changes in Git index"
+      - path: "src-tauri/src/commands/git.rs"
+        section: "Changes (Unstaged)"
+        status: "modified"
+        badge: "[M] (sky-300)"
+        tooltip: "Modified — File has changes in working tree"
+      - path: "src/lib/components/GitChangesWindow.svelte"
+        section: "Staged Changes"
+        status: "added"
+        badge: "[A] (emerald-300)"
+        tooltip: "Added — New file in Git index"
+      - path: "scratch/notes.md"
+        section: "Changes (Unstaged)"
+        status: "untracked"
+        badge: "[U] (emerald-300/90)"
+        tooltip: "Untracked — New file on disk, not yet in Git"
+      - path: "obsolete_test.rs"
+        section: "Changes (Unstaged)"
+        status: "deleted"
+        badge: "[D] (rose-300)"
+        styling: "line-through text-rose-400 opacity-75"
+        tooltip: "Deleted — File was removed"
+      - path: "new_name.ts"
+        section: "Staged Changes"
+        status: "renamed"
+        badge: "[R] (amber-300)"
+        tooltip: "Renamed — File was renamed or moved"
+      - path: "src/merge_conflict.rs"
+        section: "Changes (Unstaged)"
+        status: "conflict"
+        badge: "[!] (red-300 font-semibold)"
+        tooltip: "Conflict — Merge conflict"
+
+  commit_priority_semantics:
+    description: "Visual Studio commit priority behavior based on staged changes presence"
+    staged_changes_exist:
+      staged_count: 3
+      unstaged_count: 5
+      button_label: "Commit Staged (3)"
+      action: "git commit -m \"<message>\""
+      effect: "Only the 3 staged files are committed. The 5 unstaged files remain untouched in the working tree."
+    no_staged_changes_exist:
+      staged_count: 0
+      unstaged_count: 4
+      button_label: "Commit All (4)"
+      action: "git commit -a -m \"<message>\""
+      effect: "All 4 tracked working tree modifications are staged and committed in a single step."
+
+  ai_conventional_commit_generation:
+    description: "Automatic Conventional Commit message generation from active diffs"
+    workflow:
+      step_1: "User clicks [✨ AI Generate] button."
+      step_2: "Rust backend runs `git diff --cached` (or `git diff HEAD` if no files are staged)."
+      step_3: "Analyzes diff hunks and applies Conventional Commits standard (e.g. feat, fix, refactor, docs, chore)."
+      step_4: "Populates the commit message textarea with a succinct, imperative message."
+    sample_outputs:
+      - diff_context: "Added GitChangesWindow.svelte with file status indicators"
+        generated_message: "feat(git): add visual studio changes tool window with badge indicators"
+      - diff_context: "Fixed state desynchronization between SolutionExplorer and GitChangesWindow"
+        generated_message: "fix(git): synchronize git status counter with changes list on turn completion"
+
+  reactive_state_synchronization:
+    description: "Real-time synchronization preventing stale change counters"
+    lifecycle_hooks:
+      turn_completion:
+        event: "finishStreamingForSession()"
+        trigger: "Calls solutionExplorerRef?.refreshGitStatus() when an agent turn completes."
+      mutating_tools:
+        event: "tool_call_update for write_file, edit_file, patch_file, delete_file, terminal"
+        trigger: "Triggers immediate background Git status refresh upon file mutations."
+      window_focus:
+        event: "window.addEventListener('focus')"
+        trigger: "Refreshes Git status when user switches back from external editor or Git CLI."
+
+reason: "Delivers an integrated Visual Studio 2022 check-in experience for developers, closing the loop between AI code generation and version control without external context switching."
+
+related_items:
+  - ARCH-SYS-001
+  - DEV-SVELTE-001
+  - DEV-RUST-001
+  - PROD-DIFF-001
+  - PROD-EXPLORER-001

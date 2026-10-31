@@ -1,7 +1,7 @@
 use crate::commands::AppState;
 use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::State;
@@ -28,6 +28,8 @@ pub struct SnapshotEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SnapshotManifest {
     pub files: HashMap<String, SnapshotEntry>,
+    #[serde(default)]
+    pub reverted_files: HashSet<String>,
 }
 
 pub fn get_snapshots_base_dir() -> PathBuf {
@@ -254,6 +256,10 @@ pub fn snapshot_file_before_edit_internal(
     let _ = fs::create_dir_all(&files_dir);
 
     let mut manifest = load_manifest(session_snapshots_dir);
+
+    // If this file was previously reverted in this session, clear it from reverted_files
+    // so this subsequent tool edit is freshly snapshotted and tracked from this point forward.
+    manifest.reverted_files.remove(&rel_path);
 
     // If already tracked in this session, keep existing baseline
     if manifest.files.contains_key(&rel_path) {
@@ -505,6 +511,10 @@ pub fn compute_file_changes_internal(
                 }
             } else {
                 // File existed in snapshot, but was deleted from disk
+                // Only report as deleted if we actually have baseline content (snapshot or Git HEAD)!
+                if original_bytes.is_empty() {
+                    continue;
+                }
                 let original_content = String::from_utf8_lossy(&original_bytes).to_string();
                 let diff = TextDiff::from_lines(original_content.as_str(), "");
                 let mut deletions = 0;
@@ -586,6 +596,11 @@ pub fn get_session_file_changes(
 
         // 2. Add files touched by mutating tools that are not yet in manifest
         for f in &touched_files {
+            // Never re-add or resurrect files that the user explicitly reverted in this session!
+            if manifest.reverted_files.contains(f) {
+                continue;
+            }
+
             if !manifest.files.contains_key(f) {
                 let current_file = ws_path.join(f);
                 let snap = files_dir.join(f);
@@ -630,16 +645,9 @@ pub fn get_session_file_changes(
                         },
                     );
                     updated = true;
-                } else {
-                    manifest.files.insert(
-                        f.clone(),
-                        SnapshotEntry {
-                            status_at_snapshot: "existed".to_string(),
-                            timestamp: now.clone(),
-                        },
-                    );
-                    updated = true;
                 }
+                // If the file does not exist on disk, has no snapshot, and is not in Git HEAD,
+                // do NOT insert an entry claiming it existed. There is nothing to diff or restore.
             }
         }
 
@@ -742,8 +750,10 @@ pub fn revert_session_file_internal(
         }
     }
 
-    // Remove from manifest
+    // Remove from active files and record in reverted_files so that
+    // subsequent message scans do not resurrect this file as changed or deleted.
     manifest.files.remove(file_path);
+    manifest.reverted_files.insert(file_path.to_string());
     save_manifest(session_dir, &manifest)?;
 
     Ok(())
@@ -769,7 +779,13 @@ pub fn revert_all_session_files(
         }
     }
 
-    let _ = fs::remove_dir_all(&session_dir);
+    // Clean up snapshot files directory while preserving manifest.json
+    // so that reverted_files is remembered and get_session_file_changes does not resurrect them!
+    let files_dir = session_dir.join("files");
+    if files_dir.exists() {
+        let _ = fs::remove_dir_all(&files_dir);
+    }
+
     Ok(count)
 }
 
@@ -983,5 +999,166 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_revert_removes_from_manifest_and_prevents_resurrection() {
+        let temp_dir = std::env::temp_dir().join("gemini_diff_revert_test");
+        let ws_dir = temp_dir.join("ws");
+        let session_dir = temp_dir.join("snapshots").join("session_123");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&ws_dir).unwrap();
+        fs::create_dir_all(&session_dir).unwrap();
+
+        // 1. Existing file baseline
+        let file_old = ws_dir.join("file_old.txt");
+        fs::write(&file_old, "original content\nline 2\n").unwrap();
+
+        // Snapshot existing file
+        snapshot_file_before_edit_internal(&session_dir, &ws_dir, "file_old.txt").unwrap();
+
+        // Simulate agent editing existing file
+        fs::write(&file_old, "modified content\nline 2\nline 3\n").unwrap();
+
+        // 2. Newly created file
+        snapshot_file_before_edit_internal(&session_dir, &ws_dir, "file_new.txt").unwrap();
+        let file_new = ws_dir.join("file_new.txt");
+        fs::write(&file_new, "brand new file\n").unwrap();
+
+        // Verify both are tracked initially
+        let changes = compute_file_changes_internal(&session_dir, &ws_dir).unwrap();
+        assert_eq!(changes.len(), 2);
+
+        // 3. Revert newly created file:
+        // Must delete the file from disk, remove from manifest.files, and add to manifest.reverted_files
+        revert_session_file_internal(&session_dir, &ws_dir, "file_new.txt").unwrap();
+        assert!(!file_new.exists(), "Reverted created file must be deleted from disk");
+
+        let manifest = load_manifest(&session_dir);
+        assert!(!manifest.files.contains_key("file_new.txt"));
+        assert!(manifest.reverted_files.contains("file_new.txt"), "Reverted file must be recorded in reverted_files");
+
+        // Verify file_new.txt does NOT reappear as 'deleted' with 0 lines
+        let changes_after_new_revert = compute_file_changes_internal(&session_dir, &ws_dir).unwrap();
+        assert_eq!(changes_after_new_revert.len(), 1);
+        assert_eq!(changes_after_new_revert[0].file_path, "file_old.txt");
+
+        // 4. Revert modified file:
+        // Must restore original baseline content, remove from manifest.files, and add to manifest.reverted_files
+        revert_session_file_internal(&session_dir, &ws_dir, "file_old.txt").unwrap();
+        let restored_content = fs::read_to_string(&file_old).unwrap();
+        assert_eq!(restored_content, "original content\nline 2\n");
+
+        let manifest2 = load_manifest(&session_dir);
+        assert!(!manifest2.files.contains_key("file_old.txt"));
+        assert!(manifest2.reverted_files.contains("file_old.txt"));
+
+        // Verify total changes are now 0 and file_old.txt does NOT reappear as 'created'
+        let changes_after_all_reverted = compute_file_changes_internal(&session_dir, &ws_dir).unwrap();
+        assert_eq!(changes_after_all_reverted.len(), 0, "All reverted files must disappear from changes list");
+
+        // 5. Subsequent edit in a later turn of the same conversation:
+        // Must un-revert and freshly track
+        snapshot_file_before_edit_internal(&session_dir, &ws_dir, "file_new.txt").unwrap();
+        fs::write(&file_new, "created again in turn 2\n").unwrap();
+
+        let manifest3 = load_manifest(&session_dir);
+        assert!(!manifest3.reverted_files.contains("file_new.txt"), "Subsequent edit must remove file from reverted_files");
+        assert!(manifest3.files.contains_key("file_new.txt"));
+
+        let changes_turn_2 = compute_file_changes_internal(&session_dir, &ws_dir).unwrap();
+        assert_eq!(changes_turn_2.len(), 1);
+        assert_eq!(changes_turn_2[0].file_path, "file_new.txt");
+        assert_eq!(changes_turn_2[0].status, "created");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_session_isolation_for_file_tracking() {
+        let temp_dir = std::env::temp_dir().join("gemini_diff_session_isolation_test");
+        let ws_dir = temp_dir.join("ws");
+        let session_1 = temp_dir.join("snapshots").join("sess_aaa");
+        let session_2 = temp_dir.join("snapshots").join("sess_bbb");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&ws_dir).unwrap();
+        fs::create_dir_all(&session_1).unwrap();
+        fs::create_dir_all(&session_2).unwrap();
+
+        let file_shared = ws_dir.join("shared.txt");
+        fs::write(&file_shared, "base content\n").unwrap();
+
+        // Session 1 snapshots and modifies shared.txt
+        snapshot_file_before_edit_internal(&session_1, &ws_dir, "shared.txt").unwrap();
+        fs::write(&file_shared, "base content\nmodified by session 1\n").unwrap();
+
+        // Session 1 reverts shared.txt
+        revert_session_file_internal(&session_1, &ws_dir, "shared.txt").unwrap();
+        let m1 = load_manifest(&session_1);
+        assert!(m1.reverted_files.contains("shared.txt"));
+
+        // Verify Session 2 is completely isolated: its manifest has no knowledge of session 1
+        let m2 = load_manifest(&session_2);
+        assert!(!m2.reverted_files.contains("shared.txt"));
+        assert!(!m2.files.contains_key("shared.txt"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_revert_all_session_files_workflow() {
+        let temp_dir = std::env::temp_dir().join("gemini_diff_revert_all_test");
+        let ws_dir = temp_dir.join("ws");
+        let session_id = "test_revert_all_session_id";
+        let session_dir = get_session_snapshots_dir(session_id);
+        let _ = fs::remove_dir_all(&temp_dir);
+        let _ = fs::remove_dir_all(&session_dir);
+        fs::create_dir_all(&ws_dir).unwrap();
+        fs::create_dir_all(&session_dir).unwrap();
+
+        // 1. Existing file modified
+        let file_a = ws_dir.join("file_a.txt");
+        fs::write(&file_a, "initial A\n").unwrap();
+        snapshot_file_before_edit_internal(&session_dir, &ws_dir, "file_a.txt").unwrap();
+        fs::write(&file_a, "modified A\n").unwrap();
+
+        // 2. Created file
+        snapshot_file_before_edit_internal(&session_dir, &ws_dir, "file_b.txt").unwrap();
+        let file_b = ws_dir.join("file_b.txt");
+        fs::write(&file_b, "new B\n").unwrap();
+
+        // 3. Another created file
+        snapshot_file_before_edit_internal(&session_dir, &ws_dir, "file_c.txt").unwrap();
+        let file_c = ws_dir.join("file_c.txt");
+        fs::write(&file_c, "new C\n").unwrap();
+
+        let initial_changes = compute_file_changes_internal(&session_dir, &ws_dir).unwrap();
+        assert_eq!(initial_changes.len(), 3);
+
+        // Call revert_all_session_files
+        let reverted_count = revert_all_session_files(session_id.to_string(), ws_dir.to_string_lossy().to_string()).unwrap();
+        assert_eq!(reverted_count, 3);
+
+        // Verify file_a was restored to baseline
+        assert_eq!(fs::read_to_string(&file_a).unwrap(), "initial A\n");
+
+        // Verify created files were deleted from disk
+        assert!(!file_b.exists());
+        assert!(!file_c.exists());
+
+        // Verify manifest was preserved with empty files and all 3 recorded in reverted_files
+        let manifest = load_manifest(&session_dir);
+        assert!(manifest.files.is_empty(), "All files must be cleared from manifest.files");
+        assert_eq!(manifest.reverted_files.len(), 3);
+        assert!(manifest.reverted_files.contains("file_a.txt"));
+        assert!(manifest.reverted_files.contains("file_b.txt"));
+        assert!(manifest.reverted_files.contains("file_c.txt"));
+
+        // Verify compute_file_changes_internal returns 0
+        let changes_after = compute_file_changes_internal(&session_dir, &ws_dir).unwrap();
+        assert_eq!(changes_after.len(), 0);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+        let _ = fs::remove_dir_all(&session_dir);
     }
 }

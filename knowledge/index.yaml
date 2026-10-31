@@ -1,8 +1,8 @@
 # Gemini Desktop Master Knowledge Graph & Index
 system_name: GeminiDesktop
 repository_root: "c:/AIFiles/gemini-desktop"
-knowledge_units_count: 26
-last_updated: "2026-10-28"
+knowledge_units_count: 27
+last_updated: "2026-10-31"
 
 knowledge_units:
   architecture:
@@ -70,6 +70,9 @@ knowledge_units:
     - id: PROD-DIFF-001
       file: "knowledge/product/PROD-DIFF-001.yaml"
       title: "Session File Changes, In-Memory Snapshots & Visual Diff Standard"
+    - id: PROD-GIT-001
+      file: "knowledge/product/PROD-GIT-001.yaml"
+      title: "Visual Studio Git Changes Tool Window, Staging & AI Conventional Commits Standard"
     - id: PROD-SETTINGS-001
       file: "knowledge/product/PROD-SETTINGS-001.yaml"
       title: "Global Gemini CLI Settings GUI & Configuration Standard"

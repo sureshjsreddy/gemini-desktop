@@ -393,6 +393,21 @@
         }
         streamStates[sessionId].toolCalls = [...list];
         streamStates = { ...streamStates };
+
+        // Auto-refresh Git Changes when mutating tools complete
+        if (payload.status === "completed") {
+          const tName = (payload.tool_name || payload.title || "").toLowerCase();
+          if (
+            tName.includes("write") ||
+            tName.includes("edit") ||
+            tName.includes("patch") ||
+            tName.includes("create") ||
+            tName.includes("delete") ||
+            tName.includes("terminal")
+          ) {
+            solutionExplorerRef?.refreshGitStatus();
+          }
+        }
       }
     );
 
@@ -497,6 +512,7 @@
 
   function handleWindowFocus() {
     checkClipboardForDebugError(false);
+    solutionExplorerRef?.refreshGitStatus();
   }
 
   async function checkClipboardForDebugError(force = false) {
@@ -654,6 +670,12 @@
     } else if ((e.ctrlKey || e.metaKey) && (e.key === "b" || e.key === "B")) {
       e.preventDefault();
       showSidebar = !showSidebar;
+    } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "g" || e.key === "G")) {
+      e.preventDefault();
+      showSolutionExplorer = true;
+      setTimeout(() => {
+        solutionExplorerRef?.switchTab("git");
+      }, 50);
     } else if ((e.ctrlKey || e.metaKey) && e.altKey && (e.key === "l" || e.key === "L")) {
       e.preventDefault();
       showSolutionExplorer = !showSolutionExplorer;
@@ -987,6 +1009,10 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
         messages = [...messages, assistantMsg];
       }
     }
+
+    // Refresh workspace files & git changes count
+    refreshWorkspaceFiles();
+    solutionExplorerRef?.refreshGitStatus();
   }
 
   async function handleCancelPrompt() {

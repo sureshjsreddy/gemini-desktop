@@ -3,7 +3,7 @@ type: product_standard
 title: Session File Changes, In-Memory Snapshots & Visual Diff Standard
 domain: product
 status: approved
-version: 1.3.0
+version: 1.4.0
 authority:
   level: official
   confidence: high
@@ -38,7 +38,10 @@ do:
   - "Surface a `[ 📝 Changes (N) +X -Y ]` badge in the ChatView header whenever one or more files have been modified or created during the active conversation and tracking is enabled."
   - "Provide an interactive `SessionChangesModal` featuring a selectable file list, status badges (Modified, Created, Deleted), line numbers, and color-coded insertions and deletions."
   - "Provide right-click context menu and diff header quick actions matching Workspace Explorer: Open with Default App, Open with Notepad, Reveal in Windows Explorer, Copy Relative Path, and Copy Full Path."
-  - "Support single-file revert and all-files revert, cleanly restoring original file contents or deleting genuinely created agent scratch files."
+  - "Isolate session file tracking per conversation: strictly isolate each conversation into its own dedicated snapshot directory (`%LOCALAPPDATA%\\GeminiDesktop\\snapshots\\<session_id>\\`) containing an independent `manifest.json` and `files/` snapshot store."
+  - "Maintain a per-conversation `reverted_files` set in `SnapshotManifest`: when single-file or all-files revert is executed, immediately remove the file from active `manifest.files` and record it in `manifest.reverted_files` so subsequent scans of conversation messages never resurrect the file as phantom 'deleted' or 'created' entries."
+  - "Support seamless subsequent turn re-edits: if the agent modifies or creates a previously reverted file in a subsequent turn of the same conversation, automatically clear the file from `manifest.reverted_files` in `snapshot_file_before_edit_internal` and establish a fresh baseline."
+  - "Support single-file revert and all-files revert, cleanly restoring original file contents or deleting genuinely created agent scratch files, while preserving `manifest.json` with `reverted_files` on revert-all so changes counters cleanly drop to 0."
   - "Emit `session-files-updated` events over Tauri IPC upon ACP tool completion and prompt completion only when tracking is enabled to keep frontend diff counters and badges updated in real time."
   - "Cleanly purge session snapshot directories (`%LOCALAPPDATA%\\GeminiDesktop\\snapshots\\<session_id>\\`) when a conversation is deleted."
 
@@ -54,6 +57,53 @@ dont:
 
 reason:
   "Users must have 100% confidence that Change Tracking accurately reflects only files genuinely modified or created by the agent. Diffing existing committed files against /dev/null causes severe confusion, and deleting existing files on revert risks catastrophic data loss. Grounding change tracking in Git HEAD provides bulletproof baseline verification for repositories while preserving zero-overhead snapshotting for non-Git folders."
+
+examples:
+  created_file_revert_workflow:
+    description: "Reverting a newly created file removes it from disk and prevents resurrection as a phantom deleted file"
+    step_1: "Agent creates 'scratch/notes.txt' during the conversation."
+    step_2: "Session snapshot records 'scratch/notes.txt' with status_at_snapshot: 'did_not_exist'."
+    step_3: "User opens Session Changes modal and clicks 'Revert File'."
+    step_4: "Backend deletes 'scratch/notes.txt' from disk, removes it from manifest.files, and adds it to manifest.reverted_files."
+    step_5: "Frontend reloads session changes via get_session_file_changes. The message scanner skips 'scratch/notes.txt' due to reverted_files membership."
+    result: "The file completely disappears from the Changes modal (it is NOT displayed as 'deleted' with 0 lines and a broken revert button)."
+
+  modified_file_revert_workflow:
+    description: "Reverting an edited file restores original baseline content and prevents resurrection as a created file"
+    step_1: "Agent edits existing file 'config.json'."
+    step_2: "Original content is snapshotted into snapshots/<session_id>/files/config.json with status_at_snapshot: 'existed'."
+    step_3: "User clicks 'Revert File'."
+    step_4: "Backend copies snapshot file back to disk, cleans up the snapshot file, removes 'config.json' from manifest.files, and records it in manifest.reverted_files."
+    step_5: "On reload, get_session_file_changes skips 'config.json', preventing it from being misclassified as a newly created file."
+    result: "Original file content is restored and the file is cleanly removed from the session changes list."
+
+  revert_all_workflow:
+    description: "Reverting all changes resets the session changes list to 0 and clears the UI badge"
+    step_1: "Session contains 3 modified files and 2 created files (5 changes total)."
+    step_2: "User clicks 'Revert All' -> 'Confirm'."
+    step_3: "All 5 files are reverted, their paths transferred to manifest.reverted_files, manifest.files cleared, and snapshots/files directory pruned."
+    step_4: "manifest.json is preserved with reverted_files to prevent message re-scans from resurrecting any files."
+    result: "Modal displays 'No File Changes in this Session', header badge disappears, and diff count drops to 0."
+
+  per_conversation_isolation:
+    description: "Each conversation maintains an independent snapshot folder and manifest"
+    session_a:
+      id: "sess_111"
+      path: "%LOCALAPPDATA%/GeminiDesktop/snapshots/sess_111/manifest.json"
+      action: "Agent modifies 'app.py' and user reverts it."
+      state: "manifest.reverted_files contains 'app.py'."
+    session_b:
+      id: "sess_222"
+      path: "%LOCALAPPDATA%/GeminiDesktop/snapshots/sess_222/manifest.json"
+      action: "Agent modifies 'app.py' independently."
+      state: "manifest.files contains 'app.py' as modified; Session A's reversion has zero impact on Session B."
+
+  subsequent_turn_reedits:
+    description: "Modifying a previously reverted file in a new turn establishes a fresh tracking baseline"
+    turn_1: "Agent creates 'data.csv', user reverts it. 'data.csv' is in manifest.reverted_files."
+    turn_2: "User prompts: 'Create data.csv again with updated columns'."
+    acp_intercept: "snapshot_file_before_edit_internal removes 'data.csv' from manifest.reverted_files and takes a fresh snapshot."
+    result: "The new 'data.csv' modification is tracked cleanly in the Session Changes modal for turn 2."
 
 related_items:
   - ARCH-SYS-001

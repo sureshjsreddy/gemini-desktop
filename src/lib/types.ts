@@ -268,6 +268,20 @@ export interface SessionRetentionConfig {
   maxCount?: number;
 }
 
+export interface GitFileItem {
+  path: string;
+  status: "modified" | "added" | "deleted" | "untracked" | "renamed";
+  is_staged: boolean;
+}
+
+export interface GitStatusResult {
+  is_git_repo: boolean;
+  repo_name: string;
+  active_branch: string;
+  staged: GitFileItem[];
+  unstaged: GitFileItem[];
+}
+
 export interface GlobalCliSettings {
   filePath: string;
   chatCompression: ChatCompressionConfig;

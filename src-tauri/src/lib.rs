@@ -89,7 +89,17 @@ pub fn run() {
             clear_session_snapshots,
             get_global_cli_settings,
             save_global_cli_settings,
-            create_continuation_session
+            create_continuation_session,
+            git_get_status,
+            git_stage_file,
+            git_unstage_file,
+            git_stage_all,
+            git_unstage_all,
+            git_undo_change,
+            git_undo_all,
+            git_commit,
+            git_get_file_diff,
+            git_generate_commit_message
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
