@@ -83,41 +83,61 @@
 
   async function handleStageFile(path: string) {
     if (!workspace?.path) return;
+    commitFeedback = null;
     try {
       await invoke("git_stage_file", { workspaceDir: workspace.path, path });
       await onRefresh?.();
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to stage file:", err);
+      commitFeedback = {
+        type: "error",
+        text: typeof err === "string" ? err : "Failed to stage file",
+      };
     }
   }
 
   async function handleUnstageFile(path: string) {
     if (!workspace?.path) return;
+    commitFeedback = null;
     try {
       await invoke("git_unstage_file", { workspaceDir: workspace.path, path });
       await onRefresh?.();
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to unstage file:", err);
+      commitFeedback = {
+        type: "error",
+        text: typeof err === "string" ? err : "Failed to unstage file",
+      };
     }
   }
 
   async function handleStageAll() {
     if (!workspace?.path) return;
+    commitFeedback = null;
     try {
       await invoke("git_stage_all", { workspaceDir: workspace.path });
       await onRefresh?.();
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to stage all files:", err);
+      commitFeedback = {
+        type: "error",
+        text: typeof err === "string" ? err : "Failed to stage all files",
+      };
     }
   }
 
   async function handleUnstageAll() {
     if (!workspace?.path) return;
+    commitFeedback = null;
     try {
       await invoke("git_unstage_all", { workspaceDir: workspace.path });
       await onRefresh?.();
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to unstage all files:", err);
+      commitFeedback = {
+        type: "error",
+        text: typeof err === "string" ? err : "Failed to unstage all files",
+      };
     }
   }
 
@@ -133,6 +153,7 @@
     );
     if (!confirmed) return;
 
+    commitFeedback = null;
     try {
       await invoke("git_undo_change", {
         workspaceDir: workspace.path,
@@ -140,8 +161,12 @@
         isUntracked: item.status === "untracked",
       });
       await onRefresh?.();
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to undo file changes:", err);
+      commitFeedback = {
+        type: "error",
+        text: typeof err === "string" ? err : "Failed to undo file changes",
+      };
     }
   }
 
@@ -157,11 +182,16 @@
     );
     if (!confirmed) return;
 
+    commitFeedback = null;
     try {
       await invoke("git_undo_all", { workspaceDir: workspace.path });
       await onRefresh?.();
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to undo all changes:", err);
+      commitFeedback = {
+        type: "error",
+        text: typeof err === "string" ? err : "Failed to undo all changes",
+      };
     }
   }
 
@@ -222,13 +252,10 @@
   }
 
   function handleKeyDown(e: KeyboardEvent) {
-    if (e.key === "Enter" && (e.ctrlKey || (!e.shiftKey && !e.ctrlKey && commitMessage.trim().length > 0))) {
-      // Ctrl+Enter or single Enter submits if message present
-      if (e.ctrlKey || !e.shiftKey) {
-        if (canCommit) {
-          e.preventDefault();
-          handleCommit();
-        }
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      if (canCommit) {
+        e.preventDefault();
+        handleCommit();
       }
     }
   }
@@ -360,9 +387,18 @@
         {gitStatus.repo_name || "Repository"}
       </span>
       {#if gitStatus.active_branch}
-        <span class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1 shrink-0">
+        <span
+          class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1 shrink-0"
+          title="{gitStatus.active_branch}{gitStatus.ahead ? ` (${gitStatus.ahead} unpushed)` : ''}{gitStatus.behind ? ` (${gitStatus.behind} unpulled)` : ''}"
+        >
           <GitBranch class="w-3 h-3" />
-          {gitStatus.active_branch}
+          <span>{gitStatus.active_branch}</span>
+          {#if (gitStatus.ahead || 0) > 0}
+            <span class="text-sky-300 font-semibold" title="{gitStatus.ahead} commits ahead of remote">↑{gitStatus.ahead}</span>
+          {/if}
+          {#if (gitStatus.behind || 0) > 0}
+            <span class="text-amber-300 font-semibold" title="{gitStatus.behind} commits behind remote">↓{gitStatus.behind}</span>
+          {/if}
         </span>
       {/if}
     </div>

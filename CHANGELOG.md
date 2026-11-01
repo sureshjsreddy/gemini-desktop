@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.1] - 2026-11-01
+
+### Added
+- **Upstream Ahead / Behind Git Sync Indicators**:
+  - Implemented `get_git_ahead_behind` in Rust backend tracking unpushed (`↑`) and unpulled (`↓`) commits against upstream tracking branches (`HEAD...@{upstream}`).
+  - Added colored glyph counters directly on the active branch pill in the Git Changes top bar.
+- **Interactive Working Tree Undo in Diff Modal**:
+  - Enhanced `SessionChangesModal` with customizable modal title, description, and action button labels.
+  - Wired direct "Undo Changes" action (`git_undo_change`) from the Git diff comparison modal with confirmation dialogs.
+  - Automatically hidden whole-session "Revert All" button when viewing individual Git diff comparisons.
+- **Visible Error Feedback for Git Staging & Discard Operations**:
+  - Added immediate UI error feedback banners alerting users if Git commands fail due to index locks or permission restrictions.
+
+### Changed
+- **Multi-Line Commit Message Ergonomics**:
+  - Updated commit textarea keydown handler in `GitChangesWindow` to require `Ctrl+Enter` / `Cmd+Enter` for commit submission, enabling natural `Enter` keypresses for multi-line commit descriptions and bulleted summaries.
+
+---
+
 ## [0.4.0] - 2026-10-31
 
 ### Added

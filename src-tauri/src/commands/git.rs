@@ -16,6 +16,10 @@ pub struct GitStatusResult {
     pub is_git_repo: bool,
     pub repo_name: String,
     pub active_branch: String,
+    #[serde(default)]
+    pub ahead: usize,
+    #[serde(default)]
+    pub behind: usize,
     pub staged: Vec<GitFileItem>,
     pub unstaged: Vec<GitFileItem>,
 }
@@ -82,6 +86,22 @@ pub fn get_git_active_branch(ws_path: &Path) -> String {
         }
     }
     "HEAD".to_string()
+}
+
+/// Retrieves ahead/behind count against upstream tracking branch if configured
+pub fn get_git_ahead_behind(ws_path: &Path) -> (usize, usize) {
+    if let Ok(output) = run_git_command(ws_path, &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]) {
+        if output.status.success() {
+            let out_str = String::from_utf8_lossy(&output.stdout);
+            let parts: Vec<&str> = out_str.trim().split_whitespace().collect();
+            if parts.len() == 2 {
+                let ahead = parts[0].parse::<usize>().unwrap_or(0);
+                let behind = parts[1].parse::<usize>().unwrap_or(0);
+                return (ahead, behind);
+            }
+        }
+    }
+    (0, 0)
 }
 
 /// Parses porcelain v1 status into staged and unstaged GitFileItems
@@ -195,6 +215,8 @@ pub async fn git_get_status(workspace_dir: String) -> Result<GitStatusResult, St
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_else(|| "Workspace".to_string()),
                 active_branch: String::new(),
+                ahead: 0,
+                behind: 0,
                 staged: Vec::new(),
                 unstaged: Vec::new(),
             });
@@ -202,6 +224,7 @@ pub async fn git_get_status(workspace_dir: String) -> Result<GitStatusResult, St
 
         let repo_name = get_git_repo_name(&ws_path);
         let active_branch = get_git_active_branch(&ws_path);
+        let (ahead, behind) = get_git_ahead_behind(&ws_path);
 
         let output = run_git_command(&ws_path, &["status", "--porcelain=v1", "-uall"])?;
         if !output.status.success() {
@@ -216,6 +239,8 @@ pub async fn git_get_status(workspace_dir: String) -> Result<GitStatusResult, St
             is_git_repo: true,
             repo_name,
             active_branch,
+            ahead,
+            behind,
             staged,
             unstaged,
         })
@@ -684,5 +709,27 @@ mod tests {
         assert_eq!(unstaged.len(), 1);
         assert_eq!(unstaged[0].path, "src/my folder/file with spaces.txt");
         assert_eq!(unstaged[0].status, "untracked");
+    }
+
+    #[test]
+    fn test_git_status_result_serialization() {
+        let res = GitStatusResult {
+            is_git_repo: true,
+            repo_name: "test-repo".to_string(),
+            active_branch: "main".to_string(),
+            ahead: 2,
+            behind: 1,
+            staged: Vec::new(),
+            unstaged: Vec::new(),
+        };
+        let json = serde_json::to_string(&res).unwrap();
+        assert!(json.contains("\"ahead\":2"));
+        assert!(json.contains("\"behind\":1"));
+
+        // Backward compatibility: when ahead/behind missing from JSON, defaults to 0
+        let backward_json = r#"{"is_git_repo":true,"repo_name":"repo","active_branch":"main","staged":[],"unstaged":[]}"#;
+        let parsed: GitStatusResult = serde_json::from_str(backward_json).unwrap();
+        assert_eq!(parsed.ahead, 0);
+        assert_eq!(parsed.behind, 0);
     }
 }

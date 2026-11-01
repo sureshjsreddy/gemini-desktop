@@ -278,6 +278,8 @@ export interface GitStatusResult {
   is_git_repo: boolean;
   repo_name: string;
   active_branch: string;
+  ahead?: number;
+  behind?: number;
   staged: GitFileItem[];
   unstaged: GitFileItem[];
 }

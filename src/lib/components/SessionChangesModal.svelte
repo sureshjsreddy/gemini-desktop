@@ -23,6 +23,10 @@
     isOpen = false,
     changes = [],
     workspacePath = "",
+    title = "Session File Changes & Visual Diff",
+    description = "Review and inspect file modifications made during this conversation • Right-click any file for native Windows open options",
+    canRevertAll = true,
+    revertButtonLabel = "Revert File",
     onClose,
     onRevertFile,
     onRevertAll,
@@ -30,9 +34,13 @@
     isOpen: boolean;
     changes: SessionFileChange[];
     workspacePath?: string;
+    title?: string;
+    description?: string;
+    canRevertAll?: boolean;
+    revertButtonLabel?: string;
     onClose: () => void;
-    onRevertFile: (filePath: string) => Promise<void> | void;
-    onRevertAll: () => Promise<void> | void;
+    onRevertFile?: (filePath: string) => Promise<void> | void;
+    onRevertAll?: () => Promise<void> | void;
   } = $props();
 
   let selectedFilePath = $state<string>("");
@@ -177,7 +185,7 @@
   });
 
   async function handleRevertSingle(filePath: string) {
-    if (isReverting) return;
+    if (isReverting || !onRevertFile) return;
     isReverting = filePath;
     contextMenu = null;
     try {
@@ -188,7 +196,7 @@
   }
 
   async function handleRevertEverything() {
-    if (isRevertingAll) return;
+    if (isRevertingAll || !onRevertAll) return;
     isRevertingAll = true;
     confirmRevertAll = false;
     contextMenu = null;
@@ -239,13 +247,13 @@
           </div>
           <div class="min-w-0">
             <h2 id="session-diff-title" class="font-semibold text-sm text-primary-theme flex items-center gap-2">
-              <span>Session File Changes & Visual Diff</span>
+              <span>{title}</span>
               <span class="text-xs px-2 py-0.5 rounded-full bg-surface-hover text-secondary-theme font-mono font-normal">
                 {changes.length} {changes.length === 1 ? "file" : "files"}
               </span>
             </h2>
             <p class="text-[11px] text-muted-theme truncate">
-              Review and inspect file modifications made during this conversation &bull; Right-click any file for native Windows open options
+              {description}
             </p>
           </div>
         </div>
@@ -258,34 +266,36 @@
             </div>
 
             <!-- Revert All Button -->
-            {#if !confirmRevertAll}
-              <button
-                type="button"
-                onclick={() => (confirmRevertAll = true)}
-                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-xs font-medium transition-colors cursor-pointer"
-              >
-                <RotateCcw size={13} />
-                <span>Revert All</span>
-              </button>
-            {:else}
-              <div class="flex items-center gap-1.5 bg-rose-500/20 border border-rose-500/50 p-1 rounded-lg">
-                <span class="text-[11px] text-rose-200 px-1 font-medium">Revert all {changes.length} files?</span>
+            {#if onRevertAll && canRevertAll}
+              {#if !confirmRevertAll}
                 <button
                   type="button"
-                  onclick={handleRevertEverything}
-                  disabled={isRevertingAll}
-                  class="px-2 py-1 rounded bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer"
+                  onclick={() => (confirmRevertAll = true)}
+                  class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-xs font-medium transition-colors cursor-pointer"
                 >
-                  {isRevertingAll ? "Reverting..." : "Confirm"}
+                  <RotateCcw size={13} />
+                  <span>Revert All</span>
                 </button>
-                <button
-                  type="button"
-                  onclick={() => (confirmRevertAll = false)}
-                  class="px-2 py-1 rounded bg-surface hover:bg-surface-hover text-secondary-theme text-xs cursor-pointer"
-                >
-                  Cancel
-                </button>
-              </div>
+              {:else}
+                <div class="flex items-center gap-1.5 bg-rose-500/20 border border-rose-500/50 p-1 rounded-lg">
+                  <span class="text-[11px] text-rose-200 px-1 font-medium">Revert all {changes.length} files?</span>
+                  <button
+                    type="button"
+                    onclick={handleRevertEverything}
+                    disabled={isRevertingAll}
+                    class="px-2 py-1 rounded bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold cursor-pointer"
+                  >
+                    {isRevertingAll ? "Reverting..." : "Confirm"}
+                  </button>
+                  <button
+                    type="button"
+                    onclick={() => (confirmRevertAll = false)}
+                    class="px-2 py-1 rounded bg-surface hover:bg-surface-hover text-secondary-theme text-xs cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              {/if}
             {/if}
           {/if}
 
@@ -464,15 +474,17 @@
                   </span>
 
                   <!-- Revert File -->
-                  <button
-                    type="button"
-                    onclick={() => handleRevertSingle(selectedChange.file_path)}
-                    disabled={isReverting === selectedChange.file_path}
-                    class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-rose-500/30 bg-surface hover:bg-rose-500/10 text-rose-400 text-xs font-medium transition-colors cursor-pointer"
-                  >
-                    <RotateCcw size={12} class={isReverting === selectedChange.file_path ? "animate-spin" : ""} />
-                    <span>Revert File</span>
-                  </button>
+                  {#if onRevertFile}
+                    <button
+                      type="button"
+                      onclick={() => handleRevertSingle(selectedChange.file_path)}
+                      disabled={isReverting === selectedChange.file_path}
+                      class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-rose-500/30 bg-surface hover:bg-rose-500/10 text-rose-400 text-xs font-medium transition-colors cursor-pointer"
+                    >
+                      <RotateCcw size={12} class={isReverting === selectedChange.file_path ? "animate-spin" : ""} />
+                      <span>{revertButtonLabel}</span>
+                    </button>
+                  {/if}
                 </div>
               </div>
 
@@ -603,16 +615,18 @@
       <span>Copy Full Path</span>
     </button>
 
-    <div class="my-1 border-t border-subtle/60"></div>
+    {#if onRevertFile}
+      <div class="my-1 border-t border-subtle/60"></div>
 
-    <!-- Revert File -->
-    <button
-      type="button"
-      onclick={() => contextMenu && handleRevertSingle(contextMenu.filePath)}
-      class="w-full px-3 py-1.5 text-left hover:bg-rose-500/10 flex items-center gap-2 cursor-pointer text-rose-400"
-    >
-      <RotateCcw size={13} />
-      <span>Revert this File</span>
-    </button>
+      <!-- Revert File -->
+      <button
+        type="button"
+        onclick={() => contextMenu && handleRevertSingle(contextMenu.filePath)}
+        class="w-full px-3 py-1.5 text-left hover:bg-rose-500/10 flex items-center gap-2 cursor-pointer text-rose-400"
+      >
+        <RotateCcw size={13} />
+        <span>{revertButtonLabel}</span>
+      </button>
+    {/if}
   </div>
 {/if}

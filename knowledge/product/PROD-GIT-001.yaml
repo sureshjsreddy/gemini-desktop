@@ -3,7 +3,7 @@ type: product_feature
 title: "Visual Studio Git Changes Tool Window, Staging & AI Conventional Commits Standard"
 domain: product
 status: approved
-version: 1.1.0
+version: 1.2.0
 authority:
   level: official
   confidence: high
@@ -16,23 +16,24 @@ applies_to:
   - git
   - components
 
-rule: "Gemini Desktop provides an integrated Visual Studio-style Git Changes tool window for inspecting repository status, staging/unstaging files, discarding uncommitted modifications, comparing against HEAD/unmodified baselines, and committing changes with AI Conventional Commit generation directly over standard system Git without external library dependencies."
+rule: "Gemini Desktop provides an integrated Visual Studio-style Git Changes tool window for inspecting repository status, tracking upstream ahead/behind counts, staging/unstaging files, discarding uncommitted modifications, comparing against HEAD/unmodified baselines, and committing changes with AI Conventional Commit generation directly over standard system Git without external library dependencies."
 
 do:
   - "Query system Git CLI directly via `run_git_command` under Windows `CREATE_NO_WINDOW` (0x08000000) without spawning visible console windows."
-  - "Display active repository root folder and checked-out branch name (e.g. `🌿 main`)."
+  - "Display active repository root folder and checked-out branch name (e.g. `🌿 main`) along with upstream ahead/behind synchronization indicators (`↑` unpushed, `↓` unpulled)."
   - "Gracefully handle non-git workspace directories by rendering a clean fallback banner ('Not a Git repository')."
   - "Group working directory modifications into Staged Changes and Changes (unstaged) using `git status --porcelain=v1 -uall`."
   - "Parse porcelain status codes and map them to Visual Studio color-coded glyph badges: `[A]` (emerald/green for Added), `[M]` (sky/blue for Modified), `[D]` (rose/red for Deleted with strikethrough styling), `[U]` (emerald-300 for Untracked), `[R]` (amber for Renamed), and `[!]` (red for Merge Conflict)."
   - "Provide rich hover tooltips on each badge clarifying the exact status meaning (e.g. `Added — New file in Git index`, `Deleted — File was removed`)."
   - "Display file type extension icons beside status badges matching the Solution Explorer hierarchy."
-  - "Provide 1-click `[+]` Stage All / `[-]` Unstage All and per-item Stage / Unstage actions."
+  - "Provide 1-click `[+]` Stage All / `[-]` Unstage All and per-item Stage / Unstage actions with immediate visual error banners if Git index commands fail."
   - "Provide safe Undo Changes with destructive confirmation dialogs before invoking `git restore` or `git clean -fd`."
   - "Enforce Visual Studio commit priority logic: if staged files exist, commit only staged changes (`git commit -m`); if no staged files exist, commit all changes (`git commit -a -m`)."
+  - "Support multi-line commit messages with plain `Enter` for formatting and `Ctrl+Enter` / `Cmd+Enter` to trigger commit dispatch."
   - "Dynamically label the commit button based on staged status: `Commit Staged (N)` when staged changes exist, or `Commit All (N)` when no staged changes exist."
   - "Analyze `git diff --cached` (or `git diff HEAD`) to generate conventional commit messages on clicking `[✨ AI Generate]`."
   - "Support right-click context menu actions with a top header displaying the file name, status badge, and Staged/Unstaged indicator: Stage, Unstage, Undo Changes, Compare with HEAD/Unmodified, Open File, Open with Notepad, Reveal in Explorer, and Copy Path."
-  - "Support double-clicking any file to inspect unified line-by-line diffs via `git_get_file_diff` in `SessionChangesModal`."
+  - "Support double-clicking any file to inspect unified line-by-line diffs via `git_get_file_diff` in `SessionChangesModal` with dedicated Git title, description, and direct Undo Changes action."
   - "Keep both Solution Explorer and Git Changes views persistently mounted in the DOM to prevent state or draft commit message loss during tab switches."
   - "Maintain single source of truth in `SolutionExplorer.svelte` and automatically refresh Git status when ACP agent turns complete, when mutating tools finish, and when the application window regains focus."
   - "Integrate seamless dock switching between Solution Explorer and Git Changes tabs on the right tool window, including keyboard shortcut `Ctrl+Shift+G`."

@@ -449,6 +449,8 @@
     is_git_repo: false,
     repo_name: "",
     active_branch: "",
+    ahead: 0,
+    behind: 0,
     staged: [],
     unstaged: [],
   });
@@ -472,6 +474,8 @@
         is_git_repo: false,
         repo_name: "",
         active_branch: "",
+        ahead: 0,
+        behind: 0,
         staged: [],
         unstaged: [],
       };
@@ -488,6 +492,8 @@
         is_git_repo: false,
         repo_name: "",
         active_branch: "",
+        ahead: 0,
+        behind: 0,
         staged: [],
         unstaged: [],
       };
@@ -514,6 +520,34 @@
       isGitDiffModalOpen = true;
     } catch (err) {
       console.error("Failed to get git file diff:", err);
+    }
+  }
+
+  async function handleRevertGitDiffFile(relPath: string) {
+    if (!workspace?.path) return;
+    const confirmed = await dialogManager.confirm(
+      `Are you sure you want to discard changes in '${relPath}'?\nThis operation cannot be undone.`,
+      {
+        title: "Undo Changes",
+        confirmText: "Discard Changes",
+        isDestructive: true,
+      }
+    );
+    if (!confirmed) return;
+
+    try {
+      const isUntracked = gitStatus.unstaged.some(
+        (it) => it.path === relPath && it.status === "untracked"
+      );
+      await invoke("git_undo_change", {
+        workspaceDir: workspace.path,
+        path: relPath,
+        isUntracked,
+      });
+      await refreshGitStatus();
+      isGitDiffModalOpen = false;
+    } catch (err) {
+      console.error("Failed to undo file changes:", err);
     }
   }
 </script>
@@ -990,9 +1024,12 @@
   isOpen={isGitDiffModalOpen}
   changes={gitDiffChanges}
   workspacePath={workspace?.path}
+  title="Git Working Tree Diff"
+  description="Inspect unified line-by-line differences against HEAD or unmodified baseline • Right-click any file for native Windows open options"
+  canRevertAll={false}
+  revertButtonLabel="Undo Changes"
   onClose={() => (isGitDiffModalOpen = false)}
-  onRevertFile={() => {}}
-  onRevertAll={() => {}}
+  onRevertFile={handleRevertGitDiffFile}
 />
 
 <!-- Context Menu Popup -->
