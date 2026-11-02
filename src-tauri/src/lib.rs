@@ -98,6 +98,8 @@ pub fn run() {
             git_undo_change,
             git_undo_all,
             git_commit,
+            git_pull,
+            git_push,
             git_get_file_diff,
             git_generate_commit_message
         ])

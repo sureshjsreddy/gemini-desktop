@@ -24,6 +24,9 @@
     Database,
     Terminal,
     Image,
+    ArrowDown,
+    ArrowUp,
+    UploadCloud,
   } from "lucide-svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { dialogManager } from "$lib/dialog.svelte";
@@ -43,6 +46,7 @@
     isLoading = false,
     onRefresh,
     onCompareFile,
+    getContextHint,
   }: {
     workspace: Workspace | null;
     isOpen: boolean;
@@ -50,12 +54,16 @@
     isLoading?: boolean;
     onRefresh?: () => Promise<void> | void;
     onCompareFile?: (relPath: string, isStaged: boolean) => void;
+    getContextHint?: () => string;
   } = $props();
 
   let isGeneratingCommit = $state(false);
   let isCommitting = $state(false);
+  let isPulling = $state(false);
+  let isPushing = $state(false);
   let commitMessage = $state("");
   let commitFeedback = $state<{ type: "success" | "error"; text: string } | null>(null);
+  let syncFeedback = $state<{ type: "success" | "error"; text: string } | null>(null);
 
   // Accordion expansion states
   let isStagedOpen = $state(true);
@@ -200,8 +208,10 @@
     isGeneratingCommit = true;
     commitFeedback = null;
     try {
+      const hint = getContextHint?.() || "";
       const msg = await invoke<string>("git_generate_commit_message", {
         workspaceDir: workspace.path,
+        contextHint: hint || null,
       });
       commitMessage = msg;
     } catch (err: any) {
@@ -248,6 +258,73 @@
       };
     } finally {
       isCommitting = false;
+    }
+  }
+
+  async function handlePull() {
+    if (!workspace?.path || isPulling || isPushing) return;
+    isPulling = true;
+    syncFeedback = null;
+    commitFeedback = null;
+    try {
+      const summary = await invoke<string>("git_pull", { workspaceDir: workspace.path });
+      syncFeedback = {
+        type: "success",
+        text: summary.split("\n")[0] || "Pull completed successfully.",
+      };
+      await refreshStatus();
+      setTimeout(() => {
+        if (syncFeedback?.type === "success") {
+          syncFeedback = null;
+        }
+      }, 5000);
+    } catch (err: any) {
+      console.error("Failed to pull from remote:", err);
+      syncFeedback = {
+        type: "error",
+        text: typeof err === "string" ? err : "Failed to pull from remote",
+      };
+    } finally {
+      isPulling = false;
+    }
+  }
+
+  async function handlePush() {
+    if (!workspace?.path || isPulling || isPushing) return;
+    isPushing = true;
+    syncFeedback = null;
+    commitFeedback = null;
+    try {
+      const summary = await invoke<string>("git_push", {
+        workspaceDir: workspace.path,
+        setUpstream: false,
+      });
+      syncFeedback = {
+        type: "success",
+        text: summary.split("\n")[0] || "Pushed successfully.",
+      };
+      await refreshStatus();
+      setTimeout(() => {
+        if (syncFeedback?.type === "success") {
+          syncFeedback = null;
+        }
+      }, 5000);
+    } catch (err: any) {
+      console.error("Failed to push to remote:", err);
+      syncFeedback = {
+        type: "error",
+        text: typeof err === "string" ? err : "Failed to push to remote",
+      };
+    } finally {
+      isPushing = false;
+    }
+  }
+
+  async function handleCommitAndPush() {
+    if (!workspace?.path || !canCommit || isCommitting || isPushing) return;
+    await handleCommit();
+    if (!commitFeedback || commitFeedback.type === "success") {
+      await handlePush();
     }
   }
 
@@ -381,36 +458,66 @@
 <div class="h-full flex flex-col bg-slate-900 border-l border-slate-800 text-slate-200 select-none overflow-hidden">
   <!-- Top Bar: Repository Name & Active Branch -->
   <div class="px-3 py-2.5 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between gap-2">
-    <div class="flex items-center gap-1.5 min-w-0">
+    <div class="flex items-center gap-1.5 min-w-0 flex-1">
       <FolderGit2 class="w-4 h-4 text-emerald-400 shrink-0" />
-      <span class="text-xs font-semibold text-slate-100 truncate">
+      <span class="text-xs font-semibold text-slate-100 truncate max-w-[90px]" title={gitStatus.repo_name || "Repository"}>
         {gitStatus.repo_name || "Repository"}
       </span>
       {#if gitStatus.active_branch}
         <span
-          class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1 shrink-0"
+          class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1 min-w-0 max-w-[125px] sm:max-w-[150px]"
           title="{gitStatus.active_branch}{gitStatus.ahead ? ` (${gitStatus.ahead} unpushed)` : ''}{gitStatus.behind ? ` (${gitStatus.behind} unpulled)` : ''}"
         >
-          <GitBranch class="w-3 h-3" />
-          <span>{gitStatus.active_branch}</span>
+          <GitBranch class="w-3 h-3 shrink-0" />
+          <span class="truncate">{gitStatus.active_branch}</span>
           {#if (gitStatus.ahead || 0) > 0}
-            <span class="text-sky-300 font-semibold" title="{gitStatus.ahead} commits ahead of remote">↑{gitStatus.ahead}</span>
+            <span class="text-sky-300 font-semibold shrink-0" title="{gitStatus.ahead} commits ahead of remote">↑{gitStatus.ahead}</span>
           {/if}
           {#if (gitStatus.behind || 0) > 0}
-            <span class="text-amber-300 font-semibold" title="{gitStatus.behind} commits behind remote">↓{gitStatus.behind}</span>
+            <span class="text-amber-300 font-semibold shrink-0" title="{gitStatus.behind} commits behind remote">↓{gitStatus.behind}</span>
           {/if}
         </span>
       {/if}
     </div>
 
-    <div class="flex items-center gap-1">
+    <div class="flex items-center gap-1 shrink-0">
+      <Tooltip text="Pull from remote {gitStatus.behind ? `(${gitStatus.behind} unpulled commits)` : ''}">
+        <button
+          type="button"
+          class="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-700/60 transition-colors disabled:opacity-40"
+          onclick={handlePull}
+          disabled={isLoading || isPulling || isPushing}
+        >
+          <ArrowDown class="w-3 h-3 text-amber-400 {isPulling ? 'animate-bounce' : ''}" />
+          <span>Pull</span>
+          {#if (gitStatus.behind || 0) > 0}
+            <span class="text-[10px] text-amber-300 font-bold font-mono">({gitStatus.behind})</span>
+          {/if}
+        </button>
+      </Tooltip>
+
+      <Tooltip text="Push to remote {gitStatus.ahead ? `(${gitStatus.ahead} unpushed commits)` : ''}">
+        <button
+          type="button"
+          class="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-700/60 transition-colors disabled:opacity-40"
+          onclick={handlePush}
+          disabled={isLoading || isPulling || isPushing}
+        >
+          <ArrowUp class="w-3 h-3 text-sky-400 {isPushing ? 'animate-bounce' : ''}" />
+          <span>Push</span>
+          {#if (gitStatus.ahead || 0) > 0}
+            <span class="text-[10px] text-sky-300 font-bold font-mono">({gitStatus.ahead})</span>
+          {/if}
+        </button>
+      </Tooltip>
+
       <Tooltip text="Refresh Git Status">
         <button
           type="button"
           aria-label="Refresh Git Status"
           class="p-1 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
           onclick={refreshStatus}
-          disabled={isLoading}
+          disabled={isLoading || isPulling || isPushing}
         >
           <RotateCw class="w-3.5 h-3.5 {isLoading ? 'animate-spin text-emerald-400' : ''}" />
         </button>
@@ -440,8 +547,8 @@
         ></textarea>
       </div>
 
-      <!-- Action Row: AI Generate + Commit Button -->
-      <div class="flex items-center justify-between gap-2">
+      <!-- Action Row: AI Generate + Commit Buttons -->
+      <div class="flex items-center justify-between gap-2 flex-wrap">
         <button
           type="button"
           class="flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-slate-300 bg-slate-800/70 hover:bg-slate-800 hover:text-emerald-400 border border-slate-700/60 rounded transition-all disabled:opacity-50"
@@ -453,33 +560,80 @@
           <span>{isGeneratingCommit ? "Generating..." : "AI Generate"}</span>
         </button>
 
-        <button
-          type="button"
-          class="flex items-center gap-1 px-3 py-1 text-xs font-semibold rounded transition-all shadow-sm {canCommit ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/40'}"
-          onclick={handleCommit}
-          disabled={!canCommit}
-        >
-          {#if isCommitting}
-            <RotateCw class="w-3.5 h-3.5 animate-spin mr-1" />
-            <span>Committing...</span>
-          {:else if gitStatus.staged.length > 0}
-            <Check class="w-3.5 h-3.5 mr-0.5" />
-            <span>Commit Staged ({gitStatus.staged.length})</span>
-          {:else}
-            <Check class="w-3.5 h-3.5 mr-0.5" />
-            <span>Commit All ({gitStatus.unstaged.length})</span>
-          {/if}
-        </button>
+        <div class="flex items-center gap-1.5">
+          <button
+            type="button"
+            class="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded transition-all shadow-sm {canCommit ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/40'}"
+            onclick={handleCommit}
+            disabled={!canCommit || isCommitting || isPushing || isPulling}
+          >
+            {#if isCommitting && !isPushing}
+              <RotateCw class="w-3.5 h-3.5 animate-spin mr-1" />
+              <span>Committing...</span>
+            {:else if gitStatus.staged.length > 0}
+              <Check class="w-3.5 h-3.5 mr-0.5" />
+              <span>Commit Staged ({gitStatus.staged.length})</span>
+            {:else}
+              <Check class="w-3.5 h-3.5 mr-0.5" />
+              <span>Commit All ({gitStatus.unstaged.length})</span>
+            {/if}
+          </button>
+
+          <Tooltip text="Commit and immediately push to remote">
+            <button
+              type="button"
+              class="flex items-center gap-1 px-2 py-1 text-xs font-semibold rounded transition-all shadow-sm {canCommit ? 'bg-sky-600 hover:bg-sky-500 text-white' : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/40'}"
+              onclick={handleCommitAndPush}
+              disabled={!canCommit || isCommitting || isPushing || isPulling}
+            >
+              {#if isCommitting || isPushing}
+                <RotateCw class="w-3.5 h-3.5 animate-spin mr-0.5" />
+              {:else}
+                <UploadCloud class="w-3.5 h-3.5 mr-0.5" />
+              {/if}
+              <span>& Push</span>
+            </button>
+          </Tooltip>
+        </div>
       </div>
 
       {#if commitFeedback}
-        <div class="text-[11px] px-2 py-1 rounded flex items-center gap-1.5 {commitFeedback.type === 'success' ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-300 border border-rose-500/20'}">
-          {#if commitFeedback.type === 'success'}
-            <Check class="w-3 h-3 shrink-0" />
-          {:else}
-            <AlertCircle class="w-3 h-3 shrink-0" />
-          {/if}
-          <span class="truncate">{commitFeedback.text}</span>
+        <div class="text-[11px] px-2 py-1 rounded flex items-center justify-between gap-1.5 {commitFeedback.type === 'success' ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-300 border border-rose-500/20'}">
+          <div class="flex items-center gap-1.5 min-w-0">
+            {#if commitFeedback.type === 'success'}
+              <Check class="w-3 h-3 shrink-0" />
+            {:else}
+              <AlertCircle class="w-3 h-3 shrink-0" />
+            {/if}
+            <span class="truncate">{commitFeedback.text}</span>
+          </div>
+          <button
+            type="button"
+            class="text-slate-400 hover:text-slate-200 p-0.5"
+            onclick={() => (commitFeedback = null)}
+          >
+            <X class="w-3 h-3" />
+          </button>
+        </div>
+      {/if}
+
+      {#if syncFeedback}
+        <div class="text-[11px] px-2 py-1 rounded flex items-center justify-between gap-1.5 {syncFeedback.type === 'success' ? 'bg-sky-500/10 text-sky-300 border border-sky-500/20' : 'bg-rose-500/10 text-rose-300 border border-rose-500/20'}">
+          <div class="flex items-center gap-1.5 min-w-0">
+            {#if syncFeedback.type === 'success'}
+              <Check class="w-3 h-3 shrink-0 text-sky-400" />
+            {:else}
+              <AlertCircle class="w-3 h-3 shrink-0 text-rose-400" />
+            {/if}
+            <span class="truncate">{syncFeedback.text}</span>
+          </div>
+          <button
+            type="button"
+            class="text-slate-400 hover:text-slate-200 p-0.5"
+            onclick={() => (syncFeedback = null)}
+          >
+            <X class="w-3 h-3" />
+          </button>
         </div>
       {/if}
     </div>

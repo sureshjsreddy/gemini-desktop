@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.0] - 2026-11-02
+
+### Added
+- **Remote Git Synchronization (Pull, Push & Commit-and-Push)**:
+  - Implemented `git_pull` in Rust backend with `GIT_TERMINAL_PROMPT=0` to prevent hanging on missing credentials and gracefully handle merge conflicts and auth failures.
+  - Implemented `git_push` with automatic upstream branch configuration fallback (`git push -u origin <branch>`).
+  - Added dedicated `[↓ Pull]` and `[↑ Push]` top bar buttons with live unpulled (`↓behind`) and unpushed (`↑ahead`) commit badges and animated status states.
+  - Added 1-click `[Commit & Push]` composite action in the commit row for atomic check-in and remote synchronization in a single developer turn.
+- **Context-Aware AI Conventional Commit Generation via Gemini CLI**:
+  - Enhanced `git_generate_commit_message` to dispatch to the local Gemini CLI (`gemini-3.8-flash`) using active chat turns, draft prompts, and issue/story references (`PROJ-104`, `#42`).
+  - Integrated resilient local heuristic fallback (`synthesize_heuristic_commit_message`) when Gemini CLI is unavailable or offline.
+- **Defensive Toolbar Layout for Long Branch Names**:
+  - Implemented `shrink-0` flexbox styling on action buttons (`Pull`, `Push`, `Refresh`, `More options`) ensuring they never compress or get displaced.
+  - Added bounded width and ellipsis truncation (`min-w-0 max-w-[125px] sm:max-w-[150px] truncate`) on active branch tags with full native hover tooltip inspection.
+
+---
+
 ## [0.4.1] - 2026-11-01
 
 ### Added

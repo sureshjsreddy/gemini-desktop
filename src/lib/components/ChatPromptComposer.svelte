@@ -206,6 +206,10 @@
     });
   }
 
+  export function getPrompt(): string {
+    return inputPrompt;
+  }
+
   export function focus() {
     textareaElem?.focus();
   }

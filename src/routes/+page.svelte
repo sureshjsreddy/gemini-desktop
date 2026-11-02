@@ -1210,6 +1210,19 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
     onAttachMultiple={(items) => {
       chatViewRef?.attachMultiple(items);
     }}
+    getContextHint={() => {
+      const promptDraft = chatViewRef?.getPromptText?.()?.trim();
+      if (promptDraft) return promptDraft;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === "user" && messages[i].content?.trim()) {
+          return messages[i].content.trim();
+        }
+      }
+      if (activeSession?.title && activeSession.title !== "New Chat" && !activeSession.title.startsWith("Chat ")) {
+        return activeSession.title;
+      }
+      return "";
+    }}
   />
 
   <!-- Modals Consolidated with modalManager -->

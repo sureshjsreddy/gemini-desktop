@@ -354,6 +354,10 @@
   let currentModeConfig = $derived(getModeConfig(effectiveApprovalMode));
   let ModeIcon = $derived(currentModeConfig.icon);
 
+  export function getPromptText(): string {
+    return composerRef?.getPrompt?.() || "";
+  }
+
   export function insertFileMention(relPath: string) {
     composerRef?.insertFileMention(relPath);
   }

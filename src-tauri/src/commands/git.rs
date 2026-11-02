@@ -399,6 +399,123 @@ pub async fn git_commit(
     .map_err(|e| format!("Task join error: {}", e))?
 }
 
+pub fn run_git_remote_command(ws_path: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    let mut cmd = Command::new("git");
+    cmd.args(args)
+        .current_dir(ws_path)
+        .env("GIT_TERMINAL_PROMPT", "0");
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    cmd.output()
+        .map_err(|e| format!("Failed to execute git command {:?}: {}", args, e))
+}
+
+#[tauri::command]
+pub async fn git_pull(workspace_dir: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let ws_path = PathBuf::from(&workspace_dir);
+        if !ws_path.exists() {
+            return Err("Workspace directory does not exist".to_string());
+        }
+        if !is_inside_git_repo(&ws_path) {
+            return Err("Workspace is not inside a Git repository".to_string());
+        }
+
+        let output = run_git_remote_command(&ws_path, &["pull"])?;
+
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            let out = String::from_utf8_lossy(&output.stdout);
+            let full_err = format!("{}\n{}", err.trim(), out.trim()).trim().to_string();
+
+            if full_err.contains("CONFLICT") || full_err.contains("merge failed") {
+                return Err(format!("Pull resulted in merge conflicts. Please resolve conflicts: {}", full_err));
+            }
+            if full_err.contains("Authentication failed")
+                || full_err.contains("could not read Username")
+                || full_err.contains("Permission denied")
+            {
+                return Err("Authentication failed. Please verify your Git credentials or SSH keys.".to_string());
+            }
+            return Err(format!("Git pull failed: {}", full_err));
+        }
+
+        let summary = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(if summary.is_empty() {
+            "Already up to date.".to_string()
+        } else {
+            summary
+        })
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn git_push(workspace_dir: String, set_upstream: bool) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let ws_path = PathBuf::from(&workspace_dir);
+        if !ws_path.exists() {
+            return Err("Workspace directory does not exist".to_string());
+        }
+        if !is_inside_git_repo(&ws_path) {
+            return Err("Workspace is not inside a Git repository".to_string());
+        }
+
+        let branch = get_git_active_branch(&ws_path);
+
+        let output = if set_upstream {
+            run_git_remote_command(&ws_path, &["push", "-u", "origin", &branch])?
+        } else {
+            let res = run_git_remote_command(&ws_path, &["push"])?;
+            // If failed because no upstream tracking branch is set, auto-fallback with -u origin <branch>
+            if !res.status.success() {
+                let err_str = String::from_utf8_lossy(&res.stderr);
+                if err_str.contains("no upstream branch") || err_str.contains("set-upstream") {
+                    run_git_remote_command(&ws_path, &["push", "-u", "origin", &branch])?
+                } else {
+                    res
+                }
+            } else {
+                res
+            }
+        };
+
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            let out = String::from_utf8_lossy(&output.stdout);
+            let full_err = format!("{}\n{}", err.trim(), out.trim()).trim().to_string();
+
+            if full_err.contains("Authentication failed")
+                || full_err.contains("could not read Username")
+                || full_err.contains("Permission denied")
+            {
+                return Err("Authentication failed. Please verify your Git credentials or SSH keys.".to_string());
+            }
+            if full_err.contains("non-fast-forward") || full_err.contains("[rejected]") {
+                return Err("Push rejected: Remote repository has newer changes. Please pull first.".to_string());
+            }
+            return Err(format!("Git push failed: {}", full_err));
+        }
+
+        let err_msg = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let out_msg = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let summary = format!("{}\n{}", out_msg, err_msg).trim().to_string();
+        Ok(if summary.is_empty() {
+            "Pushed successfully.".to_string()
+        } else {
+            summary
+        })
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 #[tauri::command]
 pub async fn git_get_file_diff(
     workspace_dir: String,
@@ -545,9 +662,362 @@ pub async fn git_get_file_diff(
     .map_err(|e| format!("Task join error: {}", e))?
 }
 
-/// Generates an AI commit message based on staged (or unstaged) diff
+/// Extracts story/ticket references, developer intent, and commit type from active chat or prompt hints
+pub fn extract_commit_context(hint: &str) -> (Option<String>, Option<String>, Option<&'static str>) {
+    let trimmed = hint.trim();
+    if trimmed.is_empty() {
+        return (None, None, None);
+    }
+
+    // 1. Look for ticket / story key in words:
+    let mut ticket: Option<String> = None;
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+
+    for (i, word) in words.iter().enumerate() {
+        let clean = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '#' && c != '-');
+
+        // Matches e.g. #123, #45
+        if clean.starts_with('#') && clean.len() > 1 && clean[1..].chars().all(|c| c.is_ascii_digit()) {
+            ticket = Some(clean.to_string());
+            break;
+        }
+
+        // Matches e.g. PROJ-104, JIRA-42, AUTH-1
+        if let Some(dash_idx) = clean.find('-') {
+            let prefix = &clean[..dash_idx];
+            let suffix = &clean[dash_idx + 1..];
+            if !prefix.is_empty()
+                && prefix.len() <= 10
+                && prefix.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                && !suffix.is_empty()
+                && suffix.chars().all(|c| c.is_ascii_digit())
+            {
+                ticket = Some(clean.to_string());
+                break;
+            }
+        }
+
+        // Matches e.g. "story 104", "issue #45", "ticket 22"
+        let lower = word.to_lowercase();
+        let stripped_word = lower.trim_matches(|c: char| !c.is_alphanumeric());
+        if (stripped_word == "story" || stripped_word == "issue" || stripped_word == "task" || stripped_word == "ticket")
+            && i + 1 < words.len()
+        {
+            let next_word = words[i + 1].trim_matches(|c: char| !c.is_alphanumeric() && c != '#');
+            if !next_word.is_empty() {
+                ticket = Some(if next_word.starts_with('#') {
+                    next_word.to_string()
+                } else if next_word.chars().all(|c| c.is_ascii_digit()) {
+                    format!("#{}", next_word)
+                } else {
+                    next_word.to_string()
+                });
+                break;
+            }
+        }
+    }
+
+    // 2. Extract user intent from first meaningful sentence or line
+    let first_line = trimmed.lines().next().unwrap_or(trimmed);
+
+    // Strip @ mentions like @src/... or @git:diff
+    let mention_filtered: Vec<&str> = first_line
+        .split_whitespace()
+        .filter(|w| !w.starts_with('@'))
+        .collect();
+    let mut clean_line = mention_filtered.join(" ");
+
+    // Remove leading phrases like "Please ", "Can you ", "We need to ", "I want to "
+    let lower_line = clean_line.to_lowercase();
+    let prefixes = [
+        "please ",
+        "can you ",
+        "could you ",
+        "we need to ",
+        "i want to ",
+        "let's ",
+        "task: ",
+        "story: ",
+        "issue: ",
+    ];
+    for p in prefixes {
+        if lower_line.starts_with(p) {
+            clean_line = clean_line[p.len()..].trim().to_string();
+            break;
+        }
+    }
+
+    // If clean_line contains punctuation (. / ! / ?), take up to first sentence
+    if let Some(period_idx) = clean_line.find(|c: char| c == '.' || c == '!' || c == '?') {
+        clean_line = clean_line[..period_idx].trim().to_string();
+    }
+
+    // Truncate to reasonable length for commit header (max 55 chars)
+    if clean_line.len() > 55 {
+        if let Some(space_idx) = clean_line[..55].rfind(' ') {
+            clean_line = clean_line[..space_idx].trim().to_string();
+        } else {
+            clean_line.truncate(55);
+        }
+    }
+
+    // Lowercase first letter of intent
+    let intent = if !clean_line.is_empty() {
+        let mut chars = clean_line.chars();
+        let first = chars.next().unwrap();
+        let rest: String = chars.collect();
+        Some(format!("{}{}", first.to_lowercase(), rest))
+    } else {
+        None
+    };
+
+    // 3. Detect commit type from context
+    let lower_all = trimmed.to_lowercase();
+    let commit_type = if lower_all.contains("fix") || lower_all.contains("bug") || lower_all.contains("error") || lower_all.contains("crash") || lower_all.contains("issue") {
+        Some("fix")
+    } else if lower_all.contains("add") || lower_all.contains("create") || lower_all.contains("implement") || lower_all.contains("feature") || lower_all.contains("support") {
+        Some("feat")
+    } else if lower_all.contains("refactor") || lower_all.contains("clean") || lower_all.contains("simplify") || lower_all.contains("restructure") {
+        Some("refactor")
+    } else if lower_all.contains("test") || lower_all.contains("spec") || lower_all.contains("coverage") {
+        Some("test")
+    } else if lower_all.contains("doc") || lower_all.contains("readme") {
+        Some("docs")
+    } else if lower_all.contains("perf") || lower_all.contains("optimize") {
+        Some("perf")
+    } else {
+        None
+    };
+
+    (ticket, intent, commit_type)
+}
+
+pub fn clean_commit_output(raw: &str) -> String {
+    let mut text = raw.trim();
+    if text.starts_with("```") {
+        if let Some(first_newline) = text.find('\n') {
+            text = text[first_newline + 1..].trim();
+        }
+    }
+    if text.ends_with("```") {
+        if let Some(last_backticks) = text.rfind("```") {
+            text = text[..last_backticks].trim();
+        }
+    }
+    text.to_string()
+}
+
+pub fn generate_commit_message_with_llm(
+    ws_path: &Path,
+    full_diff: &str,
+    context_hint: Option<&str>,
+) -> Result<String, String> {
+    let bin = crate::process_manager::find_gemini_executable()
+        .ok_or_else(|| "Gemini CLI executable not found".to_string())?;
+
+    let bin_path_str = bin.to_string_lossy().to_string();
+    let is_batch = bin_path_str.to_lowercase().ends_with(".cmd") || bin_path_str.to_lowercase().ends_with(".bat");
+
+    let context_section = if let Some(hint) = context_hint {
+        if !hint.trim().is_empty() {
+            format!("\nContext & Task Intent:\n{}\n", hint.trim())
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    let prompt = format!(
+        "You are an expert Git commit generator. Analyze the following Git diff and context to generate a concise Conventional Commit message following the Conventional Commits specification (e.g. feat, fix, refactor, docs, test, chore).\n\
+Rules:\n\
+- Output ONLY the raw commit message (one-line subject, blank line, and brief bullet points).\n\
+- Do NOT wrap your output in markdown code fences or backticks.\n\
+- If an issue or story key (e.g. #123, PROJ-104) is present in the context, reference it in the commit subject or body.\n\
+- Keep the subject line under 72 characters.\n\
+{}\n\
+Git Diff:\n{}",
+        context_section,
+        full_diff
+    );
+
+    #[cfg(target_os = "windows")]
+    let mut cmd = if is_batch {
+        let mut c = Command::new("cmd.exe");
+        c.args([
+            "/c",
+            &bin_path_str,
+            "--skip-trust",
+            "-p",
+            &prompt,
+            "--model",
+            "gemini-3.8-flash",
+            "--output-format",
+            "text",
+        ]);
+        c
+    } else {
+        let mut c = Command::new(&bin_path_str);
+        c.args([
+            "--skip-trust",
+            "-p",
+            &prompt,
+            "--model",
+            "gemini-3.8-flash",
+            "--output-format",
+            "text",
+        ]);
+        c
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut c = Command::new(&bin_path_str);
+        c.args([
+            "--skip-trust",
+            "-p",
+            &prompt,
+            "--model",
+            "gemini-3.8-flash",
+            "--output-format",
+            "text",
+        ]);
+        c
+    };
+
+    cmd.current_dir(ws_path);
+    cmd.env("CI", "true");
+    cmd.env("PAGER", "cat");
+    cmd.env("GIT_PAGER", "cat");
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let output = cmd.output().map_err(|e| format!("Failed to run gemini CLI: {}", e))?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Gemini CLI exited with status {}: {}", output.status, err));
+    }
+
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    let cleaned = clean_commit_output(&stdout_str);
+    if cleaned.trim().is_empty() {
+        return Err("Gemini CLI returned empty output".to_string());
+    }
+
+    Ok(cleaned)
+}
+
+pub fn synthesize_heuristic_commit_message(
+    stat_str: &str,
+    full_diff_str: &str,
+    context_hint: Option<&str>,
+) -> Result<String, String> {
+    let (hint_ticket, hint_intent, hint_type) = context_hint
+        .map(extract_commit_context)
+        .unwrap_or((None, None, None));
+
+    let lines: Vec<&str> = stat_str.lines().collect();
+    let changed_files: Vec<String> = lines
+        .iter()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split('|').collect();
+            if !parts.is_empty() {
+                Some(parts[0].trim().to_string())
+            } else {
+                None
+            }
+        })
+        .filter(|s| !s.is_empty() && !s.contains("changed,"))
+        .collect();
+
+    // Heuristic scope identification
+    let scope = if let Some(first_file) = changed_files.first() {
+        let path_parts: Vec<&str> = first_file.split('/').collect();
+        if path_parts.len() > 1 {
+            path_parts[path_parts.len() - 2].to_string()
+        } else {
+            path_parts[0]
+                .split('.')
+                .next()
+                .unwrap_or("core")
+                .to_string()
+        }
+    } else {
+        "core".to_string()
+    };
+
+    let is_test = changed_files.iter().any(|f| f.contains("test"));
+    let is_doc = changed_files.iter().any(|f| f.ends_with(".md") || f.contains("docs"));
+    let commit_type = hint_type.unwrap_or_else(|| {
+        if is_test {
+            "test"
+        } else if is_doc {
+            "docs"
+        } else if full_diff_str.contains("fix") || full_diff_str.contains("bug") || full_diff_str.contains("error") {
+            "fix"
+        } else if changed_files.iter().any(|f| f.contains("component") || f.contains("routes")) {
+            "feat"
+        } else {
+            "chore"
+        }
+    });
+
+    let file_summary = if changed_files.len() == 1 {
+        format!("in {}", changed_files[0])
+    } else if changed_files.len() <= 3 {
+        format!("in {}", changed_files.join(", "))
+    } else {
+        format!("across {} files", changed_files.len())
+    };
+
+    let subject_action = if let Some(intent) = hint_intent {
+        if let Some(ref t) = hint_ticket {
+            if intent.contains(t.as_str()) {
+                intent
+            } else {
+                format!("{} ({})", intent, t)
+            }
+        } else {
+            intent
+        }
+    } else {
+        format!("update implementation {}", file_summary)
+    };
+
+    let ticket_body = if let Some(ref t) = hint_ticket {
+        format!("Story/Issue: {}\n\n", t)
+    } else {
+        String::new()
+    };
+
+    let commit_msg = format!(
+        "{}({}): {}\n\n{}Summary of changes:\n{}",
+        commit_type,
+        scope,
+        subject_action,
+        ticket_body,
+        changed_files
+            .iter()
+            .take(8)
+            .map(|f| format!("- {}", f))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    Ok(commit_msg)
+}
+
+/// Generates an AI commit message based on staged (or unstaged) diff, enriched by optional chat/prompt context
 #[tauri::command]
-pub async fn git_generate_commit_message(workspace_dir: String) -> Result<String, String> {
+pub async fn git_generate_commit_message(
+    workspace_dir: String,
+    context_hint: Option<String>,
+) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
         let ws_path = PathBuf::from(&workspace_dir);
 
@@ -575,8 +1045,22 @@ pub async fn git_generate_commit_message(workspace_dir: String) -> Result<String
             if status_str.is_empty() {
                 return Err("No changes detected in repository to generate commit message".to_string());
             }
+            let (hint_ticket, hint_intent, _) = context_hint
+                .as_deref()
+                .map(extract_commit_context)
+                .unwrap_or((None, None, None));
+            let subject = if let Some(intent) = hint_intent {
+                if let Some(ref t) = hint_ticket {
+                    format!("chore: {} ({})", intent, t)
+                } else {
+                    format!("chore: {}", intent)
+                }
+            } else {
+                "chore: update workspace files".to_string()
+            };
             return Ok(format!(
-                "chore: update workspace files\n\n- Updated:\n{}",
+                "{}\n\n- Updated:\n{}",
+                subject,
                 status_str
                     .lines()
                     .take(10)
@@ -592,74 +1076,15 @@ pub async fn git_generate_commit_message(workspace_dir: String) -> Result<String
             full_diff_str.push_str("\n... [diff truncated]");
         }
 
-        // Synthesize an accurate, conventional commit message
-        let lines: Vec<&str> = stat_str.lines().collect();
-        let changed_files: Vec<String> = lines
-            .iter()
-            .filter_map(|line| {
-                let parts: Vec<&str> = line.split('|').collect();
-                if !parts.is_empty() {
-                    Some(parts[0].trim().to_string())
-                } else {
-                    None
-                }
-            })
-            .filter(|s| !s.is_empty() && !s.contains("changed,"))
-            .collect();
-
-        // Heuristic scope identification
-        let scope = if let Some(first_file) = changed_files.first() {
-            let path_parts: Vec<&str> = first_file.split('/').collect();
-            if path_parts.len() > 1 {
-                path_parts[path_parts.len() - 2].to_string()
-            } else {
-                path_parts[0]
-                    .split('.')
-                    .next()
-                    .unwrap_or("core")
-                    .to_string()
+        // 2. PRIMARY: Try calling the underlying Gemini CLI LLM for true generative understanding
+        if let Ok(llm_msg) = generate_commit_message_with_llm(&ws_path, &full_diff_str, context_hint.as_deref()) {
+            if !llm_msg.trim().is_empty() {
+                return Ok(llm_msg);
             }
-        } else {
-            "core".to_string()
-        };
+        }
 
-        // Determine type: feat, fix, refactor, or chore
-        let is_test = changed_files.iter().any(|f| f.contains("test"));
-        let is_doc = changed_files.iter().any(|f| f.ends_with(".md") || f.contains("docs"));
-        let commit_type = if is_test {
-            "test"
-        } else if is_doc {
-            "docs"
-        } else if full_diff_str.contains("fix") || full_diff_str.contains("bug") || full_diff_str.contains("error") {
-            "fix"
-        } else if changed_files.iter().any(|f| f.contains("component") || f.contains("routes")) {
-            "feat"
-        } else {
-            "chore"
-        };
-
-        let file_summary = if changed_files.len() == 1 {
-            format!("in {}", changed_files[0])
-        } else if changed_files.len() <= 3 {
-            format!("in {}", changed_files.join(", "))
-        } else {
-            format!("across {} files", changed_files.len())
-        };
-
-        let commit_msg = format!(
-            "{}({}): update implementation {}\n\nSummary of changes:\n{}",
-            commit_type,
-            scope,
-            file_summary,
-            changed_files
-                .iter()
-                .take(8)
-                .map(|f| format!("- {}", f))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-
-        Ok(commit_msg)
+        // 3. FALLBACK: High-speed, resilient deterministic local heuristic engine
+        synthesize_heuristic_commit_message(&stat_str, &full_diff_str, context_hint.as_deref())
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -731,5 +1156,67 @@ mod tests {
         let parsed: GitStatusResult = serde_json::from_str(backward_json).unwrap();
         assert_eq!(parsed.ahead, 0);
         assert_eq!(parsed.behind, 0);
+    }
+
+    #[tokio::test]
+    async fn test_git_pull_nonexistent_dir() {
+        let result = git_pull("C:\\nonexistent_workspace_dir_12345".to_string()).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("does not exist"));
+    }
+
+    #[tokio::test]
+    async fn test_git_push_nonexistent_dir() {
+        let result = git_push("C:\\nonexistent_workspace_dir_12345".to_string(), false).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("does not exist"));
+    }
+
+    #[test]
+    fn test_extract_commit_context_jira_ticket_and_intent() {
+        let hint = "Please fix JWT token expiration on mobile safari (JIRA-104) @src/auth/jwt.ts";
+        let (ticket, intent, commit_type) = extract_commit_context(hint);
+        assert_eq!(ticket, Some("JIRA-104".to_string()));
+        assert!(intent.is_some());
+        let intent_str = intent.unwrap().to_lowercase();
+        assert!(intent_str.contains("jwt token expiration"));
+        assert_eq!(commit_type, Some("fix"));
+    }
+
+    #[test]
+    fn test_extract_commit_context_github_issue() {
+        let hint = "Story #42: Add pull and push options to git changes window";
+        let (ticket, intent, commit_type) = extract_commit_context(hint);
+        assert_eq!(ticket, Some("#42".to_string()));
+        assert!(intent.is_some());
+        assert_eq!(commit_type, Some("feat"));
+    }
+
+    #[test]
+    fn test_extract_commit_context_empty() {
+        let (ticket, intent, commit_type) = extract_commit_context("");
+        assert!(ticket.is_none());
+        assert!(intent.is_none());
+        assert!(commit_type.is_none());
+    }
+
+    #[test]
+    fn test_clean_commit_output_markdown_fences() {
+        let raw = "```markdown\nfeat(git): add commit and push\n\n- Updated git.rs\n```";
+        let cleaned = clean_commit_output(raw);
+        assert_eq!(cleaned, "feat(git): add commit and push\n\n- Updated git.rs");
+
+        let plain = "fix(auth): fix token validation";
+        assert_eq!(clean_commit_output(plain), "fix(auth): fix token validation");
+    }
+
+    #[test]
+    fn test_synthesize_heuristic_commit_message() {
+        let stat = " src/lib/components/ChatView.svelte | 12 ++\n src-tauri/src/commands/git.rs | 45 +++++\n";
+        let diff = "+ let isPulling = true;";
+        let msg = synthesize_heuristic_commit_message(stat, diff, Some("Fix JIRA-99: add pull action")).unwrap();
+        assert!(msg.starts_with("fix("));
+        assert!(msg.contains("JIRA-99"));
+        assert!(msg.contains("Summary of changes:"));
     }
 }

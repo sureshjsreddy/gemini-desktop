@@ -52,6 +52,7 @@
     onInsertMention,
     onAttachItem,
     onAttachMultiple,
+    getContextHint,
   }: {
     workspace: Workspace | null;
     workspaceFiles?: WorkspaceFileEntry[];
@@ -61,6 +62,7 @@
     onInsertMention?: (relativePath: string) => void;
     onAttachItem?: (relativePath: string, isDir: boolean, name?: string) => void;
     onAttachMultiple?: (items: { path: string; isDir: boolean; name?: string }[]) => void;
+    getContextHint?: () => string;
   } = $props();
 
   // Dynamic Root State
@@ -674,6 +676,7 @@
         isLoading={isGitLoading}
         onRefresh={refreshGitStatus}
         onCompareFile={handleCompareGitFile}
+        {getContextHint}
       />
     </div>
 

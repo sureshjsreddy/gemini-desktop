@@ -3,7 +3,7 @@ type: product_feature
 title: "Visual Studio Git Changes Tool Window, Staging & AI Conventional Commits Standard"
 domain: product
 status: approved
-version: 1.2.0
+version: 1.3.0
 authority:
   level: official
   confidence: high
@@ -31,12 +31,18 @@ do:
   - "Enforce Visual Studio commit priority logic: if staged files exist, commit only staged changes (`git commit -m`); if no staged files exist, commit all changes (`git commit -a -m`)."
   - "Support multi-line commit messages with plain `Enter` for formatting and `Ctrl+Enter` / `Cmd+Enter` to trigger commit dispatch."
   - "Dynamically label the commit button based on staged status: `Commit Staged (N)` when staged changes exist, or `Commit All (N)` when no staged changes exist."
-  - "Analyze `git diff --cached` (or `git diff HEAD`) to generate conventional commit messages on clicking `[✨ AI Generate]`."
+  - "Analyze `git diff --cached` (or `git diff HEAD`) enriched by optional active prompt draft, chat turn history, or story/ticket references via `context_hint` to generate meaningful conventional commit messages on clicking `[✨ AI Generate]`."
   - "Support right-click context menu actions with a top header displaying the file name, status badge, and Staged/Unstaged indicator: Stage, Unstage, Undo Changes, Compare with HEAD/Unmodified, Open File, Open with Notepad, Reveal in Explorer, and Copy Path."
   - "Support double-clicking any file to inspect unified line-by-line diffs via `git_get_file_diff` in `SessionChangesModal` with dedicated Git title, description, and direct Undo Changes action."
   - "Keep both Solution Explorer and Git Changes views persistently mounted in the DOM to prevent state or draft commit message loss during tab switches."
   - "Maintain single source of truth in `SolutionExplorer.svelte` and automatically refresh Git status when ACP agent turns complete, when mutating tools finish, and when the application window regains focus."
   - "Integrate seamless dock switching between Solution Explorer and Git Changes tabs on the right tool window, including keyboard shortcut `Ctrl+Shift+G`."
+  - "Provide 1-click `[↓ Pull]` and `[↑ Push]` actions in the Git Changes top bar with real-time incoming/unpulled (`↓behind`) and outgoing/unpushed (`↑ahead`) commit badges."
+  - "Enforce non-blocking `GIT_TERMINAL_PROMPT=0` on all remote operations (`git_pull`, `git_push`) to prevent GUI thread and process hangs when credentials are missing or unconfigured."
+  - "Provide 1-click `[Commit & Push]` action in the commit row allowing developers to check in staged/unstaged changes and push to upstream remote in a single atomic developer turn."
+  - "Automatically handle missing upstream branches during `git_push` by falling back to `git push -u origin <branch>` without failing the user operation."
+  - "Defend toolbar action buttons against long branch names by applying `shrink-0` on action buttons and max-width truncation (`max-w-[125px] truncate`) on branch badges with native hover tooltip inspection."
+  - "Incorporate active chat context, draft composer prompt, and story/issue references (`PROJ-104`, `#42`) into AI commit generation, dispatching to Gemini CLI (`gemini-3.8-flash`) with resilient local heuristic fallback."
 
 dont:
   - "Do not require native C Git bindings, libgit2, or external daemon services; rely solely on system `git` on PATH."
