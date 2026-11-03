@@ -479,9 +479,15 @@ pub fn compute_file_changes_internal(
                 let original_content = String::from_utf8_lossy(&original_bytes).to_string();
                 let current_content = String::from_utf8_lossy(&current_bytes).to_string();
 
-                // Only report as modified if contents actually differ!
-                if original_content != current_content {
-                    let diff = TextDiff::from_lines(original_content.as_str(), current_content.as_str());
+                let orig_norm = original_content.replace("\r\n", "\n").replace('\r', "\n");
+                let curr_norm = current_content.replace("\r\n", "\n").replace('\r', "\n");
+
+                let orig_lines: Vec<&str> = orig_norm.lines().map(|l| l.trim_end()).collect();
+                let curr_lines: Vec<&str> = curr_norm.lines().map(|l| l.trim_end()).collect();
+
+                // Only report as modified if substantive contents actually differ (ignoring whitespace & line endings)!
+                if orig_lines != curr_lines {
+                    let diff = TextDiff::from_lines(&orig_norm, &curr_norm);
 
                     let mut additions = 0;
                     let mut deletions = 0;
@@ -505,8 +511,8 @@ pub fn compute_file_changes_internal(
                         additions,
                         deletions,
                         diff_text,
-                        original_content,
-                        current_content,
+                        original_content: orig_norm,
+                        current_content: curr_norm,
                     });
                 }
             } else {
@@ -662,14 +668,27 @@ pub fn get_session_file_changes(
 
                 let is_clean = if let Some(git_bytes) = get_git_head_content(&ws_path, &f) {
                     if current_file.exists() {
-                        fs::read(&current_file).map(|b| b == git_bytes).unwrap_or(false)
+                        let cur_bytes = fs::read(&current_file).unwrap_or_default();
+                        if cur_bytes == git_bytes {
+                            true
+                        } else {
+                            let git_norm = String::from_utf8_lossy(&git_bytes).replace("\r\n", "\n").replace('\r', "\n");
+                            let cur_norm = String::from_utf8_lossy(&cur_bytes).replace("\r\n", "\n").replace('\r', "\n");
+                            git_norm.lines().map(|l| l.trim_end()).collect::<Vec<_>>() == cur_norm.lines().map(|l| l.trim_end()).collect::<Vec<_>>()
+                        }
                     } else {
                         false
                     }
                 } else if snap.exists() && current_file.exists() {
                     let snap_bytes = fs::read(&snap).unwrap_or_default();
                     let cur_bytes = fs::read(&current_file).unwrap_or_default();
-                    snap_bytes == cur_bytes
+                    if snap_bytes == cur_bytes {
+                        true
+                    } else {
+                        let snap_norm = String::from_utf8_lossy(&snap_bytes).replace("\r\n", "\n").replace('\r', "\n");
+                        let cur_norm = String::from_utf8_lossy(&cur_bytes).replace("\r\n", "\n").replace('\r', "\n");
+                        snap_norm.lines().map(|l| l.trim_end()).collect::<Vec<_>>() == cur_norm.lines().map(|l| l.trim_end()).collect::<Vec<_>>()
+                    }
                 } else {
                     false
                 };
@@ -747,6 +766,17 @@ pub fn revert_session_file_internal(
             }
             fs::write(&current_disk_path, git_bytes)
                 .map_err(|e| format!("Failed to restore file from Git HEAD {}: {}", file_path, e))?;
+            // Also checkout from HEAD via Git to ensure Git's index and working tree are clean
+            let norm = file_path.replace('\\', "/");
+            let mut cmd = std::process::Command::new("git");
+            cmd.args(&["checkout", "HEAD", "--", &norm])
+                .current_dir(ws_path);
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000);
+            }
+            let _ = cmd.status();
         }
     }
 

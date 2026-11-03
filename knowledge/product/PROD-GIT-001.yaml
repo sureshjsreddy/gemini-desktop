@@ -3,7 +3,7 @@ type: product_feature
 title: "Visual Studio Git Changes Tool Window, Staging & AI Conventional Commits Standard"
 domain: product
 status: approved
-version: 1.3.0
+version: 1.4.0
 authority:
   level: official
   confidence: high
@@ -43,6 +43,9 @@ do:
   - "Automatically handle missing upstream branches during `git_push` by falling back to `git push -u origin <branch>` without failing the user operation."
   - "Defend toolbar action buttons against long branch names by applying `shrink-0` on action buttons and max-width truncation (`max-w-[125px] truncate`) on branch badges with native hover tooltip inspection."
   - "Incorporate active chat context, draft composer prompt, and story/issue references (`PROJ-104`, `#42`) into AI commit generation, dispatching to Gemini CLI (`gemini-3.8-flash`) with resilient local heuristic fallback."
+  - "Always ignore whitespace changes (`-w`) and line-ending carriage returns (`--ignore-cr-at-eol`) when generating Git diffs (`git_get_file_diff`) to prevent entire files from appearing falsely removed or added due to Windows CRLF/LF conversions."
+  - "Ensure `git_undo_change` works across all Git versions and states by checking `is_file_in_git_head`: if in HEAD, restore using `git reset HEAD` and `git checkout HEAD` (or `git restore`); if not in HEAD (newly added `A` or untracked `??`), cleanly remove from index (`git rm -f --cached`) and delete from disk (`fs::remove_file`)."
+  - "Ensure `git_undo_all` executes universal `git reset --hard HEAD` and `git clean -fd` to cleanly discard all modifications, deletions, and untracked files."
 
 dont:
   - "Do not require native C Git bindings, libgit2, or external daemon services; rely solely on system `git` on PATH."

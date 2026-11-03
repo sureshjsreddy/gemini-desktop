@@ -104,6 +104,39 @@ pub fn get_git_ahead_behind(ws_path: &Path) -> (usize, usize) {
     (0, 0)
 }
 
+/// Checks if a file path is present in Git HEAD
+pub fn is_file_in_git_head(ws_path: &Path, rel_path: &str) -> bool {
+    let norm = rel_path.replace('\\', "/");
+    let target = format!("HEAD:{}", norm);
+    let mut cmd = Command::new("git");
+    cmd.args(&["cat-file", "-e", &target])
+        .current_dir(ws_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
+/// Checks if a file is currently tracked in Git (index or HEAD)
+pub fn is_file_tracked_by_git(ws_path: &Path, rel_path: &str) -> bool {
+    let norm = rel_path.replace('\\', "/");
+    let mut cmd = Command::new("git");
+    cmd.args(&["ls-files", "--error-unmatch", "--", &norm])
+        .current_dir(ws_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
 /// Parses porcelain v1 status into staged and unstaged GitFileItems
 pub fn parse_porcelain_v1(output: &str) -> (Vec<GitFileItem>, Vec<GitFileItem>) {
     let mut staged = Vec::new();
@@ -317,21 +350,40 @@ pub async fn git_undo_change(
 ) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let ws_path = PathBuf::from(&workspace_dir);
-        if is_untracked {
-            // Clean untracked file or directory
-            let output = run_git_command(&ws_path, &["clean", "-fd", "--", &path])?;
-            if !output.status.success() {
-                let err_msg = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("Failed to clean untracked file {}: {}", path, err_msg));
+        let normalized = path.replace('\\', "/");
+
+        let in_head = is_file_in_git_head(&ws_path, &normalized);
+
+        if in_head && !is_untracked {
+            // Tracked file committed in HEAD: restore from HEAD
+            // 1. Unstage if staged (works across ALL Git versions)
+            let _ = run_git_command(&ws_path, &["reset", "HEAD", "--", &normalized]);
+            let _ = run_git_command(&ws_path, &["restore", "--staged", "--", &normalized]);
+
+            // 2. Restore working tree from HEAD (handles modified, deleted, and conflicted files)
+            let checkout_res = run_git_command(&ws_path, &["checkout", "HEAD", "--", &normalized]);
+            if !checkout_res.as_ref().map(|o| o.status.success()).unwrap_or(false) {
+                // Fallback for newer Git versions if checkout had any warning/error
+                let restore_res = run_git_command(&ws_path, &["restore", "--source=HEAD", "--staged", "--worktree", "--", &normalized]);
+                if !restore_res.as_ref().map(|o| o.status.success()).unwrap_or(false) {
+                    let _ = run_git_command(&ws_path, &["restore", "--", &normalized]);
+                }
             }
         } else {
-            // Unstage first if staged, then restore working tree
-            let _ = run_git_command(&ws_path, &["restore", "--staged", "--", &path]);
-            let output = run_git_command(&ws_path, &["restore", "--", &path])?;
-            if !output.status.success() {
-                let err_msg = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("Failed to restore file {}: {}", path, err_msg));
+            // File was newly added (A), untracked (??), or created during editing (not present in HEAD)
+            // 1. Remove from Git index if staged
+            let _ = run_git_command(&ws_path, &["rm", "-f", "--cached", "--", &normalized]);
+            let _ = run_git_command(&ws_path, &["reset", "HEAD", "--", &normalized]);
+
+            // 2. Safely remove from disk
+            let disk_path = ws_path.join(&path);
+            if disk_path.is_file() {
+                let _ = std::fs::remove_file(&disk_path);
+            } else if disk_path.is_dir() {
+                let _ = std::fs::remove_dir_all(&disk_path);
             }
+            // 3. Clean any untracked leftovers with git clean
+            let _ = run_git_command(&ws_path, &["clean", "-fd", "--", &normalized]);
         }
         Ok(())
     })
@@ -343,16 +395,17 @@ pub async fn git_undo_change(
 pub async fn git_undo_all(workspace_dir: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let ws_path = PathBuf::from(&workspace_dir);
-        // Unstage all, restore all tracked files, clean untracked
-        let _ = run_git_command(&ws_path, &["restore", "--staged", "."]);
-        let output_restore = run_git_command(&ws_path, &["restore", "."])?;
-        if !output_restore.status.success() {
-            let err_msg = String::from_utf8_lossy(&output_restore.stderr);
-            return Err(format!("Failed to restore working directory: {}", err_msg));
+        // 1. Universal hard reset to HEAD: discards all staged and unstaged tracked modifications/deletions
+        let reset_res = run_git_command(&ws_path, &["reset", "--hard", "HEAD"]);
+        if !reset_res.as_ref().map(|o| o.status.success()).unwrap_or(false) {
+            // Fallback for newly initialized repos without commits (empty tree)
+            let _ = run_git_command(&ws_path, &["rm", "-rf", "--cached", "."]);
+            let _ = run_git_command(&ws_path, &["checkout", "-f"]);
         }
-        let output_clean = run_git_command(&ws_path, &["clean", "-fd"])?;
-        if !output_clean.status.success() {
-            let err_msg = String::from_utf8_lossy(&output_clean.stderr);
+        // 2. Clean all untracked files and directories
+        let clean_res = run_git_command(&ws_path, &["clean", "-fd"])?;
+        if !clean_res.status.success() {
+            let err_msg = String::from_utf8_lossy(&clean_res.stderr);
             return Err(format!("Failed to clean untracked files: {}", err_msg));
         }
         Ok(())
@@ -526,9 +579,87 @@ pub async fn git_get_file_diff(
         let ws_path = PathBuf::from(&workspace_dir);
         let normalized = path.replace('\\', "/");
 
-        // Read baseline content
+        let is_tracked = is_file_tracked_by_git(&ws_path, &normalized)
+            || is_file_in_git_head(&ws_path, &normalized);
+
+        if !is_tracked {
+            // Untracked newly created file: read from disk and format additions
+            let disk_file = ws_path.join(&path);
+            let raw_content = if disk_file.exists() {
+                std::fs::read_to_string(&disk_file).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let clean_content = raw_content.replace("\r\n", "\n").replace('\r', "\n");
+            let lines: Vec<&str> = clean_content.lines().collect();
+            let additions = lines.len();
+            let mut diff_text = format!("--- /dev/null\n+++ b/{}\n@@ -0,0 +1,{} @@\n", normalized, lines.len());
+            for line in &lines {
+                diff_text.push('+');
+                diff_text.push_str(line);
+                diff_text.push('\n');
+            }
+            if lines.is_empty() {
+                diff_text = format!("--- /dev/null\n+++ b/{}\n@@ -0,0 +0,0 @@\n [Empty file created]\n", normalized);
+            }
+
+            return Ok(FileChangeSummary {
+                file_path: normalized,
+                status: "created".to_string(),
+                additions,
+                deletions: 0,
+                diff_text,
+                original_content: String::new(),
+                current_content: clean_content,
+            });
+        }
+
+        // Tracked file: Execute system git diff with whitespace & CRLF ignore flags!
+        // -w (--ignore-all-space): ignores all whitespace changes
+        // --ignore-cr-at-eol: ignores carriage return \r differences (Windows CRLF vs LF)
+        // -U3: standard 3-line unified context
+        let diff_args: &[&str] = if is_staged {
+            &["diff", "--cached", "-w", "--ignore-cr-at-eol", "-U3", "--", &normalized]
+        } else {
+            &["diff", "-w", "--ignore-cr-at-eol", "-U3", "--", &normalized]
+        };
+
+        let diff_res = run_git_command(&ws_path, diff_args);
+        let mut diff_text = String::new();
+        let mut additions = 0;
+        let mut deletions = 0;
+        let mut is_deleted = false;
+        let mut is_new = false;
+        let mut got_git_diff = false;
+
+        if let Ok(out) = diff_res {
+            if out.status.success() {
+                got_git_diff = true;
+                let stdout_str = String::from_utf8_lossy(&out.stdout);
+                let trimmed = stdout_str.trim();
+
+                if trimmed.is_empty() {
+                    // Output is empty when whitespace/CRLF is ignored -> purely formatting/whitespace changes
+                    diff_text = "No substantive code changes detected.\nOnly whitespace, indentation, or line-ending (CRLF/LF) differences exist between this file and the Git baseline.".to_string();
+                } else {
+                    for line in stdout_str.lines() {
+                        if line.starts_with("deleted file mode") {
+                            is_deleted = true;
+                        } else if line.starts_with("new file mode") {
+                            is_new = true;
+                        } else if line.starts_with('+') && !line.starts_with("+++") {
+                            additions += 1;
+                        } else if line.starts_with('-') && !line.starts_with("---") {
+                            deletions += 1;
+                        }
+                    }
+                    diff_text = stdout_str.to_string();
+                }
+            }
+        }
+
+        // Read clean baseline and current content (CRLF normalized to \n)
         let original_content = if is_staged {
-            // Diff against HEAD
             let mut cmd = Command::new("git");
             cmd.args(&["show", &format!("HEAD:{}", normalized)])
                 .current_dir(&ws_path);
@@ -537,17 +668,12 @@ pub async fn git_get_file_diff(
                 use std::os::windows::process::CommandExt;
                 cmd.creation_flags(0x08000000);
             }
-            if let Ok(out) = cmd.output() {
-                if out.status.success() {
-                    String::from_utf8_lossy(&out.stdout).to_string()
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            }
+            cmd.output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n").replace('\r', "\n"))
+                .unwrap_or_default()
         } else {
-            // Unstaged: Diff working tree against index (or HEAD if not in index)
             let mut cmd = Command::new("git");
             cmd.args(&["show", &format!(":{}", normalized)])
                 .current_dir(&ws_path);
@@ -556,11 +682,11 @@ pub async fn git_get_file_diff(
                 use std::os::windows::process::CommandExt;
                 cmd.creation_flags(0x08000000);
             }
-            if let Ok(out) = cmd.output() {
-                if out.status.success() {
-                    String::from_utf8_lossy(&out.stdout).to_string()
-                } else {
-                    // Try HEAD
+            cmd.output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n").replace('\r', "\n"))
+                .unwrap_or_else(|| {
                     let mut cmd2 = Command::new("git");
                     cmd2.args(&["show", &format!("HEAD:{}", normalized)])
                         .current_dir(&ws_path);
@@ -569,22 +695,14 @@ pub async fn git_get_file_diff(
                         use std::os::windows::process::CommandExt;
                         cmd2.creation_flags(0x08000000);
                     }
-                    if let Ok(out2) = cmd2.output() {
-                        if out2.status.success() {
-                            String::from_utf8_lossy(&out2.stdout).to_string()
-                        } else {
-                            String::new()
-                        }
-                    } else {
-                        String::new()
-                    }
-                }
-            } else {
-                String::new()
-            }
+                    cmd2.output()
+                        .ok()
+                        .filter(|o| o.status.success())
+                        .map(|o| String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n").replace('\r', "\n"))
+                        .unwrap_or_default()
+                })
         };
 
-        // Read current content (index if staged, disk if unstaged)
         let current_content = if is_staged {
             let mut cmd = Command::new("git");
             cmd.args(&["show", &format!(":{}", normalized)])
@@ -594,55 +712,64 @@ pub async fn git_get_file_diff(
                 use std::os::windows::process::CommandExt;
                 cmd.creation_flags(0x08000000);
             }
-            if let Ok(out) = cmd.output() {
-                if out.status.success() {
-                    String::from_utf8_lossy(&out.stdout).to_string()
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            }
+            cmd.output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n").replace('\r', "\n"))
+                .unwrap_or_default()
         } else {
             let disk_file = ws_path.join(&path);
             if disk_file.exists() {
-                std::fs::read_to_string(&disk_file).unwrap_or_default()
+                std::fs::read_to_string(&disk_file)
+                    .unwrap_or_default()
+                    .replace("\r\n", "\n")
+                    .replace('\r', "\n")
             } else {
                 String::new()
             }
         };
 
-        let diff = TextDiff::from_lines(&original_content, &current_content);
-        let mut additions = 0;
-        let mut deletions = 0;
-        let mut diff_text = String::new();
+        // Fallback in-memory diff if git diff command failed
+        if !got_git_diff {
+            let orig_norm = original_content.replace("\r\n", "\n").replace('\r', "\n");
+            let curr_norm = current_content.replace("\r\n", "\n").replace('\r', "\n");
+            let orig_lines: Vec<&str> = orig_norm.lines().map(|l| l.trim_end()).collect();
+            let curr_lines: Vec<&str> = curr_norm.lines().map(|l| l.trim_end()).collect();
 
-        for (idx, group) in diff.grouped_ops(3).iter().enumerate() {
-            if idx > 0 {
-                diff_text.push_str("@@ ... @@\n");
-            }
-            for op in group {
-                for change in diff.iter_changes(op) {
-                    let sign = match change.tag() {
-                        ChangeTag::Delete => {
-                            deletions += 1;
-                            "-"
+            if orig_lines == curr_lines {
+                diff_text = "No substantive code changes detected.\nOnly whitespace, indentation, or line-ending (CRLF/LF) differences exist between this file and the Git baseline.".to_string();
+            } else {
+                let diff = TextDiff::from_lines(&orig_norm, &curr_norm);
+                let mut fallback_text = String::new();
+                for (idx, group) in diff.grouped_ops(3).iter().enumerate() {
+                    if idx > 0 {
+                        fallback_text.push_str("@@ ... @@\n");
+                    }
+                    for op in group {
+                        for change in diff.iter_changes(op) {
+                            let sign = match change.tag() {
+                                ChangeTag::Delete => {
+                                    deletions += 1;
+                                    "-"
+                                }
+                                ChangeTag::Insert => {
+                                    additions += 1;
+                                    "+"
+                                }
+                                ChangeTag::Equal => " ",
+                            };
+                            fallback_text.push_str(sign);
+                            fallback_text.push_str(change.value());
                         }
-                        ChangeTag::Insert => {
-                            additions += 1;
-                            "+"
-                        }
-                        ChangeTag::Equal => " ",
-                    };
-                    diff_text.push_str(sign);
-                    diff_text.push_str(change.value());
+                    }
                 }
+                diff_text = fallback_text;
             }
         }
 
-        let status = if original_content.is_empty() && !current_content.is_empty() {
+        let status = if is_new || (original_content.is_empty() && !current_content.is_empty()) {
             "created".to_string()
-        } else if !original_content.is_empty() && current_content.is_empty() {
+        } else if is_deleted || (!original_content.is_empty() && current_content.is_empty()) {
             "deleted".to_string()
         } else {
             "modified".to_string()
@@ -1218,5 +1345,62 @@ mod tests {
         assert!(msg.starts_with("fix("));
         assert!(msg.contains("JIRA-99"));
         assert!(msg.contains("Summary of changes:"));
+    }
+
+    #[tokio::test]
+    async fn test_git_undo_change_removes_untracked_and_added_file() {
+        let temp_dir = std::env::temp_dir().join("gemini_git_undo_test_suite");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Initialize temporary git repo
+        let mut init_cmd = Command::new("git");
+        init_cmd.args(&["init"])
+            .current_dir(&temp_dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            init_cmd.creation_flags(0x08000000);
+        }
+        let _ = init_cmd.status();
+
+        // Configure dummy user for committing
+        let _ = run_git_command(&temp_dir, &["config", "user.name", "Tester"]);
+        let _ = run_git_command(&temp_dir, &["config", "user.email", "tester@example.com"]);
+
+        // Create initial committed file so HEAD exists
+        let init_file = temp_dir.join("initial.txt");
+        std::fs::write(&init_file, "initial\n").unwrap();
+        let _ = run_git_command(&temp_dir, &["add", "initial.txt"]);
+        let _ = run_git_command(&temp_dir, &["commit", "-m", "init"]);
+
+        // 1. Test untracked file discard
+        let untracked_file = temp_dir.join("untracked.txt");
+        std::fs::write(&untracked_file, "hello untracked\n").unwrap();
+        assert!(untracked_file.exists());
+
+        let res = git_undo_change(temp_dir.to_string_lossy().to_string(), "untracked.txt".to_string(), true).await;
+        assert!(res.is_ok());
+        assert!(!untracked_file.exists());
+
+        // 2. Test staged added file discard (NOT in HEAD, but staged!)
+        let added_file = temp_dir.join("added.txt");
+        std::fs::write(&added_file, "hello added\n").unwrap();
+        let _ = run_git_command(&temp_dir, &["add", "added.txt"]);
+
+        // Notice is_untracked is false because it's staged as 'A'
+        let res_added = git_undo_change(temp_dir.to_string_lossy().to_string(), "added.txt".to_string(), false).await;
+        assert!(res_added.is_ok());
+        assert!(!added_file.exists());
+
+        // 3. Test modified committed file restore
+        std::fs::write(&init_file, "modified content\n").unwrap();
+        let res_mod = git_undo_change(temp_dir.to_string_lossy().to_string(), "initial.txt".to_string(), false).await;
+        assert!(res_mod.is_ok());
+        assert_eq!(std::fs::read_to_string(&init_file).unwrap().replace("\r\n", "\n"), "initial\n");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

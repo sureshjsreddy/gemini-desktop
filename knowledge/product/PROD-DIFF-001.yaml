@@ -3,7 +3,7 @@ type: product_standard
 title: Session File Changes, In-Memory Snapshots & Visual Diff Standard
 domain: product
 status: approved
-version: 1.4.0
+version: 1.5.0
 authority:
   level: official
   confidence: high
@@ -34,7 +34,8 @@ do:
   - "Normalize Windows file paths case-insensitively (`normalize_relative_path`): ensure drive letter variations (`c:/` vs `C:/`) strip workspace prefixes cleanly without returning None."
   - "Cap snapshots at 10 MB (MAX_SNAPSHOT_FILE_SIZE) to prevent disk and memory exhaustion when large files (e.g. databases, binaries, media) are encountered."
   - "Detect binary files and render concise size/binary status instead of running expensive text diffs."
-  - "Compute additions, deletions, and standard unified line diffs in native Rust using `similar::TextDiff::from_lines` with context radius 3."
+  - "Normalize line endings (converting `\\r\\n` to `\\n`) and ignore trailing whitespace differences when comparing baseline and disk content in `compute_file_changes_internal` to prevent files with only CRLF/LF or whitespace differences from displaying as entire-file deletions."
+  - "Compute additions, deletions, and standard unified line diffs in native Rust using `similar::TextDiff::from_lines` with context radius 3 on normalized content."
   - "Surface a `[ 📝 Changes (N) +X -Y ]` badge in the ChatView header whenever one or more files have been modified or created during the active conversation and tracking is enabled."
   - "Provide an interactive `SessionChangesModal` featuring a selectable file list, status badges (Modified, Created, Deleted), line numbers, and color-coded insertions and deletions."
   - "Provide right-click context menu and diff header quick actions matching Workspace Explorer: Open with Default App, Open with Notepad, Reveal in Windows Explorer, Copy Relative Path, and Copy Full Path."

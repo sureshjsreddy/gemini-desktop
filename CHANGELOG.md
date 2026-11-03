@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.1] - 2026-11-03
+
+### Fixed
+- **Universal Git Undo & Revert Compatibility**:
+  - Resolved `pathspec did not match any file(s) known to git` error when discarding newly added (`[A]`) files by unstaging from Git index and purging safely from disk.
+  - Replaced `git restore` with universal `git reset HEAD` and `git checkout HEAD` to ensure full compatibility with older Git CLI versions (< 2.23).
+  - Hardened `git_undo_all` using universal `git reset --hard HEAD` and `git clean -fd` to cleanly discard all modifications, deletions, and untracked files.
+- **CRLF vs. LF Line Ending Normalization**:
+  - Fixed false-positive whole-file deletions in visual diff where all lines appeared deleted and re-added due to Windows carriage return (`\r\n`) mismatches against Git LF baselines.
+- **Whitespace & Indentation Suppression**:
+  - Integrated `-w` (`--ignore-all-space`) and `--ignore-cr-at-eol` into Git diff execution so that whitespace, indentation, and formatting changes are cleanly ignored, surfacing only genuine code modifications.
+  - Added user-friendly notice card in `SessionChangesModal` when file differences are purely formatting or line endings.
+
+---
+
 ## [0.5.0] - 2026-11-02
 
 ### Added

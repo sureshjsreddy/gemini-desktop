@@ -14,6 +14,7 @@
     FileText,
     Eye,
     Copy,
+    Info,
   } from "lucide-svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -130,6 +131,11 @@
   let parsedLines = $derived.by<DiffLine[]>(() => {
     if (!selectedChange || !selectedChange.diff_text) return [];
 
+    // If diff is purely informational (e.g. whitespace or line ending differences only)
+    if (selectedChange.diff_text.startsWith("No substantive")) {
+      return [];
+    }
+
     const rawLines = selectedChange.diff_text.split("\n");
     const result: DiffLine[] = [];
 
@@ -137,7 +143,18 @@
     let newLineNum = 0;
 
     for (const line of rawLines) {
-      if (line.startsWith("---") || line.startsWith("+++")) {
+      if (
+        line.startsWith("diff --git") ||
+        line.startsWith("index ") ||
+        line.startsWith("new file mode") ||
+        line.startsWith("deleted file mode") ||
+        line.startsWith("similarity index") ||
+        line.startsWith("rename from") ||
+        line.startsWith("rename to") ||
+        line.startsWith("---") ||
+        line.startsWith("+++") ||
+        line.startsWith("\\ No newline at end of file")
+      ) {
         continue;
       }
 
@@ -491,8 +508,11 @@
               <!-- Diff Content Scroll Area -->
               <div class="flex-1 overflow-auto font-mono text-xs p-2 select-text">
                 {#if parsedLines.length === 0}
-                  <div class="p-6 text-center text-muted-theme">
-                    {selectedChange.diff_text || "No line changes detected."}
+                  <div class="p-8 text-center text-muted-theme flex flex-col items-center justify-center gap-3">
+                    <Info size={24} class="text-sky-400 opacity-80" />
+                    <p class="max-w-md text-xs leading-relaxed text-slate-300 font-sans whitespace-pre-line">
+                      {selectedChange.diff_text || "No line changes detected."}
+                    </p>
                   </div>
                 {:else}
                   <div class="min-w-full inline-block">
