@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.2] - 2026-11-05
+
+### Fixed
+- **AI Conventional Commit Generation via Stdin Streaming**:
+  - Switched Gemini CLI commit prompt generation from command line arguments (`-p <diff>`) to standard input streaming (`stdin.write_all`), completely eliminating the Windows 8,191-character command line buffer overflow limit on large Git diffs.
+  - Added direct Node.js execution of `gemini.js` when running on Windows with npm batch wrapper scripts (`gemini.cmd`), preventing `cmd.exe` escape errors and quote mangling.
+- **AI Refusal & Excuse Filtering**:
+  - Added `is_valid_commit_message` validation in the Rust backend to intercept and reject LLM refusal messages (e.g., *"no git diff was included in your message, and direct shell execution is not enabled"* or apologetic excuses).
+  - Automatically falls back to deterministic heuristic commit message synthesis when LLM generation is unavailable or rejected.
+  - Added frontend detection in `GitChangesWindow` to block model refusal phrases and surface an actionable error banner prompting the user to stage or save changes.
+- **Synthetic Git Diffs for Untracked Files**:
+  - Automatically reads and synthesizes Git diff hunks for newly created untracked files (`--- /dev/null +++ b/<path>`), allowing Gemini CLI to generate accurate commit messages even when changes consist purely of untracked files.
+
+---
+
 ## [0.5.1] - 2026-11-03
 
 ### Fixed
