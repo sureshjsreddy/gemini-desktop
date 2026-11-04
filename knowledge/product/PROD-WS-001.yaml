@@ -17,12 +17,17 @@ applies_to:
   - security
 
 rule:
-  "Workspaces provide isolated context profiles. Each workspace binds to a specific directory path, a preferred model, and optional custom system instructions, strictly validated against enterprise EDR boundaries."
+  "Workspaces provide isolated context profiles. Each workspace binds to a specific directory path, a preferred model, an execution approval mode (Ask Permission, Auto-Edit, YOLO Autonomous, or Plan Mode), and optional custom system instructions, strictly validated against enterprise EDR boundaries."
 
 do:
   - "Seed exactly one default workspace (`Personal`) on initial install."
   - "Allow users to create, edit, and delete custom workspace profiles via the Workspace Management modal."
   - "Support model selection using grouped presets (Auto, Gemini 3 / 3.5 / 3.8, Gemini 2.5, Legacy 1.5) and manual custom model names, decoupling reactive input state to prevent typing clobbering."
+  - "Support four granular Workspace Execution Approval Modes (`src/lib/utils/approvalModes.ts`):"
+  - "  1. `default` ('Ask Permission'): Strict zero-trust mode prompting an interactive confirmation modal before any file modifications or terminal command executions."
+  - "  2. `auto_edit` ('Auto-Edit'): Automatically approves workspace inspection (read, search, glob) and code modifications (write, edit, patch, replace) while requiring explicit interactive authorization for shell/terminal command execution."
+  - "  3. `yolo` ('YOLO Autonomous'): High-velocity autonomous turn execution; the Tauri Rust ACP backend immediately approves all tool requests over stdin (0ms latency, immune to WebView2 background throttling) and emits `[YOLO Auto-approved]` activity indicators."
+  - "  4. `plan` ('Plan Mode'): Read-only architecture research and planning phase; code writes and command executions are disabled, while markdown checklists (`- [ ]`, `- [x]`) are dynamically extracted into the interactive Plan Workbench."
   - "Default new workspace creations to safe developer directories (`%USERPROFILE%\\Projects` or user home) via `get_default_workspace_dir` instead of the root drive (`C:\\`)."
   - "Enforce strict Enterprise EDR & UAC directory validation via `validate_workspace_path`: verify physical existence on disk and proactively reject dangerous paths including root drives (`C:\\`), Windows system folders (`C:\\Windows`, `System32`), Program Files, and volatile temp folders (`%TEMP%`)."
   - "Pass the workspace's target working directory when spawning the Gemini CLI process so project-level `GEMINI.md` files are recognized automatically."

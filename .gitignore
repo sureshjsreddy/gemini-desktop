@@ -62,4 +62,5 @@ ehthumbs.db
 *.sublime-workspace
 *.swp
 *.swo
-Decoding_Gemini_Desktop_Tutorial.pptx
+*.pptx
+GEMINI_DESKTOP_SHOWCASE_GUIDE.md

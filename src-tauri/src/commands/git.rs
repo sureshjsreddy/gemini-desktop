@@ -934,11 +934,80 @@ pub fn clean_commit_output(raw: &str) -> String {
     text.to_string()
 }
 
+/// Validates whether the LLM output is a genuine conventional commit message or a refusal/error explanation
+pub fn is_valid_commit_message(msg: &str) -> bool {
+    let trimmed = msg.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let lower = trimmed.to_lowercase();
+
+    // Rejection signatures: model refusals, missing diff errors, environment notices
+    let refusal_signatures = [
+        "no git diff",
+        "no diff was included",
+        "no diff provided",
+        "shell execution is not enabled",
+        "direct shell execution",
+        "cannot retrieve git diff",
+        "unable to retrieve",
+        "please provide the git diff",
+        "please provide a git diff",
+        "please provide a diff",
+        "i cannot generate",
+        "i am unable to generate",
+        "it appears that no",
+        "as an ai",
+        "i do not have access",
+        "error when talking to gemini",
+        "modelnotfounderror",
+    ];
+
+    for sig in refusal_signatures {
+        if lower.contains(sig) {
+            return false;
+        }
+    }
+
+    // Must have a reasonable first line (header) under 100 characters
+    let first_line = trimmed.lines().next().unwrap_or(trimmed).trim();
+    if first_line.is_empty() || first_line.len() > 100 {
+        return false;
+    }
+
+    // Standard conventional commit prefixes
+    let conventional_types = [
+        "feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert",
+    ];
+
+    let has_conventional_prefix = conventional_types.iter().any(|t| {
+        first_line.starts_with(&format!("{}:", t))
+            || first_line.starts_with(&format!("{}!:", t))
+            || first_line.starts_with(&format!("{}(", t))
+    });
+
+    let imperative_prefixes = [
+        "add ", "update ", "fix ", "remove ", "implement ", "refactor ", "support ", "create ", "enhance ",
+    ];
+    let has_imperative_prefix = imperative_prefixes.iter().any(|p| first_line.to_lowercase().starts_with(p));
+
+    has_conventional_prefix || has_imperative_prefix
+}
+
 pub fn generate_commit_message_with_llm(
     ws_path: &Path,
     full_diff: &str,
     context_hint: Option<&str>,
 ) -> Result<String, String> {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+
+    let trimmed_diff = full_diff.trim();
+    if trimmed_diff.is_empty() {
+        return Err("No git diff available to generate LLM commit message".to_string());
+    }
+
     let bin = crate::process_manager::find_gemini_executable()
         .ok_or_else(|| "Gemini CLI executable not found".to_string())?;
 
@@ -965,36 +1034,65 @@ Rules:\n\
 {}\n\
 Git Diff:\n{}",
         context_section,
-        full_diff
+        trimmed_diff
     );
 
+    // On Windows, if bin is a .cmd wrapper from npm, check if we can run node with gemini.js directly
     #[cfg(target_os = "windows")]
-    let mut cmd = if is_batch {
-        let mut c = Command::new("cmd.exe");
-        c.args([
-            "/c",
-            &bin_path_str,
-            "--skip-trust",
-            "-p",
-            &prompt,
-            "--model",
-            "gemini-3.8-flash",
-            "--output-format",
-            "text",
-        ]);
-        c
-    } else {
-        let mut c = Command::new(&bin_path_str);
-        c.args([
-            "--skip-trust",
-            "-p",
-            &prompt,
-            "--model",
-            "gemini-3.8-flash",
-            "--output-format",
-            "text",
-        ]);
-        c
+    let mut cmd = {
+        let direct_js = if is_batch {
+            bin.parent().and_then(|p| {
+                let js = p.join("node_modules").join("@google").join("gemini-cli").join("bundle").join("gemini.js");
+                if js.is_file() {
+                    Some(js)
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+
+        if let Some(js_path) = direct_js {
+            let mut c = Command::new("node");
+            c.arg(&js_path);
+            c.args([
+                "--skip-trust",
+                "-p",
+                "Generate a concise Conventional Commit message based on the input git diff.",
+                "--model",
+                "gemini-3.8-flash",
+                "--output-format",
+                "text",
+            ]);
+            c
+        } else if is_batch {
+            let mut c = Command::new("cmd.exe");
+            c.args([
+                "/c",
+                &bin_path_str,
+                "--skip-trust",
+                "-p",
+                "Generate a concise Conventional Commit message based on the input git diff.",
+                "--model",
+                "gemini-3.8-flash",
+                "--output-format",
+                "text",
+            ]);
+            c
+        } else {
+            let mut c = Command::new(&bin_path_str);
+            c.args([
+                "--skip-trust",
+                "-p",
+                "Generate a concise Conventional Commit message based on the input git diff.",
+                "--model",
+                "gemini-3.8-flash",
+                "--output-format",
+                "text",
+            ]);
+            c
+        }
     };
 
     #[cfg(not(target_os = "windows"))]
@@ -1003,7 +1101,7 @@ Git Diff:\n{}",
         c.args([
             "--skip-trust",
             "-p",
-            &prompt,
+            "Generate a concise Conventional Commit message based on the input git diff.",
             "--model",
             "gemini-3.8-flash",
             "--output-format",
@@ -1013,6 +1111,9 @@ Git Diff:\n{}",
     };
 
     cmd.current_dir(ws_path);
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
     cmd.env("CI", "true");
     cmd.env("PAGER", "cat");
     cmd.env("GIT_PAGER", "cat");
@@ -1024,16 +1125,50 @@ Git Diff:\n{}",
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
-    let output = cmd.output().map_err(|e| format!("Failed to run gemini CLI: {}", e))?;
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Gemini CLI exited with status {}: {}", output.status, err));
+    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn Gemini CLI: {}", e))?;
+
+    // Pipe the full prompt (including rules, context, and diff) safely over stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(prompt.as_bytes());
+        let _ = stdin.flush();
+        drop(stdin); // Send EOF so gemini-cli's readStdin() resolves
     }
 
-    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    // Wait with a 12-second timeout to prevent hanging on network stalls or 429 retries
+    let start_time = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(12);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {
+                if start_time.elapsed() >= timeout {
+                    let _ = child.kill();
+                    break Err("Gemini CLI timed out generating commit message".to_string());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => break Err(format!("Failed to wait on Gemini CLI: {}", e)),
+        }
+    }?;
+
+    let mut stdout_buf = Vec::new();
+    let mut stderr_buf = Vec::new();
+    if let Some(mut out) = child.stdout.take() {
+        let _ = out.read_to_end(&mut stdout_buf);
+    }
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_end(&mut stderr_buf);
+    }
+
+    if !status.success() {
+        let err = String::from_utf8_lossy(&stderr_buf);
+        return Err(format!("Gemini CLI exited with status {}: {}", status, err));
+    }
+
+    let stdout_str = String::from_utf8_lossy(&stdout_buf);
     let cleaned = clean_commit_output(&stdout_str);
-    if cleaned.trim().is_empty() {
-        return Err("Gemini CLI returned empty output".to_string());
+    if !is_valid_commit_message(&cleaned) {
+        return Err(format!("Gemini CLI output failed commit validation: {}", cleaned));
     }
 
     Ok(cleaned)
@@ -1049,10 +1184,14 @@ pub fn synthesize_heuristic_commit_message(
         .unwrap_or((None, None, None));
 
     let lines: Vec<&str> = stat_str.lines().collect();
-    let changed_files: Vec<String> = lines
+    let mut changed_files: Vec<String> = lines
         .iter()
         .filter_map(|line| {
-            let parts: Vec<&str> = line.split('|').collect();
+            let trimmed = line.trim();
+            if trimmed.starts_with("warning:") || trimmed.starts_with("error:") {
+                return None;
+            }
+            let parts: Vec<&str> = trimmed.split('|').collect();
             if !parts.is_empty() {
                 Some(parts[0].trim().to_string())
             } else {
@@ -1062,11 +1201,35 @@ pub fn synthesize_heuristic_commit_message(
         .filter(|s| !s.is_empty() && !s.contains("changed,"))
         .collect();
 
+    // If stat_str did not yield files (e.g. untracked changes), extract from full_diff_str
+    if changed_files.is_empty() {
+        for line in full_diff_str.lines() {
+            if let Some(rest) = line.strip_prefix("+++ b/") {
+                let p = rest.trim();
+                if !p.is_empty() && !changed_files.contains(&p.to_string()) {
+                    changed_files.push(p.to_string());
+                }
+            } else if let Some(rest) = line.strip_prefix("diff --git a/") {
+                if let Some(space_idx) = rest.find(" b/") {
+                    let p = &rest[..space_idx];
+                    if !p.is_empty() && !changed_files.contains(&p.to_string()) {
+                        changed_files.push(p.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    if changed_files.is_empty() {
+        changed_files.push("workspace".to_string());
+    }
+
     // Heuristic scope identification
     let scope = if let Some(first_file) = changed_files.first() {
         let path_parts: Vec<&str> = first_file.split('/').collect();
         if path_parts.len() > 1 {
-            path_parts[path_parts.len() - 2].to_string()
+            let part = path_parts[path_parts.len() - 2];
+            if part.is_empty() || part == "." { "core".to_string() } else { part.to_string() }
         } else {
             path_parts[0]
                 .split('.')
@@ -1147,26 +1310,85 @@ pub async fn git_generate_commit_message(
 ) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
         let ws_path = PathBuf::from(&workspace_dir);
+        if !ws_path.exists() {
+            return Err("Workspace directory does not exist".to_string());
+        }
 
         // 1. Check staged diff first
         let staged_diff_out = run_git_command(&ws_path, &["diff", "--cached", "--stat"])?;
         let is_staged = staged_diff_out.status.success()
             && !String::from_utf8_lossy(&staged_diff_out.stdout).trim().is_empty();
 
-        let (diff_args, stat_args): (&[&str], &[&str]) = if is_staged {
-            (&["diff", "--cached"], &["diff", "--cached", "--stat"])
+        let mut stat_str = String::new();
+        let mut full_diff_str = String::new();
+
+        if is_staged {
+            if let Ok(stat_res) = run_git_command(&ws_path, &["diff", "--cached", "--stat"]) {
+                stat_str = String::from_utf8_lossy(&stat_res.stdout).trim().to_string();
+            }
+            if let Ok(diff_res) = run_git_command(&ws_path, &["diff", "--cached", "-w", "--ignore-cr-at-eol", "-U3"]) {
+                full_diff_str = String::from_utf8_lossy(&diff_res.stdout).to_string();
+            }
         } else {
-            (&["diff", "HEAD"], &["diff", "HEAD", "--stat"])
-        };
+            // Priority 1: Unstaged modifications against HEAD
+            if let Ok(stat_res) = run_git_command(&ws_path, &["diff", "HEAD", "--stat"]) {
+                if stat_res.status.success() {
+                    stat_str = String::from_utf8_lossy(&stat_res.stdout).trim().to_string();
+                }
+            }
+            if let Ok(diff_res) = run_git_command(&ws_path, &["diff", "HEAD", "-w", "--ignore-cr-at-eol", "-U3"]) {
+                if diff_res.status.success() {
+                    full_diff_str = String::from_utf8_lossy(&diff_res.stdout).to_string();
+                }
+            }
 
-        let stat_out = run_git_command(&ws_path, stat_args)?;
-        let stat_str = String::from_utf8_lossy(&stat_out.stdout).trim().to_string();
+            // Priority 2: If git diff HEAD failed (e.g. freshly initialized repo with 0 commits), fallback to plain git diff
+            if full_diff_str.trim().is_empty() {
+                if let Ok(diff_res) = run_git_command(&ws_path, &["diff", "-w", "--ignore-cr-at-eol", "-U3"]) {
+                    if diff_res.status.success() {
+                        full_diff_str = String::from_utf8_lossy(&diff_res.stdout).to_string();
+                    }
+                }
+                if let Ok(stat_res) = run_git_command(&ws_path, &["diff", "--stat"]) {
+                    if stat_res.status.success() {
+                        stat_str = String::from_utf8_lossy(&stat_res.stdout).trim().to_string();
+                    }
+                }
+            }
 
-        let full_diff_out = run_git_command(&ws_path, diff_args)?;
-        let mut full_diff_str = String::from_utf8_lossy(&full_diff_out.stdout).to_string();
+            // Priority 3: Incorporate untracked files into diff so newly created files are analyzed by AI
+            if let Ok(status_out) = run_git_command(&ws_path, &["status", "--porcelain=v1", "-uall"]) {
+                if status_out.status.success() {
+                    let status_str = String::from_utf8_lossy(&status_out.stdout);
+                    for line in status_str.lines() {
+                        if line.starts_with("?? ") {
+                            let rel_path = line[3..].trim().trim_matches('"');
+                            if !rel_path.is_empty() {
+                                let disk_path = ws_path.join(rel_path);
+                                if disk_path.is_file() {
+                                    if let Ok(content) = std::fs::read_to_string(&disk_path) {
+                                        let clean_content = content.replace("\r\n", "\n").replace('\r', "\n");
+                                        let sample: Vec<&str> = clean_content.lines().take(40).collect();
+                                        full_diff_str.push_str(&format!("\n--- /dev/null\n+++ b/{}\n@@ -0,0 +1,{} @@\n", rel_path, sample.len()));
+                                        for l in sample {
+                                            full_diff_str.push('+');
+                                            full_diff_str.push_str(l);
+                                            full_diff_str.push('\n');
+                                        }
+                                        if stat_str.is_empty() {
+                                            stat_str.push_str(&format!(" {} | 1 +\n", rel_path));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
-        // If diff is still empty (e.g. only untracked files), check git status
-        if stat_str.is_empty() && full_diff_str.trim().is_empty() {
+        // If diff is completely empty, check if there are any other git status items (e.g. empty files, mode changes)
+        if full_diff_str.trim().is_empty() {
             let status_out = run_git_command(&ws_path, &["status", "--porcelain=v1"])?;
             let status_str = String::from_utf8_lossy(&status_out.stdout).trim().to_string();
             if status_str.is_empty() {
@@ -1198,14 +1420,14 @@ pub async fn git_generate_commit_message(
         }
 
         // Cap diff length to prevent prompt explosion
-        if full_diff_str.len() > 6000 {
-            full_diff_str.truncate(6000);
+        if full_diff_str.len() > 8000 {
+            full_diff_str.truncate(8000);
             full_diff_str.push_str("\n... [diff truncated]");
         }
 
         // 2. PRIMARY: Try calling the underlying Gemini CLI LLM for true generative understanding
         if let Ok(llm_msg) = generate_commit_message_with_llm(&ws_path, &full_diff_str, context_hint.as_deref()) {
-            if !llm_msg.trim().is_empty() {
+            if is_valid_commit_message(&llm_msg) {
                 return Ok(llm_msg);
             }
         }
@@ -1325,6 +1547,36 @@ mod tests {
         assert!(ticket.is_none());
         assert!(intent.is_none());
         assert!(commit_type.is_none());
+    }
+
+    #[test]
+    fn test_is_valid_commit_message() {
+        // Valid Conventional Commits
+        assert!(is_valid_commit_message("feat(git): add visual studio changes tool window"));
+        assert!(is_valid_commit_message("fix: synchronize git status on turn completion"));
+        assert!(is_valid_commit_message("chore(deps): update dependencies\n\n- Updated serde"));
+        assert!(is_valid_commit_message("refactor: clean up process supervision"));
+        assert!(is_valid_commit_message("docs(readme): update installation guide"));
+        assert!(is_valid_commit_message("feat!: breaking change in model routing"));
+        assert!(is_valid_commit_message("Add support for git staging and conventional commit generation"));
+
+        // Invalid: empty or whitespace
+        assert!(!is_valid_commit_message(""));
+        assert!(!is_valid_commit_message("   \n\n  "));
+
+        // Invalid: user's exact error message from Gemini model
+        let user_err = "it appears that no git diff was included in your message, and direct shell execution is not enabled in this environment to retrieve git diff automatically";
+        assert!(!is_valid_commit_message(user_err));
+
+        // Invalid: other model refusals and missing diff apologies
+        assert!(!is_valid_commit_message("I cannot generate a commit message because no diff was provided."));
+        assert!(!is_valid_commit_message("Please provide the git diff so I can generate a commit message."));
+        assert!(!is_valid_commit_message("As an AI, I do not have access to your local git repository."));
+        assert!(!is_valid_commit_message("Error when talking to Gemini API"));
+
+        // Invalid: conversational rambling with header over 100 characters
+        let long_rambling = "In this commit we made several adjustments to the configuration files and refactored the entire system architecture across many different modules to support new features.";
+        assert!(!is_valid_commit_message(long_rambling));
     }
 
     #[test]

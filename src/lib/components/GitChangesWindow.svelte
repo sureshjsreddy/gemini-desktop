@@ -213,7 +213,22 @@
         workspaceDir: workspace.path,
         contextHint: hint || null,
       });
-      commitMessage = msg;
+      if (msg && msg.trim()) {
+        const lower = msg.toLowerCase();
+        if (
+          lower.includes("no git diff was included") ||
+          lower.includes("direct shell execution") ||
+          lower.includes("shell execution is not enabled") ||
+          lower.includes("cannot retrieve git diff")
+        ) {
+          commitFeedback = {
+            type: "error",
+            text: "No git diff available to generate commit message. Please stage or save file modifications first.",
+          };
+        } else {
+          commitMessage = msg;
+        }
+      }
     } catch (err: any) {
       commitFeedback = {
         type: "error",

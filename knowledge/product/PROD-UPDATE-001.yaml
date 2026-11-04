@@ -16,10 +16,11 @@ applies_to:
   - packaging
 
 rule:
-  "The desktop client must automatically check the Windows Package Manager (WinGet) catalog for available updates and display a non-intrusive interactive notification banner when a newer release is published. When the user chooses to upgrade, the application must confirm, release file locks by exiting gracefully, execute the upgrade in a detached batch console, and automatically relaunch upon success."
+  "The desktop client is officially distributed via Windows Package Manager (WinGet) community repository and must automatically check the WinGet catalog for available updates, displaying a non-intrusive interactive notification banner when a newer release is published. When the user chooses to upgrade, the application must confirm, release file locks by exiting gracefully, execute the upgrade in a detached batch console, and automatically relaunch upon success."
 
 do:
-  - "Configure WinGet community package manifests with `InstallerType: wix` (.msi) rather than `portable` to ensure clean enterprise installation into `C:\\Program Files\\Gemini Desktop`, preventing EDR/CrowdStrike volatile `%TEMP%` execution alerts."
+  - "Maintain official WinGet community package manifests under PackageIdentifier `SureshJanakiReddy.GeminiDesktop` (Pull Request #469597: https://github.com/microsoft/winget-pkgs/pull/469597) targeting PackageVersion 0.5.1 and above."
+  - "Configure WinGet community package manifests with `InstallerType: wix` (.msi) rather than `portable` to ensure clean enterprise installation into `C:\\Program Files\\Gemini Desktop`, preventing EDR/CrowdStrike Falcon volatile `%TEMP%` execution alerts."
   - "Query the local WinGet catalog asynchronously using `winget show SureshJanakiReddy.GeminiDesktop --accept-source-agreements` via `tokio::task::spawn_blocking` to avoid blocking the UI."
   - "Trigger automatic background update checks with a 3-second delay on application startup."
   - "Compare the latest version from WinGet against the current application version using semantic versioning."
