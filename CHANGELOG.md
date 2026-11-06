@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] - 2026-11-07
+
+### Added
+- **Dynamic Model Discovery (Gemini CLI v0.67+ Alignment)**:
+  - Implemented `discover_gemini_models` Rust Tauri command invoking `gemini models --output-format json` (with `--list-models` and plaintext fallback for pre-v0.67 installations).
+  - Queries active environment credentials and extracts model display names, descriptions, and input/output token limits.
+  - Added interactive "Discover Live Models (v0.67+)" button with refresh animation in `WorkspaceModal` to dynamically populate available models.
+- **Model Context Protocol (MCP) Server Transparency in Tool Permissions**:
+  - Enhanced ACP client JSON-RPC parser to extract source MCP server metadata (`/params/toolCall/server`, `/params/server`).
+  - Added dedicated `🔌 MCP: <server>` badge to `ToolPermissionCard` allowing users to distinguish MCP-driven system calls from built-in CLI operations before approving permissions.
+- **Rate-Limit 429 Awareness & Countdown Notices**:
+  - Added real-time regex parsing on ACP stream stderr to detect HTTP 429 rate limit responses and `cooling down for (\d+)s` intervals.
+  - Surfaced live in-stream countdown notices warning users of temporary rate limits instead of displaying silent timeouts or generic failures.
+- **Automated Verification**:
+  - Expanded Cargo unit test suite to 90 passing tests covering JSON array, JSON object, and plaintext fallback parsing for dynamic model discovery.
+
+### Changed
+- **Gemini Model Routing & Lifecycle Alignment**:
+  - Deprecated legacy Gemini 1.5 series across model selectors, default options, and documentation per Google AI Studio deprecation schedule.
+  - Aligned model presets with Gemini 3.5 / 3.8 and active Gemini 2.5 series (`gemini-3.8-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-2.5-pro`, `gemini-2.5-flash`).
+  - Updated deprecated model error handling to surface actionable upgrade instructions.
+
+---
+
 ## [0.5.2] - 2026-11-05
 
 ### Fixed
