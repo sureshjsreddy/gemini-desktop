@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { Workspace, ApprovalMode, WorkspacePathValidation } from "$lib/types";
-  import { X, Plus, Trash2, Check, Bell, BellRing, FileDiff, AlertTriangle } from "lucide-svelte";
+  import type { Workspace, ApprovalMode, WorkspacePathValidation, CliModelInfo, CliModelDiscoveryResult } from "$lib/types";
+  import { X, Plus, Trash2, Check, Bell, BellRing, FileDiff, AlertTriangle, RefreshCw } from "lucide-svelte";
   import { isNotificationSettingEnabled, setNotificationSetting, notifyBackgroundTaskComplete } from "$lib/utils/notifications";
   import { dialogManager } from "$lib/dialog.svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -123,6 +123,40 @@
   let lastSyncedWorkspaceId = $state<string | null>(null);
   let isSaving = $state(false);
   let notificationsEnabled = $state(true);
+
+  let isDiscoveringModels = $state(false);
+  let discoveryStatus = $state<{ type: "success" | "info" | "error"; text: string } | null>(null);
+  let liveDiscoveredModels = $state<CliModelInfo[]>([]);
+
+  async function handleDiscoverModels() {
+    isDiscoveringModels = true;
+    discoveryStatus = null;
+    try {
+      const res = await invoke<CliModelDiscoveryResult>("discover_gemini_models");
+      if (res.supported && res.models.length > 0) {
+        liveDiscoveredModels = res.models;
+        discoveryStatus = {
+          type: "success",
+          text: `Discovered ${res.models.length} active models directly via Gemini CLI (v0.67+).`,
+        };
+      } else {
+        discoveryStatus = {
+          type: "info",
+          text: res.message || "Model discovery returned no models. Standard models remain available.",
+        };
+      }
+    } catch (e: any) {
+      discoveryStatus = {
+        type: "error",
+        text: `Discovery failed: ${e?.toString()}`,
+      };
+    } finally {
+      isDiscoveringModels = false;
+      setTimeout(() => {
+        discoveryStatus = null;
+      }, 6000);
+    }
+  }
 
   $effect(() => {
     if (isOpen) {
@@ -332,13 +366,34 @@
           </div>
 
           <div>
-            <label for="ws-model" class="block text-primary-theme font-medium mb-1">Preferred Model</label>
+            <div class="flex items-center justify-between mb-1">
+              <label for="ws-model" class="block text-primary-theme font-medium">Preferred Model</label>
+              <button
+                type="button"
+                onclick={handleDiscoverModels}
+                disabled={isDiscoveringModels}
+                class="flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-medium text-accent-theme hover:bg-accent-subtle/30 rounded transition-colors cursor-pointer disabled:opacity-50"
+                title="Discover active models from Gemini CLI v0.67+ models command"
+              >
+                <RefreshCw size={11} class={isDiscoveringModels ? "animate-spin" : ""} />
+                <span>{isDiscoveringModels ? "Querying CLI..." : "Discover Live Models (v0.67+)"}</span>
+              </button>
+            </div>
             <select
               id="ws-model"
               value={selectedDropdownValue}
               onchange={onSelectModelChange}
               class="w-full px-3 py-2 bg-app border border-theme-default rounded-lg text-primary-theme focus:outline-none focus:border-accent-theme font-mono"
             >
+              {#if liveDiscoveredModels.length > 0}
+                <optgroup label="Discovered via Gemini CLI (Live API)">
+                  {#each liveDiscoveredModels as lm}
+                    <option value={lm.id}>
+                      {lm.id} {lm.input_token_limit ? `(${Math.round(lm.input_token_limit / 1000)}k ctx)` : ""} {lm.is_default ? "— Default" : ""}
+                    </option>
+                  {/each}
+                </optgroup>
+              {/if}
               {#each MODEL_GROUPS as group}
                 <optgroup label={group.group}>
                   {#each group.options as opt}
@@ -372,6 +427,12 @@
             <span class="text-[11px] text-muted-theme mt-1.5 block">
               Auto dynamically balances speed and complexity. Manual lets you select or enter any model.
             </span>
+
+            {#if discoveryStatus}
+              <div class="mt-2.5 p-2 rounded-lg text-xs {discoveryStatus.type === 'success' ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30' : discoveryStatus.type === 'error' ? 'bg-rose-500/10 text-rose-300 border border-rose-500/30' : 'bg-surface border border-subtle text-secondary-theme'}">
+                {discoveryStatus.text}
+              </div>
+            {/if}
 
             {#if isDeprecatedModel(editingWorkspace.model)}
               <div class="mt-2.5 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-start gap-2.5 text-xs text-amber-200">

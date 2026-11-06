@@ -61,6 +61,22 @@ export interface ToolPermissionPayload {
   content?: any;
   reason?: string;
   options: PermissionOption[];
+  mcp_server?: string;
+}
+
+export interface CliModelInfo {
+  id: string;
+  name?: string;
+  description?: string;
+  input_token_limit?: number;
+  output_token_limit?: number;
+  is_default?: boolean;
+}
+
+export interface CliModelDiscoveryResult {
+  supported: boolean;
+  models: CliModelInfo[];
+  message: string;
 }
 
 export interface ToolExecutionStep {

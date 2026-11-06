@@ -3,7 +3,7 @@ type: product_standard
 title: In-App Gemini CLI Setup, Dual Authentication & CrowdStrike EDR Safe Execution Standard
 domain: product
 status: approved
-version: 1.0.0
+version: 1.1.0
 authority:
   level: official
   confidence: high
@@ -29,6 +29,7 @@ do:
   - "Inject `--skip-trust` into all headless and ACP executions (`test_gemini_cli`, `spawn_gemini`) and automatically register workspace directories into `~/.gemini/trustedFolders.json` via `ensure_folder_trusted` to prevent 'Directory is not trusted' prompt halts."
   - "Enforce the 3-Tier Enterprise Working Directory Hierarchy for process execution and diagnostics: Priority 1 = User's Active Project Workspace; Priority 2 = User Home Directory (`%USERPROFILE%`, e.g. `C:\\Users\\<username>`); Priority 3 = LocalAppData persistent directory (`%LOCALAPPDATA%\\GeminiDesktop`)."
   - "Perform lightweight diagnostic pings (`gemini --skip-trust -p \"Respond with 'OK'\" --model <selected_model> --output-format text`) defaulting to `gemini-3.8-flash` (or `auto`) rather than deprecated `gemini-2.5-flash`, with structured diagnostic reporting, timing latency in milliseconds and mapping API errors (missing keys, invalid credentials, disabled Vertex AI API, quota exhaustion, deprecated model) into actionable recommendations."
+  - "Support dynamic model discovery via `gemini models --output-format json` and `--list-models` (Gemini CLI v0.67.0+) allowing users to query live available models and context token limits directly from the CLI."
 
 dont:
   - "Never execute the diagnostic test or CLI processes with current working directory set to `%TEMP%` (`C:\\Users\\<user>\\AppData\\Local\\Temp`), which triggers CrowdStrike Falcon's volatile directory network connection IOAs."

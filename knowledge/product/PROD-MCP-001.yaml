@@ -3,7 +3,7 @@ type: product_standard
 title: Model Context Protocol (MCP) Server Configuration & Tool Ingestion
 domain: product
 status: approved
-version: 1.0.0
+version: 1.1.0
 authority:
   level: official
   confidence: high
@@ -27,6 +27,7 @@ do:
   - "Provide 1-click status toggle pills in the server list and accessible switch controls in the server details form."
   - "Safely read and write `settings.json` using atomic file operations, preserving pre-existing keys (such as `theme`, `telemetry`, etc.)."
   - "Intercept any MCP tool executions (`mcp_*`) with the interactive Tool Permission Approval banner."
+  - "Surface source MCP server metadata (e.g. `mcp_server` field from Gemini CLI v0.67.0+) in interactive Tool Permission Cards so users can immediately distinguish external MCP actions from local tools."
 
 dont:
   - "Do not overwrite or delete unrelated configuration keys in `settings.json`."

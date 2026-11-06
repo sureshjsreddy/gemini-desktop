@@ -63,6 +63,7 @@ pub struct ToolPermissionPayload {
     pub content: Option<Value>,
     pub reason: Option<String>,
     pub options: Vec<PermissionOption>,
+    pub mcp_server: Option<String>,
 }
 
 pub struct AcpSession {
@@ -1131,6 +1132,15 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                         .and_then(|r| r.as_str())
                         .map(|s| s.to_string());
 
+                    let mcp_server = val.pointer("/params/toolCall/server")
+                        .or_else(|| val.pointer("/params/toolCall/serverName"))
+                        .or_else(|| val.pointer("/params/toolCall/mcpServer"))
+                        .or_else(|| val.pointer("/params/server"))
+                        .or_else(|| val.pointer("/params/serverName"))
+                        .or_else(|| val.pointer("/params/mcpServer"))
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string());
+
                     let mut options = Vec::new();
                     if let Some(opts_array) = val.pointer("/params/options").and_then(|o| o.as_array()) {
                         for opt in opts_array {
@@ -1232,6 +1242,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                         content,
                         reason,
                         options,
+                        mcp_server,
                     });
                 }
                 _ => {

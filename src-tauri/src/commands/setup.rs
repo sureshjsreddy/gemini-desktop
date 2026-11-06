@@ -1,5 +1,6 @@
 use crate::AppState;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::process::Command;
 use std::time::Instant;
 use tauri::State;
@@ -671,6 +672,235 @@ pub async fn test_gemini_cli(
     }).await.map_err(|e| e.to_string())?
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CliModelInfo {
+    pub id: String,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub input_token_limit: Option<u64>,
+    pub output_token_limit: Option<u64>,
+    pub is_default: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliModelDiscoveryResult {
+    pub supported: bool,
+    pub models: Vec<CliModelInfo>,
+    pub message: String,
+}
+
+pub fn parse_cli_models_json(stdout: &str) -> Vec<CliModelInfo> {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
+        let items: Option<&Vec<Value>> = if let Some(arr) = val.as_array() {
+            Some(arr)
+        } else if let Some(arr) = val.get("models").and_then(|m| m.as_array()) {
+            Some(arr)
+        } else {
+            None
+        };
+
+        if let Some(arr) = items {
+            let mut result = Vec::new();
+            for item in arr {
+                if let Some(id) = item.get("id").or_else(|| item.get("model")).or_else(|| item.get("name")).and_then(|v| v.as_str()) {
+                    let id_str = id.trim().to_string();
+                    if !id_str.is_empty() {
+                        let name = item.get("displayName").or_else(|| item.get("name")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let description = item.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let input_token_limit = item.get("inputTokenLimit").or_else(|| item.get("input_token_limit")).and_then(|v| v.as_u64());
+                        let output_token_limit = item.get("outputTokenLimit").or_else(|| item.get("output_token_limit")).and_then(|v| v.as_u64());
+                        let is_default = item.get("isDefault").or_else(|| item.get("default")).and_then(|v| v.as_bool());
+
+                        result.push(CliModelInfo {
+                            id: id_str,
+                            name,
+                            description,
+                            input_token_limit,
+                            output_token_limit,
+                            is_default,
+                        });
+                    }
+                }
+            }
+            return result;
+        }
+    }
+
+    // Fallback: parse plain text line outputs (e.g. from --list-models)
+    let mut text_models = Vec::new();
+    for line in trimmed.lines() {
+        let clean = line.trim().trim_start_matches(|c| c == '-' || c == '*' || c == '•').trim();
+        if clean.starts_with("gemini-") || clean.starts_with("auto") {
+            let parts: Vec<&str> = clean.split_whitespace().collect();
+            if let Some(first) = parts.first() {
+                text_models.push(CliModelInfo {
+                    id: first.to_string(),
+                    name: Some(clean.to_string()),
+                    description: None,
+                    input_token_limit: None,
+                    output_token_limit: None,
+                    is_default: Some(first.starts_with("auto")),
+                });
+            }
+        }
+    }
+    text_models
+}
+
+#[tauri::command]
+pub async fn discover_gemini_models(
+    state: State<'_, AppState>,
+) -> Result<CliModelDiscoveryResult, String> {
+    let bin = match crate::process_manager::find_gemini_executable() {
+        Some(p) => p,
+        None => {
+            return Ok(CliModelDiscoveryResult {
+                supported: false,
+                models: Vec::new(),
+                message: "Gemini CLI executable not found on PATH.".to_string(),
+            });
+        }
+    };
+
+    let bin_path_str = bin.to_string_lossy().to_string();
+    let is_batch = bin_path_str.to_lowercase().ends_with(".cmd") || bin_path_str.to_lowercase().ends_with(".bat");
+    let effective_config = match get_gemini_auth_config(state.clone()).await {
+        Ok(c) => c,
+        Err(_) => GeminiAuthConfig {
+            auth_mode: "api_key".to_string(),
+            api_key: None,
+            google_cloud_project: None,
+            google_cloud_location: None,
+            google_app_credentials: None,
+        },
+    };
+
+    tokio::task::spawn_blocking(move || {
+        // Run: gemini models --output-format json
+        #[cfg(target_os = "windows")]
+        let mut cmd = if is_batch {
+            let mut c = Command::new("cmd.exe");
+            c.args(["/c", &bin_path_str, "models", "--output-format", "json"]);
+            c
+        } else {
+            let mut c = Command::new(&bin_path_str);
+            c.args(["models", "--output-format", "json"]);
+            c
+        };
+
+        #[cfg(not(target_os = "windows"))]
+        let mut cmd = {
+            let mut c = Command::new(&bin_path_str);
+            c.args(["models", "--output-format", "json"]);
+            c
+        };
+
+        if effective_config.auth_mode == "vertex_ai" {
+            cmd.env("GOOGLE_GENAI_USE_VERTEXAI", "true");
+            if let Some(ref proj) = effective_config.google_cloud_project {
+                cmd.env("GOOGLE_CLOUD_PROJECT", proj);
+            }
+            if let Some(ref loc) = effective_config.google_cloud_location {
+                cmd.env("GOOGLE_CLOUD_LOCATION", loc);
+            }
+            if let Some(ref creds) = effective_config.google_app_credentials {
+                cmd.env("GOOGLE_APPLICATION_CREDENTIALS", creds);
+            }
+        } else if let Some(ref key) = effective_config.api_key {
+            cmd.env("GEMINI_API_KEY", key);
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            cmd.creation_flags(0x08000000);
+        }
+
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        let output = match cmd.output() {
+            Ok(o) => o,
+            Err(e) => {
+                return Ok(CliModelDiscoveryResult {
+                    supported: false,
+                    models: Vec::new(),
+                    message: format!("Failed to spawn gemini models: {}", e),
+                });
+            }
+        };
+
+        let stdout_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr_str = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+        let parsed = parse_cli_models_json(&stdout_str);
+        if !parsed.is_empty() {
+            return Ok(CliModelDiscoveryResult {
+                supported: true,
+                models: parsed,
+                message: "Models discovered successfully from Gemini CLI.".to_string(),
+            });
+        }
+
+        // If 'models' subcommand failed, try 'gemini --list-models' as fallback (v0.67.0 flag)
+        #[cfg(target_os = "windows")]
+        let mut cmd_flag = if is_batch {
+            let mut c = Command::new("cmd.exe");
+            c.args(["/c", &bin_path_str, "--list-models"]);
+            c
+        } else {
+            let mut c = Command::new(&bin_path_str);
+            c.args(["--list-models"]);
+            c
+        };
+
+        #[cfg(not(target_os = "windows"))]
+        let mut cmd_flag = {
+            let mut c = Command::new(&bin_path_str);
+            c.args(["--list-models"]);
+            c
+        };
+
+        #[cfg(target_os = "windows")]
+        {
+            cmd_flag.creation_flags(0x08000000);
+        }
+        cmd_flag.stdout(std::process::Stdio::piped());
+        cmd_flag.stderr(std::process::Stdio::piped());
+
+        if let Ok(flag_output) = cmd_flag.output() {
+            let flag_stdout = String::from_utf8_lossy(&flag_output.stdout).trim().to_string();
+            let flag_parsed = parse_cli_models_json(&flag_stdout);
+            if !flag_parsed.is_empty() {
+                return Ok(CliModelDiscoveryResult {
+                    supported: true,
+                    models: flag_parsed,
+                    message: "Models discovered successfully via --list-models.".to_string(),
+                });
+            }
+        }
+
+        let combined = format!("{}\n{}", stdout_str, stderr_str);
+        let notice = if combined.contains("Usage: gemini") || combined.contains("Unknown argument") {
+            "Dynamic model discovery is supported in Gemini CLI v0.67.0+. Using official standard models.".to_string()
+        } else if !stderr_str.is_empty() {
+            stderr_str
+        } else {
+            "No models returned from CLI.".to_string()
+        };
+
+        Ok(CliModelDiscoveryResult {
+            supported: false,
+            models: Vec::new(),
+            message: notice,
+        })
+    }).await.map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -727,5 +957,67 @@ mod tests {
             || sample_err_preview.contains("discontinued")
             || sample_err_preview.contains("gemini-2.5-flash-lite-preview");
         assert!(is_preview_dead);
+    }
+
+    #[test]
+    fn test_parse_cli_models_json_array() {
+        let json_input = r#"[
+            {
+                "id": "gemini-3.8-flash",
+                "displayName": "Gemini 3.8 Flash",
+                "description": "Ultra-responsive next-gen Flash",
+                "inputTokenLimit": 1048576,
+                "outputTokenLimit": 8192,
+                "isDefault": true
+            },
+            {
+                "id": "gemini-3.5-flash-lite",
+                "displayName": "Gemini 3.5 Flash-Lite",
+                "inputTokenLimit": 1048576,
+                "outputTokenLimit": 8192,
+                "isDefault": false
+            }
+        ]"#;
+
+        let models = parse_cli_models_json(json_input);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "gemini-3.8-flash");
+        assert_eq!(models[0].name.as_deref(), Some("Gemini 3.8 Flash"));
+        assert_eq!(models[0].input_token_limit, Some(1048576));
+        assert_eq!(models[0].is_default, Some(true));
+
+        assert_eq!(models[1].id, "gemini-3.5-flash-lite");
+        assert_eq!(models[1].is_default, Some(false));
+    }
+
+    #[test]
+    fn test_parse_cli_models_json_object() {
+        let json_input = r#"{
+            "models": [
+                {
+                    "model": "gemini-3.1-pro-preview",
+                    "name": "Gemini 3.1 Pro Preview"
+                }
+            ]
+        }"#;
+
+        let models = parse_cli_models_json(json_input);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gemini-3.1-pro-preview");
+    }
+
+    #[test]
+    fn test_parse_cli_models_text_fallback() {
+        let text_input = r#"
+- auto (Auto-selects best model)
+- gemini-3.8-flash (Latest Preview)
+- gemini-3.5-flash-lite
+        "#;
+
+        let models = parse_cli_models_json(text_input);
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].id, "auto");
+        assert_eq!(models[1].id, "gemini-3.8-flash");
+        assert_eq!(models[2].id, "gemini-3.5-flash-lite");
     }
 }

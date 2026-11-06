@@ -79,6 +79,7 @@ pub fn run() {
             install_gemini_cli,
             detect_gcloud_status,
             test_gemini_cli,
+            discover_gemini_models,
             read_file_snippet,
             get_clipboard_text,
             show_toast_notification,

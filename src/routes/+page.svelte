@@ -440,11 +440,14 @@
     unlistenStderr = await listen<string>("acp-stderr", (event) => {
       const line = event.payload;
       if (!line) return;
+      const lineLower = line.toLowerCase();
       if (
         line.includes("Retrying with backoff") ||
         line.includes("503") ||
         line.includes("429") ||
-        line.includes("high demand")
+        line.includes("high demand") ||
+        lineLower.includes("cooling down") ||
+        lineLower.includes("rate limit")
       ) {
         const sid =
           (activeSessionId && streamStates[activeSessionId]?.isStreaming
@@ -452,8 +455,18 @@
             : Object.keys(streamStates).find((id) => streamStates[id]?.isStreaming)) ||
           activeSessionId;
         if (sid && streamStates[sid] && streamStates[sid].isStreaming) {
-          if (!streamStates[sid].streamingText.includes("high demand, retrying")) {
-            streamStates[sid].streamingText += "\n\n> ⏳ *Model is currently experiencing high demand, retrying with backoff...*\n\n";
+          const secondsMatch = line.match(/(?:cooling down for|cooldown:?|wait(?:ing)? for|in)\s*(\d+)\s*s/i);
+          const seconds = secondsMatch ? secondsMatch[1] : null;
+
+          const noticeMsg = seconds
+            ? `\n\n> ⏳ **Rate limit reached (429)** — Cooling down for **${seconds}s** before retrying...\n\n`
+            : `\n\n> ⏳ *Model is currently experiencing high demand / rate limits (429), retrying with backoff...*\n\n`;
+
+          if (
+            !streamStates[sid].streamingText.includes("high demand, retrying") &&
+            !streamStates[sid].streamingText.includes("Rate limit reached")
+          ) {
+            streamStates[sid].streamingText += noticeMsg;
           }
         }
       }

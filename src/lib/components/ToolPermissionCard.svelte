@@ -6,6 +6,7 @@
     FileText,
     FileCode,
     Terminal,
+    Server,
   } from "lucide-svelte";
 
   let {
@@ -37,6 +38,12 @@
           {#if toolPermission.kind}
             <span class="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30">
               {toolPermission.kind}
+            </span>
+          {/if}
+          {#if toolPermission.mcp_server}
+            <span class="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1">
+              <Server size={11} class="shrink-0" />
+              <span>MCP: {toolPermission.mcp_server}</span>
             </span>
           {/if}
         </div>
