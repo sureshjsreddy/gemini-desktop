@@ -695,6 +695,7 @@
                   <option value="gemini-3.8-flash">gemini-3.8-flash (Latest Preview Flash — Google Recommended)</option>
                   <option value="auto">auto (Let Gemini CLI Auto-Route Dynamically)</option>
                   <option value="gemini-3.5-flash">gemini-3.5-flash (Fast & Stable 3.5)</option>
+                  <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (Ultra-fast & Lightweight 3.5)</option>
                   <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Gemini 3.1 Pro)</option>
                   <option value="gemini-2.5-pro">gemini-2.5-pro (Gemini 2.5 Pro)</option>
                 </select>

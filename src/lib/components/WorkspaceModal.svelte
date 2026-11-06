@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Workspace, ApprovalMode, WorkspacePathValidation } from "$lib/types";
-  import { X, Plus, Trash2, Check, Bell, BellRing, FileDiff } from "lucide-svelte";
+  import { X, Plus, Trash2, Check, Bell, BellRing, FileDiff, AlertTriangle } from "lucide-svelte";
   import { isNotificationSettingEnabled, setNotificationSetting, notifyBackgroundTaskComplete } from "$lib/utils/notifications";
   import { dialogManager } from "$lib/dialog.svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -37,20 +37,36 @@
     options: { value: string; label: string }[];
   }
 
+  function isDeprecatedModel(model: string): boolean {
+    const m = (model || "").trim().toLowerCase();
+    return (
+      m.startsWith("gemini-1.5") ||
+      m.includes("preview-09-2025") ||
+      m === "gemini-1.5-flash-8b" ||
+      m === "gemini-1.5-flash" ||
+      m === "gemini-1.5-pro"
+    );
+  }
+
+  function isRetiringVertexModel(model: string): boolean {
+    const m = (model || "").trim().toLowerCase();
+    return m === "gemini-2.5-flash-lite";
+  }
+
   const MODEL_GROUPS: ModelOptionGroup[] = [
     {
       group: "Auto (Recommended by Gemini CLI)",
       options: [
-        { value: "auto", label: "Auto — Let Gemini CLI decide the best model" },
+        { value: "auto", label: "Auto — Let Gemini CLI decide the best model (Recommended)" },
         { value: "auto-gemini-2.5", label: "Auto (Gemini 2.5) — Auto-selects 2.5 Pro / 2.5 Flash" },
       ],
     },
     {
-      group: "Gemini 3 / 3.5 / 3.8 (Preview & Latest)",
+      group: "Gemini 3 / 3.5 / 3.8 (Recommended & Latest)",
       options: [
         { value: "gemini-3.8-flash", label: "gemini-3.8-flash (Latest Preview — Ultra-responsive next-gen Flash)" },
         { value: "gemini-3.5-flash", label: "gemini-3.5-flash (Fast & powerful default in CLI 0.59+)" },
-        { value: "gemini-3.5-flash-lite", label: "gemini-3.5-flash-lite (Ultra-fast & lightweight 3.5)" },
+        { value: "gemini-3.5-flash-lite", label: "gemini-3.5-flash-lite (Ultra-fast & lightweight 3.5 — Upgrade target)" },
         { value: "gemini-3.1-pro-preview", label: "gemini-3.1-pro-preview (Deep reasoning, complex coding)" },
         { value: "gemini-3.1-flash-lite", label: "gemini-3.1-flash-lite (Ultra-fast & cost-effective)" },
         { value: "gemini-3-pro-preview", label: "gemini-3-pro-preview (Preview reasoning & coding)" },
@@ -62,14 +78,15 @@
       options: [
         { value: "gemini-2.5-pro", label: "gemini-2.5-pro (Complex tasks, coding & architecture)" },
         { value: "gemini-2.5-flash", label: "gemini-2.5-flash (Balanced speed & performance)" },
-        { value: "gemini-2.5-flash-lite", label: "gemini-2.5-flash-lite (Ultra-fast 2.5)" },
+        { value: "gemini-2.5-flash-lite", label: "gemini-2.5-flash-lite (Active on AI Studio; Vertex retiring late 2026)" },
       ],
     },
     {
-      group: "Gemini 1.5 (Legacy)",
+      group: "Gemini 1.5 (Deprecated / Retired Upstream)",
       options: [
-        { value: "gemini-1.5-pro", label: "gemini-1.5-pro (Legacy reasoning)" },
-        { value: "gemini-1.5-flash", label: "gemini-1.5-flash (Legacy fast)" },
+        { value: "gemini-1.5-pro", label: "gemini-1.5-pro (Deprecated / Retired by Google)" },
+        { value: "gemini-1.5-flash", label: "gemini-1.5-flash (Deprecated / Retired by Google)" },
+        { value: "gemini-1.5-flash-8b", label: "gemini-1.5-flash-8b (Deprecated / Retired by Google)" },
       ],
     },
   ];
@@ -355,6 +372,52 @@
             <span class="text-[11px] text-muted-theme mt-1.5 block">
               Auto dynamically balances speed and complexity. Manual lets you select or enter any model.
             </span>
+
+            {#if isDeprecatedModel(editingWorkspace.model)}
+              <div class="mt-2.5 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-start gap-2.5 text-xs text-amber-200">
+                <AlertTriangle size={16} class="text-amber-400 shrink-0 mt-0.5" />
+                <div class="flex-1">
+                  <div class="font-semibold text-amber-300">Deprecated Model Selected</div>
+                  <p class="text-[11px] text-amber-200/90 mt-0.5 leading-relaxed">
+                    <code class="font-mono text-amber-300">{editingWorkspace.model}</code> has been retired upstream by Google and API calls will fail. Upgrade to <strong>gemini-3.8-flash</strong> or <strong>gemini-3.5-flash-lite</strong>.
+                  </p>
+                  <div class="flex items-center gap-2 mt-2">
+                    <button
+                      type="button"
+                      onclick={() => {
+                        editingWorkspace.model = "gemini-3.8-flash";
+                        selectedDropdownValue = "gemini-3.8-flash";
+                        customModelInput = "";
+                      }}
+                      class="px-2.5 py-1 text-[11px] font-medium bg-amber-500/25 hover:bg-amber-500/40 text-amber-100 rounded border border-amber-500/50 transition-colors cursor-pointer"
+                    >
+                      Migrate to gemini-3.8-flash
+                    </button>
+                    <button
+                      type="button"
+                      onclick={() => {
+                        editingWorkspace.model = "gemini-3.5-flash-lite";
+                        selectedDropdownValue = "gemini-3.5-flash-lite";
+                        customModelInput = "";
+                      }}
+                      class="px-2.5 py-1 text-[11px] font-medium bg-surface-elevated hover:bg-surface-hover text-secondary-theme hover:text-primary-theme rounded border border-subtle transition-colors cursor-pointer"
+                    >
+                      Migrate to gemini-3.5-flash-lite
+                    </button>
+                  </div>
+                </div>
+              </div>
+            {:else if isRetiringVertexModel(editingWorkspace.model)}
+              <div class="mt-2.5 p-2.5 bg-blue-500/10 border border-blue-500/30 rounded-lg flex items-start gap-2 text-xs text-blue-200">
+                <AlertTriangle size={15} class="text-blue-400 shrink-0 mt-0.5" />
+                <div class="flex-1 text-[11px] leading-relaxed">
+                  <span class="font-medium text-blue-300">Upcoming Transition:</span>
+                  <span class="text-blue-200/90 ml-1">
+                    gemini-2.5-flash-lite remains available on AI Studio, but Vertex AI is retiring older 2.5 checkpoints. Consider upgrading to <strong>gemini-3.5-flash-lite</strong>.
+                  </span>
+                </div>
+              </div>
+            {/if}
           </div>
 
           <div>

@@ -89,7 +89,7 @@ impl DbManager {
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 path TEXT NOT NULL,
-                model TEXT NOT NULL DEFAULT 'gemini-2.5-pro',
+                model TEXT NOT NULL DEFAULT 'auto',
                 system_prompt TEXT,
                 approval_mode TEXT DEFAULT 'default',
                 track_file_changes INTEGER DEFAULT 0,

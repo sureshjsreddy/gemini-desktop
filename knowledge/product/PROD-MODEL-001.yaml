@@ -3,7 +3,7 @@ type: product_standard
 title: Gemini CLI Official Model Routing & Categorization Standard
 domain: product
 status: approved
-version: 1.1.0
+version: 1.2.0
 authority:
   level: official
   confidence: high
@@ -20,8 +20,9 @@ rule:
 do:
   - "Support Auto mode (`auto` for Gemini 3 and `auto-gemini-2.5` for Gemini 2.5) to let the CLI automatically balance speed and reasoning."
   - "Expose Gemini 3, 3.5, and 3.8 models (`gemini-3.8-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-pro-preview`, `gemini-3-flash-preview`)."
-  - "Expose Gemini 2.5 models (`gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`)."
-  - "Maintain legacy options (`gemini-1.5-pro`, `gemini-1.5-flash`) for backward compatibility."
+  - "Expose Gemini 2.5 models (`gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`), surfacing upcoming Vertex AI retirement timelines for 2.5 checkpoints."
+  - "Surface deprecation warnings and 1-click migration paths for legacy Gemini 1.5 models (`gemini-1.5-pro`, `gemini-1.5-flash`, `gemini-1.5-flash-8b`) retired upstream by Google."
+  - "Recommend `gemini-3.5-flash-lite` or `gemini-3.8-flash` as fast, lightweight upgrades for retired 1.5 and sunsetting 2.5 preview configurations."
   - "Provide a Manual custom model input allowing users to specify any arbitrary model identifier or fine-tuned endpoint."
   - "Send active model configurations to the ACP agent session via `session/set_model` before dispatching prompts."
   - "Forward `--model` and inject `GEMINI_MODEL` into the spawned Gemini CLI process environment."
@@ -29,6 +30,7 @@ do:
 dont:
   - "Do not lock the user into a rigid, non-editable model dropdown."
   - "Do not discard or clear custom model names when toggling workspace settings."
+  - "Do not allow deprecated model selections to fail silently without informative warning banners and 1-click migration buttons."
   - "Do not send invalid model fields in ACP `session/new` or `session/prompt` payloads."
 
 reason:

@@ -633,8 +633,14 @@ pub async fn test_gemini_cli(
             })
         } else {
             let combined_err = format!("{}\n{}", stderr_str, stdout_str).trim().to_string();
-            let friendly_msg = if combined_err.contains("no longer available") || combined_err.contains("ModelNotFoundError") {
-                "Model is no longer available to new users. Please switch to gemini-3.8-flash."
+            let friendly_msg = if combined_err.contains("no longer available")
+                || combined_err.contains("ModelNotFoundError")
+                || combined_err.contains("deprecated")
+                || combined_err.contains("not found for API version")
+                || combined_err.contains("models/gemini-1.5")
+                || combined_err.contains("models/gemini-2.5-flash-lite-preview")
+            {
+                "The requested model is deprecated or retired by Google. Please switch to gemini-3.8-flash or gemini-3.5-flash-lite."
             } else if combined_err.contains("503") || combined_err.contains("high demand") {
                 "Model is currently experiencing high demand. Please retry or test with gemini-3.8-flash."
             } else if combined_err.contains("GEMINI_API_KEY") {
@@ -706,5 +712,20 @@ mod tests {
             details: None,
         };
         assert!(!res_err.success);
+    }
+
+    #[test]
+    fn test_deprecated_model_error_detection() {
+        let sample_err_15 = "Error: models/gemini-1.5-flash-8b is not found for API version v1beta.";
+        let is_deprecated = sample_err_15.contains("deprecated")
+            || sample_err_15.contains("not found for API version")
+            || sample_err_15.contains("models/gemini-1.5");
+        assert!(is_deprecated);
+
+        let sample_err_preview = "Error: model gemini-2.5-flash-lite-preview-09-2025 has been discontinued.";
+        let is_preview_dead = sample_err_preview.contains("models/gemini-2.5-flash-lite-preview")
+            || sample_err_preview.contains("discontinued")
+            || sample_err_preview.contains("gemini-2.5-flash-lite-preview");
+        assert!(is_preview_dead);
     }
 }
