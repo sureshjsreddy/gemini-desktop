@@ -22,10 +22,12 @@
   let {
     isOpen = false,
     activeWorkspace = null,
+    activeEngine = "gemini",
     onClose,
   }: {
     isOpen: boolean;
     activeWorkspace: Workspace | null;
+    activeEngine?: string;
     onClose: () => void;
   } = $props();
 
@@ -37,6 +39,8 @@
   let isLoading = $state(false);
   let statusMessage = $state<{ text: string; type: "success" | "error" | "info" } | null>(null);
   let currentFilePath = $state("");
+  let importableServers = $state<string[]>([]);
+  let isImporting = $state(false);
 
   // Map of serverId -> McpServerConfig
   let servers = $state<Record<string, McpServerConfig>>({});
@@ -158,9 +162,12 @@
   return list;
 });
 
-  // Load config whenever modal opens or scope changes
+  // Load config whenever modal opens, scope changes, or active engine changes
   $effect(() => {
     if (isOpen) {
+      // Track reactive dependencies
+      const _scope = activeScope;
+      const _engine = activeEngine;
       loadConfig();
     }
   });
@@ -172,6 +179,7 @@
       const workspacePath = activeScope === "workspace" ? (activeWorkspace?.path || null) : null;
       const res = await invoke<McpConfigResponse>("get_mcp_config", {
         workspacePath,
+        engine: activeEngine,
       });
 
       currentFilePath = res.file_path;
@@ -186,10 +194,43 @@
       } else if (selectedServerKey && servers[selectedServerKey]) {
         selectServer(selectedServerKey);
       }
+
+      // Check for importable Gemini CLI servers if Antigravity is active
+      if (activeEngine === "agy") {
+        try {
+          importableServers = await invoke<string[]>("detect_importable_gemini_mcp", {
+            workspacePath,
+          });
+        } catch {
+          importableServers = [];
+        }
+      } else {
+        importableServers = [];
+      }
     } catch (err: any) {
       statusMessage = { text: `Failed to load settings: ${err}`, type: "error" };
     } finally {
       isLoading = false;
+    }
+  }
+
+  async function handleImportFromGemini() {
+    isImporting = true;
+    try {
+      const workspacePath = activeScope === "workspace" ? (activeWorkspace?.path || null) : null;
+      const res = await invoke<any>("import_mcp_from_gemini", {
+        workspacePath,
+      });
+      if (res.success) {
+        statusMessage = { text: res.message, type: "success" };
+        await loadConfig();
+      } else {
+        statusMessage = { text: res.message, type: "error" };
+      }
+    } catch (err: any) {
+      statusMessage = { text: `Import failed: ${err}`, type: "error" };
+    } finally {
+      isImporting = false;
     }
   }
 
@@ -341,6 +382,7 @@
       const workspacePath = activeScope === "workspace" ? (activeWorkspace?.path || null) : null;
       const res = await invoke<McpConfigResponse>("save_mcp_config", {
         workspacePath,
+        engine: activeEngine,
         mcpServers: newServers,
       });
 
@@ -357,8 +399,9 @@
         startNewServer();
       }
 
+      const fileBase = currentFilePath ? currentFilePath.split(/[\\/]/).pop() : "config";
       statusMessage = {
-        text: `Saved to ${activeScope === "workspace" ? "Workspace" : "Global"} settings.json successfully!`,
+        text: `Saved to ${activeScope === "workspace" ? "Workspace" : "Global"} ${fileBase} successfully!`,
         type: "success",
       };
     } catch (err: any) {
@@ -393,11 +436,17 @@
           <div>
             <h2 class="text-sm font-semibold text-primary-theme flex items-center gap-2">
               Model Context Protocol (MCP) Servers
-              <span class="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-surface border border-subtle text-muted-theme">
-                Gemini CLI Tools
-              </span>
+              {#if activeEngine === "agy"}
+                <span class="text-[10px] uppercase font-mono font-bold px-2 py-0.5 rounded bg-purple-500/15 text-purple-400 border border-purple-500/30">
+                  Antigravity (agy)
+                </span>
+              {:else}
+                <span class="text-[10px] uppercase font-mono font-bold px-2 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/30">
+                  Gemini CLI
+                </span>
+              {/if}
             </h2>
-            <p class="text-xs text-secondary-theme">Extend Gemini CLI with databases, external APIs, and local services.</p>
+            <p class="text-xs text-secondary-theme">Extend agent capabilities with external databases, APIs, and tools.</p>
           </div>
         </div>
 
@@ -489,12 +538,33 @@
       <div class="px-5 py-1.5 bg-app/50 border-b border-subtle flex items-center justify-between text-[11px] text-muted-theme font-mono">
         <div class="flex items-center gap-1.5 truncate">
           <FileText size={12} class="shrink-0 text-accent-theme" />
-          <span class="truncate">{currentFilePath || "Resolving settings.json..."}</span>
+          <span class="truncate">{currentFilePath || "Resolving settings..."}</span>
         </div>
         <span class="shrink-0 text-[10px] text-secondary-theme">
           {Object.keys(servers).length} server{Object.keys(servers).length === 1 ? "" : "s"} configured
         </span>
       </div>
+
+      <!-- Import from Gemini CLI Banner (When Antigravity is active & unimported servers detected) -->
+      {#if activeEngine === "agy" && importableServers.length > 0}
+        <div class="px-5 py-2.5 bg-purple-500/10 border-b border-purple-500/25 flex items-center justify-between gap-3 text-xs">
+          <div class="flex items-center gap-2 text-purple-300 min-w-0">
+            <Sparkles size={15} class="shrink-0 text-purple-400" />
+            <span class="truncate">
+              Found <strong>{importableServers.length}</strong> MCP server{importableServers.length > 1 ? "s" : ""} in Gemini CLI:
+              <code class="font-mono text-purple-200">{importableServers.join(", ")}</code>
+            </span>
+          </div>
+          <button
+            onclick={handleImportFromGemini}
+            disabled={isImporting}
+            class="px-2.5 py-1 rounded-md bg-purple-600 hover:bg-purple-500 text-white font-medium text-xs flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 disabled:opacity-50"
+          >
+            <Plus size={13} />
+            {isImporting ? "Importing..." : "Import to Antigravity"}
+          </button>
+        </div>
+      {/if}
 
       <!-- Status Feedback Banner -->
       {#if statusMessage}

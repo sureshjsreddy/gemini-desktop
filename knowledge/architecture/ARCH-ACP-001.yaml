@@ -3,7 +3,7 @@ type: architecture_standard
 title: Agent Client Protocol (ACP) JSON-RPC Streaming & Tool Intercepts
 domain: architecture
 status: approved
-version: 1.12.0
+version: 1.13.0
 authority:
   level: official
   confidence: high
@@ -37,6 +37,8 @@ do:
   - "Inspect `stopReason` (`max_turn_requests`, `max_tokens`, `cancelled`) on prompt completion responses and synthesize fallback notices when the model returns without text deltas, preventing dropped assistant responses."
   - "Listen to `acp-stderr` in the frontend to surface live diagnostics when the underlying model experiences API demand spikes (503/429) and exponential backoff retries."
   - "Intercept tool permission requests: in YOLO mode and Auto-Edit mode (for safe inspection and edits), auto-approve immediately in the Rust backend over stdin (0ms latency, immune to Windows WebView2 background throttling); in Ask mode or for unsafe commands, emit `acp-tool-permission` to the frontend for interactive user confirmation."
+  - "Support both numeric and string JSON-RPC IDs (`serde_json::Value`) for tool permissions and agent requests: Antigravity CLI uses string IDs (e.g. `\"1\"`) whereas Gemini CLI uses numeric IDs; preserve and match request IDs dynamically so approval responses are acknowledged."
+  - "Filter session update notifications in `acp_client.rs`: strictly ignore telemetry updates (`user_message_chunk`, `user_message`, `available_commands_update`, `session_info_update`, `agent_thought_chunk`) from being emitted as assistant streaming delta tokens, preventing prompt echoing and thought contamination."
   - "Format ACP permission responses strictly: when allowed, return `{ outcome: { outcome: 'selected', optionId } }` preserving agent-provided option IDs matching `allow`/`proceed`; when rejected, return `{ outcome: { outcome: 'cancelled' } }` without `optionId` to comply with Gemini CLI Zod schema validation."
   - "Track process lifecycle via a composite key (`format!(\"{}::{}\", workspace_id, effective_mode)`) so switching policy approval modes (`default`, `auto_edit`, `yolo`, `plan`) cleanly re-spawns the supervised CLI process."
   - "Pass `--approval-mode <mode>` and `--skip-trust` CLI flags upon spawning to govern tool policy execution."

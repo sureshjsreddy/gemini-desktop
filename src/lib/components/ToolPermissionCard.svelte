@@ -14,7 +14,7 @@
     onRespond,
   }: {
     toolPermission: ToolPermissionPayload;
-    onRespond: (requestId: number, optionId?: string, allowed?: boolean) => void;
+    onRespond: (requestId: number | string, optionId?: string, allowed?: boolean) => void;
   } = $props();
 </script>
 

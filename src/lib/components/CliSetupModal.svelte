@@ -7,6 +7,10 @@
     CliTestResult,
     GCloudStatus,
     Workspace,
+    CliEngine,
+    CliEnginesStatus,
+    CliPathStatus,
+    PathAddResult,
   } from "$lib/types";
   import {
     Terminal,
@@ -27,6 +31,8 @@
     ShieldCheck,
     Building2,
     FolderKanban,
+    Globe,
+    Sparkles,
   } from "lucide-svelte";
 
   let {
@@ -85,12 +91,106 @@
     { id: "asia-southeast1", label: "asia-southeast1 (Singapore)" },
   ];
 
+  let activeEngine = $state<CliEngine>("gemini");
+  let enginesStatus = $state<CliEnginesStatus | null>(null);
+
+  // Agy Updater State
+  let isUpdatingAgy = $state(false);
+  let agyInstallResult = $state<CliInstallResult | null>(null);
+
+  // PATH Management State
+  let cliPathStatus = $state<CliPathStatus | null>(null);
+  let isCheckingPath = $state(false);
+  let isAddingToPath = $state(false);
+  let pathAddResult = $state<PathAddResult | null>(null);
+
+  // Gemini Extensions / Skills Importer State
+  let isImportingPlugins = $state(false);
+  let pluginImportResult = $state<{ success: boolean; message: string; output: string } | null>(null);
+
   $effect(() => {
     if (isOpen) {
       loadSavedConfig();
       loadGCloudStatus();
+      loadEngineStatus();
+      loadPathStatus();
     }
   });
+
+  async function loadPathStatus() {
+    isCheckingPath = true;
+    try {
+      cliPathStatus = await invoke<CliPathStatus>("check_cli_path_status");
+    } catch (e) {
+      console.warn("Failed to check CLI PATH status:", e);
+    } finally {
+      isCheckingPath = false;
+    }
+  }
+
+  async function loadEngineStatus() {
+    try {
+      const status = await invoke<CliEnginesStatus>("get_cli_engines_status");
+      enginesStatus = status;
+      activeEngine = status.activeEngine;
+    } catch (e) {
+      console.warn("Failed to load CLI engines status:", e);
+    }
+  }
+
+  async function handleSwitchEngine(engine: CliEngine) {
+    if (activeEngine === engine) return;
+    activeEngine = engine;
+    testResult = null;
+    try {
+      await invoke<string>("set_active_cli_engine", { engine });
+      if (typeof window !== "undefined") {
+        localStorage.setItem("gemini_desktop_active_engine", engine);
+      }
+      await loadEngineStatus();
+      await loadPathStatus();
+    } catch (e) {
+      console.warn("Failed to switch engine:", e);
+    }
+  }
+
+  async function handleUpdateOrInstallAgy() {
+    isUpdatingAgy = true;
+    agyInstallResult = null;
+    try {
+      const res = await invoke<CliInstallResult>("update_or_install_agy_cli");
+      agyInstallResult = res;
+      await loadEngineStatus();
+      await loadPathStatus();
+    } catch (e: any) {
+      agyInstallResult = {
+        success: false,
+        message: e?.toString() || "Antigravity CLI update failed.",
+      };
+    } finally {
+      isUpdatingAgy = false;
+    }
+  }
+
+  async function handleAddToPath(engine: CliEngine) {
+    isAddingToPath = true;
+    pathAddResult = null;
+    try {
+      const res = await invoke<PathAddResult>("add_cli_to_user_path", { engine });
+      pathAddResult = res;
+      await loadPathStatus();
+      await loadEngineStatus();
+    } catch (e: any) {
+      pathAddResult = {
+        success: false,
+        message: e?.toString() || "Failed to add directory to User PATH.",
+        targetDir: "",
+        alreadyInPath: false,
+      };
+    } finally {
+      isAddingToPath = false;
+    }
+  }
 
   async function loadSavedConfig() {
     try {
@@ -177,21 +277,28 @@
     isTesting = true;
     testResult = null;
     try {
-      const config: GeminiAuthConfig = {
-        auth_mode: authMode,
-        api_key: apiKey.trim() || undefined,
-        google_cloud_project: googleCloudProject.trim() || undefined,
-        google_cloud_location: googleCloudLocation.trim() || undefined,
-        google_app_credentials: googleAppCredentials.trim() || undefined,
-      };
-
       const wsPath = activeWorkspace?.path;
-      const res = await invoke<CliTestResult>("test_gemini_cli", {
-        config,
-        workspacePath: wsPath,
-        model: testModel,
-      });
-      testResult = res;
+      if (activeEngine === "agy") {
+        const res = await invoke<CliTestResult>("test_agy_cli", {
+          workspacePath: wsPath,
+        });
+        testResult = res;
+      } else {
+        const config: GeminiAuthConfig = {
+          auth_mode: authMode,
+          api_key: apiKey.trim() || undefined,
+          google_cloud_project: googleCloudProject.trim() || undefined,
+          google_cloud_location: googleCloudLocation.trim() || undefined,
+          google_app_credentials: googleAppCredentials.trim() || undefined,
+        };
+
+        const res = await invoke<CliTestResult>("test_gemini_cli", {
+          config,
+          workspacePath: wsPath,
+          model: testModel,
+        });
+        testResult = res;
+      }
     } catch (e: any) {
       testResult = {
         success: false,
@@ -220,6 +327,23 @@
       navigator.clipboard.writeText(fullError);
       hasCopiedError = true;
       setTimeout(() => (hasCopiedError = false), 2000);
+    }
+  }
+
+  async function handleImportGeminiPlugins() {
+    isImportingPlugins = true;
+    pluginImportResult = null;
+    try {
+      const res = await invoke<{ success: boolean; message: string; output: string }>("import_gemini_plugins_via_agy");
+      pluginImportResult = res;
+    } catch (e: any) {
+      pluginImportResult = {
+        success: false,
+        message: `Import failed: ${e?.toString()}`,
+        output: "",
+      };
+    } finally {
+      isImportingPlugins = false;
     }
   }
 </script>
@@ -315,6 +439,189 @@
         <!-- ================= TAB 1: CLI ENGINE ================= -->
         {#if activeTab === "cli"}
           <div class="space-y-4">
+            <!-- Engine Toggle Bar -->
+            <div class="p-3.5 rounded-lg border border-subtle bg-surface flex items-center justify-between">
+              <div>
+                <span class="text-xs font-semibold text-primary-theme">Active Agent Engine</span>
+                <p class="text-[11px] text-muted-theme mt-0.5">Switch between Antigravity CLI and Gemini CLI.</p>
+              </div>
+              <div class="flex items-center gap-1.5 p-1 bg-surface-elevated rounded-lg border border-subtle">
+                <button
+                  type="button"
+                  onclick={() => handleSwitchEngine("agy")}
+                  class="px-2.5 py-1 text-xs rounded-md font-medium transition-all cursor-pointer {activeEngine === 'agy' ? 'bg-accent-theme text-white shadow-xs' : 'text-secondary-theme hover:text-primary-theme'}"
+                >
+                  🚀 Antigravity (agy)
+                </button>
+                <button
+                  type="button"
+                  onclick={() => handleSwitchEngine("gemini")}
+                  class="px-2.5 py-1 text-xs rounded-md font-medium transition-all cursor-pointer {activeEngine === 'gemini' ? 'bg-accent-theme text-white shadow-xs' : 'text-secondary-theme hover:text-primary-theme'}"
+                >
+                  ♊ Gemini CLI
+                </button>
+              </div>
+            </div>
+
+            {#if activeEngine === "agy"}
+              <!-- Antigravity Status Card -->
+              <div class="p-4 rounded-lg border {enginesStatus?.agyInstalled ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-amber-500/30 bg-amber-500/5'}">
+                <div class="flex items-start justify-between">
+                  <div class="flex items-center gap-2.5">
+                    {#if enginesStatus?.agyInstalled}
+                      <CheckCircle2 size={18} class="text-emerald-400 shrink-0" />
+                      <div>
+                        <div class="text-xs font-semibold text-primary-theme flex items-center gap-2">
+                          <span>Antigravity CLI (agy) Detected</span>
+                          <span class="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-mono font-medium">
+                            Ready (ACP Mode)
+                          </span>
+                        </div>
+                        <p class="text-[11px] text-muted-theme mt-0.5">
+                          Antigravity ACP server mode is ready for workspace execution.
+                        </p>
+                      </div>
+                    {:else}
+                      <AlertCircle size={18} class="text-amber-400 shrink-0" />
+                      <div>
+                        <div class="text-xs font-semibold text-primary-theme">
+                          Antigravity CLI (agy) Not Found
+                        </div>
+                        <p class="text-[11px] text-muted-theme mt-0.5">
+                          Ensure 'agy' is installed by your organization and in your system PATH.
+                        </p>
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+
+                {#if enginesStatus?.agyPath}
+                  <div class="mt-3 pt-3 border-t border-subtle/50 flex items-center justify-between text-xs font-mono text-muted-theme">
+                    <span class="truncate mr-2">{enginesStatus.agyPath}</span>
+                    <button
+                      type="button"
+                      onclick={() => handleCopyPath(enginesStatus?.agyPath || "")}
+                      class="px-2 py-0.5 rounded bg-surface hover:bg-surface-hover text-secondary-theme hover:text-primary-theme transition-colors cursor-pointer text-[10px] shrink-0"
+                    >
+                      {hasCopiedPath ? "Copied!" : "Copy Path"}
+                    </button>
+                  </div>
+                {/if}
+              </div>
+
+              <!-- Antigravity Update / Installer Card -->
+              <div class="p-4 rounded-lg border border-subtle bg-surface space-y-3">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-xs font-semibold text-primary-theme flex items-center gap-2">
+                      <Download size={14} class="text-accent-theme" />
+                      <span>Update Antigravity CLI to Latest</span>
+                    </div>
+                    <p class="text-[11px] text-muted-theme mt-0.5">
+                      Runs <code class="font-mono text-secondary-theme">agy update</code> or the official installer script to ensure your CLI has the latest agent capabilities.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onclick={handleUpdateOrInstallAgy}
+                    disabled={isUpdatingAgy}
+                    class="px-3 py-1.5 rounded-lg bg-accent-theme hover:bg-accent-hover text-white font-medium text-xs transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+                  >
+                    {#if isUpdatingAgy}
+                      <RefreshCw size={13} class="animate-spin" />
+                      <span>Updating agy...</span>
+                    {:else}
+                      <Download size={13} />
+                      <span>{enginesStatus?.agyInstalled ? "Update agy to Latest" : "Install Antigravity CLI"}</span>
+                    {/if}
+                  </button>
+                </div>
+
+                {#if agyInstallResult}
+                  <div class="p-3 rounded-lg text-xs flex items-start gap-2 {agyInstallResult.success ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'}">
+                    {#if agyInstallResult.success}
+                      <CheckCircle2 size={15} class="text-emerald-400 shrink-0 mt-0.5" />
+                    {:else}
+                      <AlertCircle size={15} class="text-rose-400 shrink-0 mt-0.5" />
+                    {/if}
+                    <div>
+                      <p class="font-medium">{agyInstallResult.message}</p>
+                      {#if agyInstallResult.version}
+                        <p class="text-[11px] opacity-80 mt-0.5 font-mono">Installed Version: {agyInstallResult.version}</p>
+                      {/if}
+                    </div>
+                  </div>
+                {/if}
+              </div>
+
+              <!-- Gemini CLI Plugin & Skills Importer for Antigravity -->
+              {#if enginesStatus?.agyInstalled}
+                <div class="p-4 rounded-lg border border-subtle bg-surface space-y-3">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <div class="text-xs font-semibold text-primary-theme flex items-center gap-2">
+                        <Sparkles size={14} class="text-purple-400" />
+                        <span>Import Gemini CLI Extensions & Skills</span>
+                      </div>
+                      <p class="text-[11px] text-muted-theme mt-0.5">
+                        Runs <code class="font-mono text-secondary-theme">agy plugin import gemini</code> to convert your existing Gemini CLI extensions, skills, and TOML commands into native Antigravity plugins.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onclick={handleImportGeminiPlugins}
+                      disabled={isImportingPlugins}
+                      class="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium text-xs transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+                    >
+                      {#if isImportingPlugins}
+                        <RefreshCw size={13} class="animate-spin" />
+                        <span>Importing...</span>
+                      {:else}
+                        <Sparkles size={13} />
+                        <span>Run Plugin Import</span>
+                      {/if}
+                    </button>
+                  </div>
+
+                  {#if pluginImportResult}
+                    <div class="p-3 rounded-lg text-xs space-y-1.5 {pluginImportResult.success ? 'bg-purple-500/10 border border-purple-500/30 text-purple-200' : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'}">
+                      <div class="font-semibold flex items-center gap-1.5">
+                        {#if pluginImportResult.success}
+                          <CheckCircle2 size={14} class="text-purple-400 shrink-0" />
+                        {:else}
+                          <AlertCircle size={14} class="text-rose-400 shrink-0" />
+                        {/if}
+                        <span>{pluginImportResult.message}</span>
+                      </div>
+                      {#if pluginImportResult.output}
+                        <pre class="font-mono text-[11px] bg-black/30 p-2 rounded max-h-32 overflow-y-auto whitespace-pre-wrap">{pluginImportResult.output}</pre>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+
+              <!-- Antigravity Info Card -->
+              <div class="p-4 rounded-lg border border-subtle bg-surface space-y-2 text-xs">
+                <div class="font-semibold text-primary-theme flex items-center gap-2">
+                  <Building2 size={15} class="text-accent-theme" />
+                  Enterprise Antigravity Workspace Integration
+                </div>
+                <p class="text-secondary-theme leading-relaxed">
+                  Your organization manages Antigravity credentials and agent policies. All ACP sessions leverage local configuration in <code class="px-1 py-0.5 rounded bg-surface-elevated font-mono text-[11px]">~/.gemini/antigravity/</code> and your active Google account.
+                </p>
+                <div class="pt-2">
+                  <button
+                    type="button"
+                    onclick={() => (activeTab = "diagnostics")}
+                    class="px-3 py-1.5 rounded-lg bg-accent-theme hover:bg-accent-hover text-white font-medium text-xs transition-colors cursor-pointer flex items-center gap-1.5"
+                  >
+                    <ShieldCheck size={14} />
+                    <span>Run Antigravity Connection Test</span>
+                  </button>
+                </div>
+              </div>
+            {:else}
             <!-- CLI Status Card -->
             <div class="p-4 rounded-lg border {envStatus?.installed ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-amber-500/30 bg-amber-500/5'}">
               <div class="flex items-start justify-between">
@@ -403,6 +710,106 @@
               <p class="text-[11px] text-muted-theme leading-relaxed">
                 Gemini Desktop's 1-click installer automatically targets the global Node Package Manager (<code class="font-mono text-secondary-theme">npm install -g @google/gemini-cli@latest</code>) or Windows Package Manager (<code class="font-mono text-secondary-theme">winget install Google.GeminiCLI</code>).
               </p>
+            </div>
+            {/if}
+
+            <!-- Global PATH Configuration Card -->
+            <div class="p-4 rounded-lg border border-subtle bg-surface space-y-3">
+              <div class="flex items-start justify-between">
+                <div>
+                  <div class="text-xs font-semibold text-primary-theme flex items-center gap-2">
+                    <Globe size={14} class="text-accent-theme" />
+                    <span>User Environment Variables (Global PATH)</span>
+                  </div>
+                  <p class="text-[11px] text-muted-theme mt-0.5">
+                    Add CLI binary directories to your persistent Windows User PATH so you can run them directly in any PowerShell, Command Prompt, or terminal.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onclick={loadPathStatus}
+                  disabled={isCheckingPath}
+                  class="p-1 rounded text-secondary-theme hover:text-primary-theme hover:bg-surface-elevated transition-colors cursor-pointer text-xs"
+                  title="Refresh PATH Status"
+                >
+                  <RefreshCw size={13} class={isCheckingPath ? 'animate-spin' : ''} />
+                </button>
+              </div>
+
+              {#if pathAddResult}
+                <div class="p-2.5 rounded-lg text-xs flex items-start gap-2 {pathAddResult.success ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'}">
+                  {#if pathAddResult.success}
+                    <CheckCircle2 size={14} class="text-emerald-400 shrink-0 mt-0.5" />
+                  {:else}
+                    <AlertCircle size={14} class="text-rose-400 shrink-0 mt-0.5" />
+                  {/if}
+                  <span class="leading-relaxed">{pathAddResult.message}</span>
+                </div>
+              {/if}
+
+              <div class="space-y-2 pt-1">
+                <!-- Antigravity PATH Row -->
+                <div class="flex items-center justify-between p-2.5 rounded-lg bg-surface-elevated border border-subtle text-xs">
+                  <div class="min-w-0 mr-3">
+                    <div class="flex items-center gap-2">
+                      <span class="font-medium text-primary-theme">Antigravity CLI (agy)</span>
+                      {#if cliPathStatus?.agyInUserPath}
+                        <span class="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-mono font-medium flex items-center gap-1">
+                          <Check size={10} /> In User PATH
+                        </span>
+                      {:else}
+                        <span class="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-400 font-mono font-medium">
+                          Not in User PATH
+                        </span>
+                      {/if}
+                    </div>
+                    <p class="text-[11px] font-mono text-muted-theme truncate mt-0.5">
+                      {cliPathStatus?.agyDir || "Directory not located"}
+                    </p>
+                  </div>
+                  {#if !cliPathStatus?.agyInUserPath}
+                    <button
+                      type="button"
+                      onclick={() => handleAddToPath("agy")}
+                      disabled={isAddingToPath}
+                      class="px-2.5 py-1 rounded bg-accent-theme hover:bg-accent-hover text-white text-[11px] font-medium transition-colors cursor-pointer shrink-0 disabled:opacity-50"
+                    >
+                      {isAddingToPath ? "Adding..." : "Add to User PATH"}
+                    </button>
+                  {/if}
+                </div>
+
+                <!-- Gemini CLI PATH Row -->
+                <div class="flex items-center justify-between p-2.5 rounded-lg bg-surface-elevated border border-subtle text-xs">
+                  <div class="min-w-0 mr-3">
+                    <div class="flex items-center gap-2">
+                      <span class="font-medium text-primary-theme">Gemini CLI (gemini)</span>
+                      {#if cliPathStatus?.geminiInUserPath}
+                        <span class="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-mono font-medium flex items-center gap-1">
+                          <Check size={10} /> In User PATH
+                        </span>
+                      {:else}
+                        <span class="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-400 font-mono font-medium">
+                          Not in User PATH
+                        </span>
+                      {/if}
+                    </div>
+                    <p class="text-[11px] font-mono text-muted-theme truncate mt-0.5">
+                      {cliPathStatus?.geminiDir || "Directory not located"}
+                    </p>
+                  </div>
+                  {#if !cliPathStatus?.geminiInUserPath}
+                    <button
+                      type="button"
+                      onclick={() => handleAddToPath("gemini")}
+                      disabled={isAddingToPath}
+                      class="px-2.5 py-1 rounded bg-accent-theme hover:bg-accent-hover text-white text-[11px] font-medium transition-colors cursor-pointer shrink-0 disabled:opacity-50"
+                    >
+                      {isAddingToPath ? "Adding..." : "Add to User PATH"}
+                    </button>
+                  {/if}
+                </div>
+              </div>
             </div>
           </div>
         {/if}
@@ -674,32 +1081,38 @@
                 <button
                   type="button"
                   onclick={handleRunTest}
-                  disabled={isTesting || !envStatus?.installed}
+                  disabled={isTesting || (activeEngine === 'gemini' && !envStatus?.installed) || (activeEngine === 'agy' && !enginesStatus?.agyInstalled)}
                   class="px-4 py-2 rounded-lg text-xs font-medium bg-accent-theme text-white hover:opacity-90 disabled:opacity-50 transition-all flex items-center gap-1.5 cursor-pointer shadow-xs shrink-0"
                 >
                   <RefreshCw size={13} class={isTesting ? "animate-spin" : ""} />
-                  <span>{isTesting ? "Testing..." : "Run Test Now"}</span>
+                  <span>{isTesting ? "Testing..." : `Run Test (${activeEngine === 'agy' ? 'agy' : 'gemini'})`}</span>
                 </button>
               </div>
 
-              <!-- Test Model Selector -->
-              <div class="flex items-center gap-2 pt-2.5 border-t border-subtle text-xs">
-                <label for="test-model-select" class="text-secondary-theme font-medium shrink-0">
-                  Verification Model:
-                </label>
-                <select
-                  id="test-model-select"
-                  bind:value={testModel}
-                  class="flex-1 px-2.5 py-1.5 rounded-lg bg-surface-elevated border border-theme-default text-xs text-primary-theme focus:outline-none focus:border-accent-theme font-mono"
-                >
-                  <option value="gemini-3.8-flash">gemini-3.8-flash (Latest Preview Flash — Google Recommended)</option>
-                  <option value="auto">auto (Let Gemini CLI Auto-Route Dynamically)</option>
-                  <option value="gemini-3.5-flash">gemini-3.5-flash (Fast & Stable 3.5)</option>
-                  <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (Ultra-fast & Lightweight 3.5)</option>
-                  <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Gemini 3.1 Pro)</option>
-                  <option value="gemini-2.5-pro">gemini-2.5-pro (Gemini 2.5 Pro)</option>
-                </select>
-              </div>
+              {#if activeEngine === "gemini"}
+                <!-- Test Model Selector for Gemini -->
+                <div class="flex items-center gap-2 pt-2.5 border-t border-subtle text-xs">
+                  <label for="test-model-select" class="text-secondary-theme font-medium shrink-0">
+                    Verification Model:
+                  </label>
+                  <select
+                    id="test-model-select"
+                    bind:value={testModel}
+                    class="flex-1 px-2.5 py-1.5 rounded-lg bg-surface-elevated border border-theme-default text-xs text-primary-theme focus:outline-none focus:border-accent-theme font-mono"
+                  >
+                    <option value="gemini-3.8-flash">gemini-3.8-flash (Latest Preview Flash — Google Recommended)</option>
+                    <option value="auto">auto (Let Gemini CLI Auto-Route Dynamically)</option>
+                    <option value="gemini-3.5-flash">gemini-3.5-flash (Fast & Stable 3.5)</option>
+                    <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (Ultra-fast & Lightweight 3.5)</option>
+                    <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Gemini 3.1 Pro)</option>
+                    <option value="gemini-2.5-pro">gemini-2.5-pro (Gemini 2.5 Pro)</option>
+                  </select>
+                </div>
+              {:else}
+                <div class="flex items-center gap-2 pt-2.5 border-t border-subtle text-xs text-secondary-theme font-mono">
+                  <span>🚀 Engine: <strong>Antigravity CLI (agy)</strong> &bull; Verifies binary execution and ACP availability</span>
+                </div>
+              {/if}
             </div>
 
             <!-- Diagnostics Checklist Cards -->
@@ -707,15 +1120,19 @@
               <!-- Check 1: Binary -->
               <div class="p-3 rounded-lg border border-subtle bg-surface-elevated">
                 <div class="flex items-center justify-between">
-                  <span class="text-xs font-medium text-secondary-theme">1. CLI Binary</span>
-                  {#if envStatus?.installed}
+                  <span class="text-xs font-medium text-secondary-theme">1. CLI Binary ({activeEngine})</span>
+                  {#if (activeEngine === 'agy' ? enginesStatus?.agyInstalled : envStatus?.installed)}
                     <CheckCircle2 size={15} class="text-emerald-400" />
                   {:else}
                     <XCircle size={15} class="text-rose-400" />
                   {/if}
                 </div>
                 <div class="text-[11px] text-muted-theme mt-1 truncate">
-                  {envStatus?.installed ? `Found (v${envStatus.version || 'installed'})` : 'Missing in PATH'}
+                  {#if activeEngine === "agy"}
+                    {enginesStatus?.agyInstalled ? 'Found (agy ready)' : 'Missing in PATH'}
+                  {:else}
+                    {envStatus?.installed ? `Found (v${envStatus.version || 'installed'})` : 'Missing in PATH'}
+                  {/if}
                 </div>
               </div>
 

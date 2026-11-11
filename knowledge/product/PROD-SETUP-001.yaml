@@ -1,9 +1,9 @@
 id: PROD-SETUP-001
 type: product_standard
-title: In-App Gemini CLI Setup, Dual Authentication & CrowdStrike EDR Safe Execution Standard
+title: Dual-Engine Setup, In-App Upgrades, Dual Auth & CrowdStrike EDR Safe Execution Standard
 domain: product
 status: approved
-version: 1.1.0
+version: 1.2.0
 authority:
   level: official
   confidence: high
@@ -17,10 +17,13 @@ applies_to:
   - security
 
 rule:
-  "The desktop application must provide an in-app setup assistant enabling users to install the latest Gemini CLI, configure authentication for both Google AI Studio (API Key) and Google Cloud Vertex AI (Corporate Project), and run non-interactive connection verification tests under a strict enterprise directory hierarchy that prevents CrowdStrike Falcon and EDR Indicators of Attack (IOAs)."
+  "The desktop application must provide an in-app setup assistant supporting both Gemini CLI and Antigravity CLI (`agy`), allowing users to switch active engines, install/update binaries, configure PATH in Windows User Environment variables, manage authentication for both Google AI Studio (API Key) and Google Cloud Vertex AI (Corporate Project), and run non-interactive connection verification tests under a strict enterprise directory hierarchy that prevents CrowdStrike Falcon and EDR Indicators of Attack (IOAs)."
 
 do:
-  - "Provide a 1-click installer and updater for `@google/gemini-cli@latest` leveraging system npm (`npm install -g @google/gemini-cli@latest`) or WinGet (`winget install Google.GeminiCLI`) without requiring manual terminal configuration."
+  - "Provide an app-level engine switcher supporting Gemini CLI (`gemini`) and Antigravity CLI (`agy`), persisting the choice in SQLite `app_settings` under key `active_cli_engine` across application restarts."
+  - "Detect installation status and binary paths for both engines: detect `gemini` in npm global directories or system PATH, and detect `agy` in `%LOCALAPPDATA%\\agy\\bin\\agy.exe`, `%USERPROFILE%\\.antigravity\\bin\\agy.exe`, or system PATH."
+  - "Provide 1-click installer and updater options for both engines: `@google/gemini-cli@latest` via npm/WinGet, and Antigravity CLI via `agy update` or PowerShell release installer."
+  - "Provide a 1-click option to add either CLI executable folder to the Windows User Environment Variable `Path` (`[Environment]::SetEnvironmentVariable('Path', ..., 'User')`) with safety checks against path duplication and null corruption."
   - "Support Dual Authentication Modes with Google Cloud Vertex AI as the primary default mode (`vertex_ai`), and Google AI Studio (`api_key`) via `GEMINI_API_KEY`."
   - "Support Zero-Dependency Corporate Auth: Gemini CLI incorporates a built-in browser OAuth2 login flow (caching credentials in `~/.gemini/oauth_creds.json` and `~/.gemini/google_accounts.json`), meaning the full Google Cloud SDK (`gcloud` CLI) is strictly optional and not required for corporate Vertex AI operation."
   - "Auto-detect existing developer environment state: detect native Gemini CLI browser OAuth credentials (`~/.gemini/oauth_creds.json`), optional `gcloud` CLI presence, active Google Cloud project (`gcloud config get-value project`), and Application Default Credentials (ADC in `%APPDATA%\\gcloud\\application_default_credentials.json`)."
@@ -29,13 +32,14 @@ do:
   - "Inject `--skip-trust` into all headless and ACP executions (`test_gemini_cli`, `spawn_gemini`) and automatically register workspace directories into `~/.gemini/trustedFolders.json` via `ensure_folder_trusted` to prevent 'Directory is not trusted' prompt halts."
   - "Enforce the 3-Tier Enterprise Working Directory Hierarchy for process execution and diagnostics: Priority 1 = User's Active Project Workspace; Priority 2 = User Home Directory (`%USERPROFILE%`, e.g. `C:\\Users\\<username>`); Priority 3 = LocalAppData persistent directory (`%LOCALAPPDATA%\\GeminiDesktop`)."
   - "Perform lightweight diagnostic pings (`gemini --skip-trust -p \"Respond with 'OK'\" --model <selected_model> --output-format text`) defaulting to `gemini-3.8-flash` (or `auto`) rather than deprecated `gemini-2.5-flash`, with structured diagnostic reporting, timing latency in milliseconds and mapping API errors (missing keys, invalid credentials, disabled Vertex AI API, quota exhaustion, deprecated model) into actionable recommendations."
-  - "Support dynamic model discovery via `gemini models --output-format json` and `--list-models` (Gemini CLI v0.67.0+) allowing users to query live available models and context token limits directly from the CLI."
+  - "Support dynamic model discovery via `discover_gemini_models`: route to `agy models` when `agy` is active and `gemini models` when `gemini` is active, allowing users to query live available models and context limits directly from the CLI."
 
 dont:
-  - "Never execute the diagnostic test or CLI processes with current working directory set to `%TEMP%` (`C:\\Users\\<user>\\AppData\\Local\\Temp`), which triggers CrowdStrike Falcon's volatile directory network connection IOAs."
+  - "Never execute diagnostic tests or CLI processes with current working directory set to `%TEMP%` (`C:\\Users\\<user>\\AppData\\Local\\Temp`), which triggers CrowdStrike Falcon's volatile directory network connection IOAs."
   - "Never set the current working directory to `C:\\Program Files` or raw drive roots (`C:\\`), which fails with Windows UAC `ERROR_ACCESS_DENIED (OS error 5)` or triggers EDR DLL hijacking / privilege escalation alerts."
   - "Never drop temporary batch or script files into user directories to run diagnostic checks; invoke the legitimate, installed CLI executable directly."
   - "Never prompt users for Windows Administrator elevation just to run or verify developer CLI tools."
+  - "Never modify System/Machine environment variables without elevation; strictly use User-scoped environment variables."
 
 edr_and_crowdstrike_security:
   threat_intelligence:
@@ -54,6 +58,7 @@ reason:
 
 related_items:
   - ARCH-SYS-001
+  - ARCH-ENGINE-001
   - ARCH-PROC-001
   - ARCH-ACP-001
   - DEV-SVELTE-001

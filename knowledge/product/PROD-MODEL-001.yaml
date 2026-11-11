@@ -1,9 +1,9 @@
 id: PROD-MODEL-001
 type: product_standard
-title: Gemini CLI Official Model Routing & Categorization Standard
+title: Dual-Engine Model Routing & Categorization Standard (Gemini CLI & Antigravity)
 domain: product
 status: approved
-version: 1.2.0
+version: 1.4.0
 authority:
   level: official
   confidence: high
@@ -15,19 +15,26 @@ applies_to:
   - backend
 
 rule:
-  "Gemini Desktop model options must adhere to official Gemini CLI model support (Auto, Gemini 3 / 3.5 / 3.8, Gemini 2.5, Flash-Lite, and Manual selection) and route model configurations via ACP session/set_model and CLI process flags."
+  "Gemini Desktop model options dynamically branch based on the active CLI engine (`gemini` vs `agy`). When Gemini CLI is active, options adhere to official Gemini CLI model tiers (Auto, Gemini 3 / 3.5 / 3.8, Gemini 2.5, and Manual selection). When Antigravity CLI (`agy`) is active, options expose Antigravity-supported models including licensed frontier models (`gemini-4-argon`), Anthropic Claude with Extended Thinking, and Open Models. All models route configurations via ACP session/set_model and CLI process flags."
 
 do:
-  - "Support Auto mode (`auto` for Gemini 3 and `auto-gemini-2.5` for Gemini 2.5) to let the CLI automatically balance speed and reasoning."
-  - "Expose Gemini 3, 3.5, and 3.8 models (`gemini-3.8-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-pro-preview`, `gemini-3-flash-preview`)."
-  - "Expose Gemini 2.5 models (`gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`), surfacing upcoming Vertex AI retirement timelines for 2.5 checkpoints."
+  - "Branch model catalog groups dynamically based on `active_cli_engine` ('gemini' vs 'agy')."
+  - "For Gemini CLI: Support Auto mode (`auto` for Gemini 3 and `auto-gemini-2.5` for Gemini 2.5) to let the CLI balance speed and reasoning."
+  - "For Gemini CLI: Expose Gemini 3, 3.5, and 3.8 models (`gemini-3.8-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-pro-preview`, `gemini-3-flash-preview`)."
+  - "For Gemini CLI: Expose Gemini 2.5 models (`gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`), surfacing upcoming Vertex AI retirement timelines for 2.5 checkpoints."
+  - "For Antigravity CLI (`agy`): Expose `gemini-4-argon` under 'Gemini 4 Frontier (Enterprise / Licensed)' for enterprise users requiring frontier deep reasoning and architecture."
+  - "For Antigravity CLI (`agy`): Expose granular reasoning models (`gemini-3.8-flash-high`, `gemini-3.8-flash-medium`, `gemini-3.8-flash-low`), Anthropic Claude (`claude-sonnet-4-6`, `claude-opus-4-6-thinking`), and Open Models (`gpt-oss-120b-medium`)."
   - "Surface deprecation warnings and 1-click migration paths for legacy Gemini 1.5 models (`gemini-1.5-pro`, `gemini-1.5-flash`, `gemini-1.5-flash-8b`) retired upstream by Google."
   - "Recommend `gemini-3.5-flash-lite` or `gemini-3.8-flash` as fast, lightweight upgrades for retired 1.5 and sunsetting 2.5 preview configurations."
   - "Provide a Manual custom model input allowing users to specify any arbitrary model identifier or fine-tuned endpoint."
-  - "Send active model configurations to the ACP agent session via `session/set_model` before dispatching prompts."
-  - "Forward `--model` and inject `GEMINI_MODEL` into the spawned Gemini CLI process environment."
+  - "Execute live model discovery via `discover_gemini_models`: run `agy models` when `agy` is active and `gemini models` when `gemini` is active, supporting tab-delimited and JSON output."
+  - "Sanitize cross-engine models via `sanitize_model_for_engine`: when a workspace is loaded under an engine incompatible with its saved model (e.g. `gemini-2.5-pro` on `agy`, or `claude-sonnet-4-6` on `gemini`), seamlessly fallback to 'auto' to prevent fatal CLI crashes, displaying `auto (fallback)` in the chat header."
+  - "Send active model configurations to the ACP agent session via `session/set_model` before dispatching prompts, omitting `session/set_model` when the sanitized model is 'auto'."
+  - "Forward `--model` and inject `GEMINI_MODEL` into the spawned CLI process environment."
 
 dont:
+  - "Never pass `--model auto` to `agy.exe`, as Antigravity CLI does not recognize 'auto' as a model name and crashes with exit code 1; omit the `--model` flag completely so `agy` runs with its internal default model."
+  - "Never list `gemini-4-argon` in the model catalog when `gemini` CLI is active, as upstream Gemini CLI does not license or support Argon checkpoints."
   - "Do not lock the user into a rigid, non-editable model dropdown."
   - "Do not discard or clear custom model names when toggling workspace settings."
   - "Do not allow deprecated model selections to fail silently without informative warning banners and 1-click migration buttons."
@@ -41,5 +48,6 @@ source:
   url: "https://geminicli.com/docs/cli/model/"
 
 related_items:
+  - ARCH-ENGINE-001
   - PROD-WS-001
   - DEV-SVELTE-001

@@ -52,7 +52,7 @@ pub struct PermissionOption {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolPermissionPayload {
-    pub request_id: u64,
+    pub request_id: Value,
     pub session_id: String,
     pub tool_call_id: Option<String>,
     pub tool_name: String,
@@ -70,7 +70,7 @@ pub struct AcpSession {
     next_id: AtomicU64,
     stdin_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     pending_requests: Arc<StdMutex<HashMap<u64, oneshot::Sender<Result<Value, JsonRpcError>>>>>,
-    pending_permissions: Arc<StdMutex<HashMap<u64, Vec<PermissionOption>>>>,
+    pending_permissions: Arc<StdMutex<HashMap<String, Vec<PermissionOption>>>>,
     pending_prompt_sessions: Arc<StdMutex<HashMap<u64, String>>>,
     local_to_acp: Arc<StdMutex<HashMap<String, String>>>,
     acp_to_local: Arc<StdMutex<HashMap<String, String>>>,
@@ -321,7 +321,12 @@ impl AcpSession {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn send_response(&self, id: u64, result: Value) -> Result<(), String> {
+        self.send_response_value(serde_json::Value::Number(id.into()), result).await
+    }
+
+    pub async fn send_response_value(&self, id: Value, result: Value) -> Result<(), String> {
         let resp = serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -339,7 +344,7 @@ impl AcpSession {
         }
     }
 
-    pub async fn send_error_response(&self, id: u64, code: i64, message: &str) -> Result<(), String> {
+    pub async fn send_error_response_value(&self, id: Value, code: i64, message: &str) -> Result<(), String> {
         let resp = serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -358,6 +363,11 @@ impl AcpSession {
         } else {
             Err("CLI stdin is not connected".to_string())
         }
+    }
+
+    #[allow(dead_code)]
+    pub async fn send_error_response(&self, id: u64, code: i64, message: &str) -> Result<(), String> {
+        self.send_error_response_value(serde_json::Value::Number(id.into()), code, message).await
     }
 
     pub async fn send_notification(&self, method: &str, params: Value) -> Result<(), String> {
@@ -414,16 +424,31 @@ impl AcpSession {
         Ok(())
     }
 
-    pub fn store_permission_options(&self, request_id: u64, options: Vec<PermissionOption>) {
+    pub fn store_permission_options_value(&self, req_id: &Value, options: Vec<PermissionOption>) {
+        let key = match req_id {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            _ => req_id.to_string(),
+        };
         if let Ok(mut guard) = self.pending_permissions.lock() {
-            guard.insert(request_id, options);
+            guard.insert(key, options);
         }
     }
 
-    pub async fn respond_permission(&self, request_id: u64, option_id: Option<String>, allowed: bool) -> Result<(), String> {
-        let stored_options = self.pending_permissions.lock().ok().and_then(|mut m| m.remove(&request_id));
+    #[allow(dead_code)]
+    pub fn store_permission_options(&self, request_id: u64, options: Vec<PermissionOption>) {
+        self.store_permission_options_value(&Value::Number(request_id.into()), options);
+    }
+
+    pub async fn respond_permission(&self, request_id: Value, option_id: Option<String>, allowed: bool) -> Result<(), String> {
+        let key = match &request_id {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            _ => request_id.to_string(),
+        };
+        let stored_options = self.pending_permissions.lock().ok().and_then(|mut m| m.remove(&key));
         let result = build_permission_response_payload(allowed, option_id, stored_options);
-        self.send_response(request_id, result).await
+        self.send_response_value(request_id, result).await
     }
 }
 
@@ -998,10 +1023,36 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                                 }));
                             }
                         }
+                        Some("user_message_chunk") | Some("user_message") | Some("user") => {
+                            // Server echoing the user prompt; strictly do NOT emit as assistant streaming delta
+                            return;
+                        }
+                        Some("available_commands_update") | Some("commands_update") => {
+                            // Slash commands discovery telemetry; ignore
+                            return;
+                        }
+                        Some("session_info_update") => {
+                            // Session title/info update from agent; do not emit as delta
+                            return;
+                        }
+                        Some("agent_thought_chunk") => {
+                            // Agent internal chain-of-thought tokens; do not contaminate conversational delta
+                            return;
+                        }
                         _ => {
+                            // Guard against updates with user role
+                            let role = val.pointer("/params/update/role")
+                                .or_else(|| val.pointer("/params/role"))
+                                .and_then(|r| r.as_str());
+                            if role == Some("user") {
+                                return;
+                            }
+
                             // Extract text content from update or params
-                            delta = val.pointer("/params/update")
+                            delta = val.pointer("/params/update/content")
                                 .map(extract_acp_text)
+                                .filter(|s| !s.is_empty())
+                                .or_else(|| val.pointer("/params/update").map(extract_acp_text))
                                 .filter(|s| !s.is_empty())
                                 .or_else(|| val.pointer("/params").map(extract_acp_text))
                                 .unwrap_or_default();
@@ -1070,7 +1121,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                 // Interactive tool confirmation request
                 "permission/request" | "session/permission_request" | "session/request_permission"
                 | "session/requestPermission" | "request_permission" | "requestPermission" | "tool/confirm" => {
-                    let req_id = val.get("id").and_then(|id| id.as_u64()).unwrap_or(0);
+                    let req_id_val = val.get("id").cloned().unwrap_or_else(|| serde_json::Value::Number(0.into()));
                     let session_id = val.pointer("/params/sessionId")
                         .and_then(|s| s.as_str())
                         .and_then(|acp_sid| acp_session.get_local_session_id(acp_sid))
@@ -1178,8 +1229,9 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     if current_mode == "yolo" {
                         let response_payload = build_permission_response_payload(true, None, Some(options.clone()));
                         let acp_clone = acp_session.clone();
+                        let req_id_clone = req_id_val.clone();
                         tauri::async_runtime::spawn(async move {
-                            let _ = acp_clone.send_response(req_id, response_payload).await;
+                            let _ = acp_clone.send_response_value(req_id_clone, response_payload).await;
                         });
                         let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
                             session_id: session_id.clone(),
@@ -1215,8 +1267,9 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                         if is_safe {
                             let response_payload = build_permission_response_payload(true, None, Some(options.clone()));
                             let acp_clone = acp_session.clone();
+                            let req_id_clone = req_id_val.clone();
                             tauri::async_runtime::spawn(async move {
-                                let _ = acp_clone.send_response(req_id, response_payload).await;
+                                let _ = acp_clone.send_response_value(req_id_clone, response_payload).await;
                             });
                             let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
                                 session_id: session_id.clone(),
@@ -1228,10 +1281,10 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     }
 
                     // 3. Ask Mode (default) or unsafe terminal execution: Present interactive confirmation UI
-                    acp_session.store_permission_options(req_id, options.clone());
+                    acp_session.store_permission_options_value(&req_id_val, options.clone());
 
                     let _ = app_handle.emit("acp-tool-permission", ToolPermissionPayload {
-                        request_id: req_id,
+                        request_id: req_id_val,
                         session_id,
                         tool_call_id,
                         tool_name,
@@ -1249,12 +1302,17 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     // Check if this incoming message is an Agent-to-Client Request (has an 'id')
                     // In YOLO mode or when ACP agents delegate filesystem/terminal actions,
                     // the agent expects a JSON-RPC response. If left unanswered or returned with an error, the CLI deadlocks or crashes!
-                    if let Some(req_id) = val.get("id").and_then(|i| i.as_u64()) {
+                    if let Some(req_id_val) = val.get("id").cloned() {
                         let acp_clone = acp_session.clone();
                         let val_clone = val.clone();
                         let method_str = method.to_string();
                         let session_id_owned = active_session_id.to_string();
                         tauri::async_runtime::spawn(async move {
+                            let req_id_str = match &req_id_val {
+                                Value::String(s) => s.clone(),
+                                Value::Number(n) => n.to_string(),
+                                _ => req_id_val.to_string(),
+                            };
                             match method_str.as_str() {
                                 "fs/read_text_file" => {
                                     let path_opt = val_clone.pointer("/params/path").and_then(|p| p.as_str());
@@ -1271,24 +1329,24 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
 
                                         match std::fs::read_to_string(&path_buf) {
                                             Ok(content) => {
-                                                let _ = acp_clone.send_response(req_id, serde_json::json!({ "content": content })).await;
+                                                let _ = acp_clone.send_response_value(req_id_val, serde_json::json!({ "content": content })).await;
                                             }
                                             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                                                 // If an ACP agent requests a file that does not yet exist (e.g. pre-write check),
                                                 // return an empty content string. This prevents SDKs from crashing when parsing error responses.
-                                                let _ = acp_clone.send_response(req_id, serde_json::json!({ "content": "" })).await;
+                                                let _ = acp_clone.send_response_value(req_id_val, serde_json::json!({ "content": "" })).await;
                                             }
                                             Err(e) => {
-                                                let _ = acp_clone.send_error_response(
-                                                    req_id,
+                                                let _ = acp_clone.send_error_response_value(
+                                                    req_id_val,
                                                     -32002,
                                                     &format!("Resource not found: {} (ENOENT: {})", p, e),
                                                 ).await;
                                             }
                                         }
                                     } else {
-                                        let _ = acp_clone.send_error_response(
-                                            req_id,
+                                        let _ = acp_clone.send_error_response_value(
+                                            req_id_val,
                                             -32602,
                                             "Invalid params: path must be a string (ENOENT)",
                                         ).await;
@@ -1317,18 +1375,18 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                                         }
                                         match std::fs::write(&path_buf, content_opt) {
                                             Ok(_) => {
-                                                let _ = acp_clone.send_response(req_id, serde_json::json!({})).await;
+                                                let _ = acp_clone.send_response_value(req_id_val, serde_json::json!({})).await;
                                             }
                                             Err(e) => {
-                                                let _ = acp_clone.send_error_response(
-                                                    req_id,
+                                                let _ = acp_clone.send_error_response_value(
+                                                    req_id_val,
                                                     -32000,
                                                     &format!("Failed to write file {}: {}", p, e),
                                                 ).await;
                                             }
                                         }
                                     } else {
-                                        let _ = acp_clone.send_error_response(req_id, -32602, "Missing file path").await;
+                                        let _ = acp_clone.send_error_response_value(req_id_val, -32602, "Missing file path").await;
                                     }
                                 }
                                 "terminal/create" => {
@@ -1349,7 +1407,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                                         .map(PathBuf::from)
                                         .or_else(|| acp_clone.get_workspace_dir());
 
-                                    let term_id = format!("term_{}", req_id);
+                                    let term_id = format!("term_{}", req_id_str);
                                     let mut command = Command::new("powershell");
                                     command.arg("-NoProfile").arg("-NonInteractive").arg("-Command").arg(&full_cmd);
                                     if let Some(dir) = cwd {
@@ -1376,7 +1434,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                                     };
 
                                     acp_clone.store_terminal_result(&term_id, combined, exit_code);
-                                    let _ = acp_clone.send_response(req_id, serde_json::json!({
+                                    let _ = acp_clone.send_response_value(req_id_val, serde_json::json!({
                                         "terminalId": term_id
                                     })).await;
                                 }
@@ -1384,7 +1442,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                                     let term_id = val_clone.pointer("/params/terminalId").and_then(|t| t.as_str()).unwrap_or("");
                                     let (output, exit_code) = acp_clone.get_terminal_result(term_id).unwrap_or((String::new(), 0));
                                     let (pruned_output, is_truncated) = prune_terminal_output(&output, 16384);
-                                    let _ = acp_clone.send_response(req_id, serde_json::json!({
+                                    let _ = acp_clone.send_response_value(req_id_val, serde_json::json!({
                                         "output": pruned_output,
                                         "truncated": is_truncated,
                                         "exitStatus": {
@@ -1395,18 +1453,18 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                                 "terminal/wait_for_exit" => {
                                     let term_id = val_clone.pointer("/params/terminalId").and_then(|t| t.as_str()).unwrap_or("");
                                     let (_, exit_code) = acp_clone.get_terminal_result(term_id).unwrap_or((String::new(), 0));
-                                    let _ = acp_clone.send_response(req_id, serde_json::json!({
+                                    let _ = acp_clone.send_response_value(req_id_val, serde_json::json!({
                                         "exitCode": exit_code
                                     })).await;
                                 }
                                 "terminal/release" | "terminal/kill" => {
                                     let term_id = val_clone.pointer("/params/terminalId").and_then(|t| t.as_str()).unwrap_or("");
                                     acp_clone.remove_terminal_result(term_id);
-                                    let _ = acp_clone.send_response(req_id, serde_json::json!({})).await;
+                                    let _ = acp_clone.send_response_value(req_id_val, serde_json::json!({})).await;
                                 }
                                 _ => {
                                     // Acknowledge immediately with an empty result so Gemini CLI async loop never hangs
-                                    let _ = acp_clone.send_response(req_id, serde_json::json!({})).await;
+                                    let _ = acp_clone.send_response_value(req_id_val, serde_json::json!({})).await;
                                 }
                             }
                         });
@@ -1573,7 +1631,7 @@ mod tests {
             },
         ];
         session.store_permission_options(101, options);
-        let retrieved = session.pending_permissions.lock().unwrap().remove(&101);
+        let retrieved = session.pending_permissions.lock().unwrap().remove("101");
         assert!(retrieved.is_some());
         let opts = retrieved.unwrap();
         assert_eq!(opts.len(), 2);
@@ -1862,7 +1920,7 @@ mod tests {
             }
         ];
         session.store_permission_options(101, options_ws1);
-        let opt = session.pending_permissions.lock().unwrap().remove(&101);
+        let opt = session.pending_permissions.lock().unwrap().remove("101");
         assert!(opt.is_some());
 
         // Upon workspace reset, clear_sessions must isolate options or allow clean resolution

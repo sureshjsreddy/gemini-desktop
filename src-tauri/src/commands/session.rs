@@ -71,7 +71,7 @@ pub fn resolve_git_context(prompt: &str, workspace_path: Option<&std::path::Path
     expanded.trim().to_string()
 }
 
-/// Constructs CLI argument list including model selection, approval mode, and workspace flags.
+/// Constructs CLI argument list including model selection, approval mode, and workspace flags for Gemini CLI.
 pub fn build_gemini_extra_args(model: &str, approval_mode: &str) -> Vec<String> {
     let mut extra_args = Vec::new();
     let trimmed_model = model.trim();
@@ -101,6 +101,83 @@ pub fn build_gemini_extra_args(model: &str, approval_mode: &str) -> Vec<String> 
 
     extra_args.push("--skip-trust".to_string());
     extra_args
+}
+
+/// Constructs CLI argument list for Antigravity CLI (agy) ACP mode.
+pub fn build_agy_extra_args(model: &str, approval_mode: &str, effort: Option<&str>) -> Vec<String> {
+    let mut extra_args = Vec::new();
+    let trimmed_model = model.trim();
+    if !trimmed_model.is_empty() && trimmed_model != "auto" {
+        extra_args.push("--model".to_string());
+        extra_args.push(trimmed_model.to_string());
+    }
+
+    if let Some(eff) = effort {
+        let trimmed_eff = eff.trim();
+        if !trimmed_eff.is_empty() {
+            extra_args.push("--effort".to_string());
+            extra_args.push(trimmed_eff.to_string());
+        }
+    }
+
+    match approval_mode {
+        "yolo" => {
+            extra_args.push("--dangerously-skip-permissions".to_string());
+        }
+        "auto_edit" => {
+            extra_args.push("--mode".to_string());
+            extra_args.push("accept-edits".to_string());
+        }
+        "plan" => {
+            extra_args.push("--mode".to_string());
+            extra_args.push("plan".to_string());
+        }
+        _ => {}
+    }
+
+    extra_args
+}
+
+/// Sanitizes a model identifier for the active CLI engine.
+/// If the model is incompatible with the active engine, seamlessly falls back to "auto".
+pub fn sanitize_model_for_engine(engine: &str, model: &str) -> String {
+    let trimmed = model.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+        return "auto".to_string();
+    }
+
+    let is_agy = engine.trim().eq_ignore_ascii_case("agy");
+    if is_agy {
+        let lower = trimmed.to_lowercase();
+        // Gemini CLI-specific models that are not recognized by Antigravity CLI
+        let is_gemini_cli_specific = lower.starts_with("gemini-2.5")
+            || lower.starts_with("gemini-1.5")
+            || lower.starts_with("gemini-3.5")
+            || lower.starts_with("gemini-3.1")
+            || lower.starts_with("gemini-3-")
+            || lower == "gemini-3.8-flash";
+
+        if is_gemini_cli_specific {
+            return "auto".to_string();
+        }
+
+        trimmed.to_string()
+    } else {
+        let lower = trimmed.to_lowercase();
+        // Antigravity CLI-specific models that are not recognized by Gemini CLI
+        let is_agy_specific = lower.starts_with("claude-")
+            || lower.starts_with("gpt-oss-")
+            || lower.starts_with("gemini-4-")
+            || lower.ends_with("-high")
+            || lower.ends_with("-medium")
+            || lower.ends_with("-low");
+
+        if is_agy_specific {
+            return "auto".to_string();
+        }
+
+        trimmed.to_string()
+    }
 }
 
 #[tauri::command]
@@ -137,6 +214,15 @@ pub async fn send_prompt(
     let ws = workspaces.into_iter().find(|w| w.id == workspace_id);
     let ws_path = ws.as_ref().map(|w| PathBuf::from(&w.path));
 
+    // Resolve active CLI engine (global app-level setting, defaults to "gemini" if not persisted by user)
+    let active_engine = state.db.get_setting("active_cli_engine")
+        .ok()
+        .flatten()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "gemini".to_string());
+
+    let sanitized_model = sanitize_model_for_engine(&active_engine, &model);
+
     // Resolve effective approval mode and composite process key
     let effective_mode = match approval_mode.as_deref().unwrap_or("default") {
         "yolo" => "yolo",
@@ -145,7 +231,7 @@ pub async fn send_prompt(
         _ => "default",
     };
     state.acp_session.set_session_mode(&session_id, effective_mode);
-    let process_key = format!("{}::{}", workspace_id, effective_mode);
+    let process_key = format!("{}::{}::{}", workspace_id, active_engine, effective_mode);
 
     // 3. Ensure CLI process is spawned and ACP connected
     let mut ws_guard = state.active_process_workspace.lock().await;
@@ -165,35 +251,68 @@ pub async fn send_prompt(
 
         state.acp_session.clear_sessions();
 
-        let gemini_bin = match crate::process_manager::find_gemini_executable() {
-            Some(p) => p,
-            None => {
-                let assistant_id = format!("msg-{}", Uuid::new_v4());
-                let fallback_text = format!(
-                    "**[Offline / Mock Mode]**\n\nGemini CLI could not be located on your system PATH or npm global directories.\n\nPrompt received:\n> {}\n\nPlease install Gemini CLI (`npm install -g @google/gemini-cli` or `scoop install gemini-cli`) and ensure it is in your PATH.",
-                    prompt
-                );
-                let assistant_msg = Message {
-                    id: assistant_id,
-                    session_id: session_id.clone(),
-                    role: "assistant".to_string(),
-                    content: fallback_text.clone(),
-                    tool_calls_json: None,
-                    token_count: 50,
-                    created_at: Utc::now().to_rfc3339(),
-                };
-                let _ = state.db.save_message(assistant_msg);
+        let is_agy = active_engine == "agy";
+        let (cli_bin, extra_args) = if is_agy {
+            let bin = match crate::process_manager::find_agy_executable() {
+                Some(p) => p,
+                None => {
+                    let assistant_id = format!("msg-{}", Uuid::new_v4());
+                    let fallback_text = format!(
+                        "**[Offline / Mock Mode]**\n\nAntigravity CLI (`agy`) could not be located on your system PATH or installation directories.\n\nPrompt received:\n> {}\n\nPlease ensure Antigravity CLI (`agy`) is installed and available in PATH, or switch to Gemini CLI in Settings.",
+                        prompt
+                    );
+                    let assistant_msg = Message {
+                        id: assistant_id,
+                        session_id: session_id.clone(),
+                        role: "assistant".to_string(),
+                        content: fallback_text.clone(),
+                        tool_calls_json: None,
+                        token_count: 50,
+                        created_at: Utc::now().to_rfc3339(),
+                    };
+                    let _ = state.db.save_message(assistant_msg);
 
-                let _ = app.emit("acp-chunk", StreamChunkPayload {
-                    session_id: session_id.clone(),
-                    delta: fallback_text,
-                    is_done: true,
-                });
-                return Ok(0);
-            }
+                    let _ = app.emit("acp-chunk", StreamChunkPayload {
+                        session_id: session_id.clone(),
+                        delta: fallback_text,
+                        is_done: true,
+                    });
+                    return Ok(0);
+                }
+            };
+            let args = build_agy_extra_args(&sanitized_model, effective_mode, None);
+            (bin, args)
+        } else {
+            let bin = match crate::process_manager::find_gemini_executable() {
+                Some(p) => p,
+                None => {
+                    let assistant_id = format!("msg-{}", Uuid::new_v4());
+                    let fallback_text = format!(
+                        "**[Offline / Mock Mode]**\n\nGemini CLI could not be located on your system PATH or npm global directories.\n\nPrompt received:\n> {}\n\nPlease install Gemini CLI (`npm install -g @google/gemini-cli` or `scoop install gemini-cli`) and ensure it is in your PATH.",
+                        prompt
+                    );
+                    let assistant_msg = Message {
+                        id: assistant_id,
+                        session_id: session_id.clone(),
+                        role: "assistant".to_string(),
+                        content: fallback_text.clone(),
+                        tool_calls_json: None,
+                        token_count: 50,
+                        created_at: Utc::now().to_rfc3339(),
+                    };
+                    let _ = state.db.save_message(assistant_msg);
+
+                    let _ = app.emit("acp-chunk", StreamChunkPayload {
+                        session_id: session_id.clone(),
+                        delta: fallback_text,
+                        is_done: true,
+                    });
+                    return Ok(0);
+                }
+            };
+            let args = build_gemini_extra_args(&sanitized_model, effective_mode);
+            (bin, args)
         };
-
-        let extra_args = build_gemini_extra_args(&model, effective_mode);
 
         let auth_mode = state.db.get_setting("gemini_auth_mode")
             .ok()
@@ -233,7 +352,7 @@ pub async fn send_prompt(
             }
         }
 
-        match state.supervisor.spawn_gemini(&gemini_bin, ws_path.clone(), &extra_args, &global_envs) {
+        match state.supervisor.spawn_agent(&active_engine, &cli_bin, ws_path.clone(), &extra_args, &global_envs) {
             Ok(mut child) => {
                 if let Some(stdin) = child.stdin.take() {
                     state.acp_session.set_stdin(Box::new(stdin)).await;
@@ -305,10 +424,8 @@ pub async fn send_prompt(
 
                 // Send initialize request (per ACP specification)
                 // Note: We advertise terminal capabilities for ACP execution.
-                // We deliberately omit client-side 'fs' interception capabilities so Gemini CLI
-                // uses its robust native Node.js filesystem service (StandardFileSystemService).
-                // This eliminates Gemini CLI ACP bugs where non-existent file checks reject
-                // JSON-RPC error objects as "[object Object]" and crash write_file.
+                // We deliberately omit client-side 'fs' interception capabilities so CLI agents
+                // use their robust native filesystem services.
                 let _ = state.acp_session.send_request_with_response("initialize", serde_json::json!({
                     "protocolVersion": 1,
                     "clientCapabilities": {
@@ -316,15 +433,17 @@ pub async fn send_prompt(
                     },
                     "clientInfo": {
                         "name": "GeminiDesktop",
-                        "version": env!("CARGO_PKG_VERSION")
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "engine": active_engine
                     }
                 })).await;
             }
             Err(e) => {
                 let assistant_id = format!("msg-{}", Uuid::new_v4());
+                let engine_label = if active_engine == "agy" { "Antigravity (agy)" } else { "Gemini" };
                 let fallback_text = format!(
-                    "**[Offline / Mock Mode]**\n\nFailed to launch Gemini CLI at `{}` (`{}`).\n\nPrompt received:\n> {}\n\nPlease check permissions or verify your Gemini CLI installation.",
-                    gemini_bin.display(), e, prompt
+                    "**[Offline / Mock Mode]**\n\nFailed to launch {} CLI at `{}` (`{}`).\n\nPrompt received:\n> {}\n\nPlease check permissions or verify your CLI installation.",
+                    engine_label, cli_bin.display(), e, prompt
                 );
                 let assistant_msg = Message {
                     id: assistant_id,
@@ -378,21 +497,29 @@ pub async fn send_prompt(
     state.acp_session.set_active_local_session(&session_id);
 
     // Explicitly set the active model on this session via ACP session/set_model
-    let trimmed_model = model.trim();
-    if !trimmed_model.is_empty() && trimmed_model != "auto" {
+    if sanitized_model != "auto" && !sanitized_model.is_empty() {
         let set_model_params = serde_json::json!({
             "sessionId": acp_session_id,
-            "modelId": trimmed_model
+            "modelId": sanitized_model
         });
         let _ = state.acp_session.send_request_with_response("session/set_model", set_model_params).await;
     }
 
     // Explicitly set the active policy approval mode on this session via ACP session/set_mode
-    let acp_mode_id = match effective_mode {
-        "yolo" => "yolo",
-        "default" => "default",
-        "plan" => "plan",
-        _ => "autoEdit",
+    let is_agy = active_engine == "agy";
+    let acp_mode_id = if is_agy {
+        match effective_mode {
+            "auto_edit" => "accept-edits",
+            "plan" => "plan",
+            "yolo" => "default",
+            _ => "default",
+        }
+    } else {
+        match effective_mode {
+            "yolo" => "yolo",
+            "plan" => "plan",
+            _ => if effective_mode == "auto_edit" { "autoEdit" } else { "default" },
+        }
     };
     let set_mode_params = serde_json::json!({
         "sessionId": acp_session_id,
@@ -717,7 +844,7 @@ pub async fn cancel_prompt(
 #[tauri::command]
 pub async fn respond_tool_permission(
     state: State<'_, AppState>,
-    request_id: u64,
+    request_id: serde_json::Value,
     option_id: Option<String>,
     allowed: Option<bool>,
 ) -> Result<(), String> {
@@ -930,6 +1057,58 @@ mod tests {
         let args_plan = build_gemini_extra_args("gemini-2.5-pro", "plan");
         assert!(args_plan.contains(&"--approval-mode".to_string()));
         assert!(args_plan.contains(&"plan".to_string()));
+    }
+
+    #[test]
+    fn test_build_agy_extra_args() {
+        let args_yolo = build_agy_extra_args("auto", "yolo", None);
+        assert!(!args_yolo.contains(&"--model".to_string()));
+        assert!(args_yolo.contains(&"--dangerously-skip-permissions".to_string()));
+
+        let args_model = build_agy_extra_args("claude-sonnet-4-6", "auto_edit", Some("high"));
+        assert!(args_model.contains(&"--model".to_string()));
+        assert!(args_model.contains(&"claude-sonnet-4-6".to_string()));
+        assert!(args_model.contains(&"--mode".to_string()));
+        assert!(args_model.contains(&"accept-edits".to_string()));
+        assert!(args_model.contains(&"--effort".to_string()));
+        assert!(args_model.contains(&"high".to_string()));
+
+        let args_plan = build_agy_extra_args("gemini-3.8-flash-high", "plan", None);
+        assert!(args_plan.contains(&"--mode".to_string()));
+        assert!(args_plan.contains(&"plan".to_string()));
+    }
+
+    #[test]
+    fn test_sanitize_model_for_engine() {
+        // Cross-engine fallback when switching from gemini to agy
+        assert_eq!(sanitize_model_for_engine("agy", "gemini-2.5-pro"), "auto");
+        assert_eq!(sanitize_model_for_engine("agy", "gemini-3.5-flash"), "auto");
+        assert_eq!(sanitize_model_for_engine("agy", "gemini-3.8-flash"), "auto");
+        assert_eq!(sanitize_model_for_engine("agy", "gemini-1.5-pro"), "auto");
+        assert_eq!(sanitize_model_for_engine("agy", "gemini-3.1-pro-preview"), "auto");
+
+        // Native agy models preserved
+        assert_eq!(sanitize_model_for_engine("agy", "gemini-3.8-flash-high"), "gemini-3.8-flash-high");
+        assert_eq!(sanitize_model_for_engine("agy", "gemini-3.8-flash-medium"), "gemini-3.8-flash-medium");
+        assert_eq!(sanitize_model_for_engine("agy", "gemini-3.8-flash-low"), "gemini-3.8-flash-low");
+        assert_eq!(sanitize_model_for_engine("agy", "claude-sonnet-4-6"), "claude-sonnet-4-6");
+        assert_eq!(sanitize_model_for_engine("agy", "claude-opus-4-6-thinking"), "claude-opus-4-6-thinking");
+        assert_eq!(sanitize_model_for_engine("agy", "gpt-oss-120b-medium"), "gpt-oss-120b-medium");
+        assert_eq!(sanitize_model_for_engine("agy", "gemini-4-argon"), "gemini-4-argon");
+        assert_eq!(sanitize_model_for_engine("agy", "auto"), "auto");
+        assert_eq!(sanitize_model_for_engine("agy", ""), "auto");
+
+        // Cross-engine fallback when switching from agy to gemini
+        assert_eq!(sanitize_model_for_engine("gemini", "gemini-3.8-flash-high"), "auto");
+        assert_eq!(sanitize_model_for_engine("gemini", "claude-sonnet-4-6"), "auto");
+        assert_eq!(sanitize_model_for_engine("gemini", "gpt-oss-120b-medium"), "auto");
+        assert_eq!(sanitize_model_for_engine("gemini", "gemini-4-argon"), "auto");
+
+        // Native gemini models preserved
+        assert_eq!(sanitize_model_for_engine("gemini", "gemini-2.5-pro"), "gemini-2.5-pro");
+        assert_eq!(sanitize_model_for_engine("gemini", "gemini-3.5-flash"), "gemini-3.5-flash");
+        assert_eq!(sanitize_model_for_engine("gemini", "gemini-3.8-flash"), "gemini-3.8-flash");
+        assert_eq!(sanitize_model_for_engine("gemini", "auto"), "auto");
     }
 
     #[test]

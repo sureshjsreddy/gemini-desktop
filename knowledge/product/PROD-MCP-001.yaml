@@ -1,9 +1,9 @@
 id: PROD-MCP-001
 type: product_standard
-title: Model Context Protocol (MCP) Server Configuration & Tool Ingestion
+title: Dual-Engine Model Context Protocol (MCP) Server Configuration & Tool Ingestion
 domain: product
 status: approved
-version: 1.1.0
+version: 1.3.0
 authority:
   level: official
   confidence: high
@@ -17,26 +17,34 @@ applies_to:
   - configuration
 
 rule:
-  "Model Context Protocol (MCP) servers must be configurable at both Workspace scope (`.gemini/settings.json`) and Global scope (`~/.gemini/settings.json`). Modifying MCP configurations must preserve all existing non-MCP configuration keys."
+  "Model Context Protocol (MCP) servers are routed dynamically based on the active CLI engine (`gemini` vs `agy`). Gemini CLI embeds MCP servers inline inside `settings.json`, whereas Antigravity CLI separates them into dedicated standalone `mcp_config.json` profiles at both Workspace and Global scopes. Modifying MCP configurations must preserve all existing non-MCP configuration keys."
 
 do:
-  - "Support both Workspace-specific (`<workspace>/.gemini/settings.json`) and Global (`~/.gemini/settings.json`) configuration scopes."
+  - "Route MCP configuration files dynamically based on active engine and scope via `resolve_mcp_config_file`:"
+  - "  - Gemini CLI Global: `%USERPROFILE%/.gemini/settings.json` (`mcpServers` object key)"
+  - "  - Gemini CLI Workspace: `<workspace>/.gemini/settings.json` (`mcpServers` object key)"
+  - "  - Antigravity CLI Global: `%USERPROFILE%/.gemini/config/mcp_config.json` (`mcpServers` object key)"
+  - "  - Antigravity CLI Workspace: `<workspace>/.agents/mcp_config.json` (`mcpServers` object key)"
   - "Provide 1-click presets for popular MCP servers (GitHub Docker, Local Filesystem, PostgreSQL, Brave Search, Knowledge Graph Memory, Custom)."
   - "Offer dual editing modes: an accessible Guided Form and a Monospaced Raw JSON editor."
-  - "Support enabling and disabling individual MCP servers via `disabled: true` in `settings.json`, allowing temporary suspension without losing configuration or credentials."
+  - "Support enabling and disabling individual MCP servers via `disabled: true` in server config objects, allowing temporary suspension without losing configuration or credentials."
   - "Provide 1-click status toggle pills in the server list and accessible switch controls in the server details form."
-  - "Safely read and write `settings.json` using atomic file operations, preserving pre-existing keys (such as `theme`, `telemetry`, etc.)."
+  - "Safely read and write configuration files using atomic file operations, preserving pre-existing keys (such as `theme`, `telemetry`, etc. in `settings.json`)."
+  - "Surface the active engine name badge (`Antigravity (agy)` vs `Gemini CLI`) and the exact configuration file path in the modal header."
+  - "Provide 1-click MCP migration from Gemini CLI to Antigravity CLI via `import_mcp_from_gemini` and `detect_importable_gemini_mcp`: auto-detects MCP servers in `settings.json` and copies them into Antigravity's `mcp_config.json` at either Global or Workspace scope, with option to preserve or overwrite existing servers."
   - "Intercept any MCP tool executions (`mcp_*`) with the interactive Tool Permission Approval banner."
-  - "Surface source MCP server metadata (e.g. `mcp_server` field from Gemini CLI v0.67.0+) in interactive Tool Permission Cards so users can immediately distinguish external MCP actions from local tools."
+  - "Surface source MCP server metadata (e.g. `mcp_server` field) in interactive Tool Permission Cards so users can distinguish external MCP actions from local tools."
 
 dont:
-  - "Do not overwrite or delete unrelated configuration keys in `settings.json`."
+  - "Do not share or cross-contaminate MCP server files between Gemini CLI (`settings.json`) and Antigravity CLI (`mcp_config.json`)."
+  - "Do not overwrite or delete unrelated configuration keys in `settings.json` or `mcp_config.json`."
   - "Do not execute unverified MCP server processes outside the supervisor or without user consent."
 
 reason:
-  "MCP integration extends Gemini CLI capabilities with external databases, repositories, and APIs while adhering to Gemini CLI's native configuration specifications."
+  "MCP integration extends agent capabilities with external databases, repositories, and APIs. Gemini CLI standardizes on embedding within `settings.json`, while Antigravity CLI standardizes on dedicated standalone `mcp_config.json` profiles."
 
 related_items:
+  - ARCH-ENGINE-001
   - PROD-TOOL-001
   - PROD-WS-001
   - ARCH-ACP-001

@@ -3,7 +3,7 @@ type: product_standard
 title: Interactive Tool Permission Approval & Safe System Execution
 domain: product
 status: approved
-version: 1.5.0
+version: 1.6.0
 authority:
   level: official
   confidence: high
@@ -29,6 +29,7 @@ do:
   - "Synchronize mode dynamically at runtime via `session/set_mode` on each prompt, and display active mode badge in the bottom chat prompt bar."
   - "Pass `--approval-mode <mode>` (or `--yolo`) and `--skip-trust` flags when launching the underlying Gemini CLI process."
   - "Display the tool name, command parameters, locations, and context reason clearly in the approval prompt."
+  - "Support both numeric and string JSON-RPC IDs (`serde_json::Value` in backend, `number | string` in frontend) in `ToolPermissionPayload.request_id`: Antigravity CLI uses string IDs (`\"1\"`), whereas Gemini CLI uses numeric IDs (`101`). Preserving ID typing ensures `respond_tool_permission` transmits matching IDs over ACP stdin without hanging or timing out."
   - "Send the decision back through `respond_tool_permission` command over ACP stdin."
 
 dont:

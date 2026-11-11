@@ -47,6 +47,7 @@
     onToggleExplorer,
     onToggle,
     envStatus = null,
+    activeEngine = "gemini",
     onCheckUpdate,
     isCheckingUpdate = false,
     onOpenCliSetup,
@@ -59,6 +60,7 @@
     activeSession: Session | null;
     generatingSessionIds?: Set<string>;
     appVersion?: string;
+    activeEngine?: string;
     onSelectWorkspace: (ws: Workspace) => void;
     onSelectSession: (s: Session) => void;
     onNewSession: () => void;
@@ -618,7 +620,17 @@
   <!-- Bottom App & Workspace Info -->
   <div class="border-t border-subtle bg-surface/40">
     <div class="px-3 pt-2 pb-1 flex items-center justify-between text-[10px] text-muted-theme">
-      <span class="font-mono">v{appVersion}</span>
+      <div class="flex items-center gap-1.5">
+        <span class="font-mono">v{appVersion}</span>
+        <button
+          type="button"
+          onclick={onOpenCliSettings}
+          class="px-1.5 py-0.5 rounded text-[10px] font-mono flex items-center gap-1 cursor-pointer bg-surface-elevated border border-subtle hover:border-theme-default text-primary-theme transition-colors"
+          title="Active CLI Agent Engine (Click to switch)"
+        >
+          <span>{activeEngine === 'agy' ? '🚀 agy' : '♊ gemini'}</span>
+        </button>
+      </div>
       {#if onCheckUpdate}
         <button
           type="button"

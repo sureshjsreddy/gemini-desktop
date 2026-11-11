@@ -731,11 +731,30 @@ pub fn parse_cli_models_json(stdout: &str) -> Vec<CliModelInfo> {
         }
     }
 
-    // Fallback: parse plain text line outputs (e.g. from --list-models)
+    // Fallback: parse plain text line outputs (e.g. from agy models or gemini --list-models)
     let mut text_models = Vec::new();
     for line in trimmed.lines() {
         let clean = line.trim().trim_start_matches(|c| c == '-' || c == '*' || c == '•').trim();
-        if clean.starts_with("gemini-") || clean.starts_with("auto") {
+        if clean.starts_with("Fetching") || clean.is_empty() {
+            continue;
+        }
+
+        if let Some((id, display_name)) = clean.split_once('\t') {
+            let id = id.trim();
+            if !id.is_empty() {
+                text_models.push(CliModelInfo {
+                    id: id.to_string(),
+                    name: Some(display_name.trim().to_string()),
+                    description: None,
+                    input_token_limit: None,
+                    output_token_limit: None,
+                    is_default: Some(id.starts_with("auto")),
+                });
+                continue;
+            }
+        }
+
+        if clean.starts_with("gemini-") || clean.starts_with("auto") || clean.starts_with("claude-") || clean.starts_with("gpt-") {
             let parts: Vec<&str> = clean.split_whitespace().collect();
             if let Some(first) = parts.first() {
                 text_models.push(CliModelInfo {
@@ -756,6 +775,78 @@ pub fn parse_cli_models_json(stdout: &str) -> Vec<CliModelInfo> {
 pub async fn discover_gemini_models(
     state: State<'_, AppState>,
 ) -> Result<CliModelDiscoveryResult, String> {
+    let active_engine = state.db.get_setting("active_cli_engine").ok().flatten().unwrap_or_else(|| "gemini".to_string());
+    if active_engine == "agy" {
+        let bin = match crate::process_manager::find_agy_executable() {
+            Some(p) => p,
+            None => {
+                return Ok(CliModelDiscoveryResult {
+                    supported: false,
+                    models: Vec::new(),
+                    message: "Antigravity CLI (agy) executable not found on PATH or standard directories.".to_string(),
+                });
+            }
+        };
+
+        let bin_path_str = bin.to_string_lossy().to_string();
+        let is_batch = bin_path_str.to_lowercase().ends_with(".cmd") || bin_path_str.to_lowercase().ends_with(".bat");
+
+        return tokio::task::spawn_blocking(move || {
+            #[cfg(target_os = "windows")]
+            let mut cmd = if is_batch {
+                let mut c = Command::new("cmd.exe");
+                c.args(["/c", &bin_path_str, "models"]);
+                c
+            } else {
+                let mut c = Command::new(&bin_path_str);
+                c.arg("models");
+                c
+            };
+
+            #[cfg(not(target_os = "windows"))]
+            let mut cmd = {
+                let mut c = Command::new(&bin_path_str);
+                c.arg("models");
+                c
+            };
+
+            #[cfg(target_os = "windows")]
+            {
+                cmd.creation_flags(0x08000000);
+            }
+
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+
+            let output = match cmd.output() {
+                Ok(o) => o,
+                Err(e) => {
+                    return Ok(CliModelDiscoveryResult {
+                        supported: false,
+                        models: Vec::new(),
+                        message: format!("Failed to spawn agy models: {}", e),
+                    });
+                }
+            };
+
+            let stdout_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let parsed = parse_cli_models_json(&stdout_str);
+            if !parsed.is_empty() {
+                return Ok(CliModelDiscoveryResult {
+                    supported: true,
+                    models: parsed,
+                    message: "Models discovered successfully from Antigravity CLI (agy).".to_string(),
+                });
+            }
+
+            Ok(CliModelDiscoveryResult {
+                supported: false,
+                models: Vec::new(),
+                message: "No models returned from agy models.".to_string(),
+            })
+        }).await.map_err(|e| e.to_string())?;
+    }
+
     let bin = match crate::process_manager::find_gemini_executable() {
         Some(p) => p,
         None => {
@@ -901,6 +992,530 @@ pub async fn discover_gemini_models(
     }).await.map_err(|e| e.to_string())?
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliPathStatus {
+    pub gemini_path: Option<String>,
+    pub gemini_dir: Option<String>,
+    pub gemini_in_user_path: bool,
+    pub agy_path: Option<String>,
+    pub agy_dir: Option<String>,
+    pub agy_in_user_path: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathAddResult {
+    pub success: bool,
+    pub message: String,
+    pub target_dir: String,
+    pub already_in_path: bool,
+}
+
+pub fn get_user_path_dirs() -> Vec<std::path::PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("powershell.exe");
+        cmd.args(["-NoProfile", "-Command", "[Environment]::GetEnvironmentVariable('Path', 'User')"]);
+        cmd.creation_flags(0x08000000);
+        if let Ok(out) = cmd.output() {
+            if out.status.success() {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                return stdout
+                    .split(';')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(std::path::PathBuf::from)
+                    .collect();
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(path_var) = std::env::var("PATH") {
+            return std::env::split_paths(&path_var).collect();
+        }
+    }
+
+    Vec::new()
+}
+
+pub fn is_dir_in_user_path(target_dir: &std::path::Path) -> bool {
+    let norm_target = target_dir.to_string_lossy().to_lowercase().replace('/', "\\").trim_end_matches('\\').to_string();
+    let dirs = get_user_path_dirs();
+    for d in dirs {
+        let norm_d = d.to_string_lossy().to_lowercase().replace('/', "\\").trim_end_matches('\\').to_string();
+        if norm_d == norm_target {
+            return true;
+        }
+    }
+    false
+}
+
+#[tauri::command]
+pub async fn check_cli_path_status() -> Result<CliPathStatus, String> {
+    tokio::task::spawn_blocking(|| {
+        let gemini_exe = crate::process_manager::find_gemini_executable();
+        let gemini_dir = gemini_exe.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .or_else(|| {
+                std::env::var("APPDATA").ok().map(|a| std::path::PathBuf::from(a).join("npm"))
+            });
+
+        let agy_exe = crate::process_manager::find_agy_executable();
+        let agy_dir = agy_exe.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .or_else(|| {
+                std::env::var("LOCALAPPDATA").ok().map(|l| std::path::PathBuf::from(l).join("agy").join("bin"))
+            });
+
+        let gemini_in_user_path = gemini_dir.as_ref().map(|d| is_dir_in_user_path(d)).unwrap_or(false);
+        let agy_in_user_path = agy_dir.as_ref().map(|d| is_dir_in_user_path(d)).unwrap_or(false);
+
+        Ok(CliPathStatus {
+            gemini_path: gemini_exe.map(|p| p.to_string_lossy().to_string()),
+            gemini_dir: gemini_dir.map(|d| d.to_string_lossy().to_string()),
+            gemini_in_user_path,
+            agy_path: agy_exe.map(|p| p.to_string_lossy().to_string()),
+            agy_dir: agy_dir.map(|d| d.to_string_lossy().to_string()),
+            agy_in_user_path,
+        })
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn add_cli_to_user_path(engine: String) -> Result<PathAddResult, String> {
+    tokio::task::spawn_blocking(move || {
+        let is_agy = engine.trim().eq_ignore_ascii_case("agy");
+        let target_dir = if is_agy {
+            crate::process_manager::find_agy_executable()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                .unwrap_or_else(|| {
+                    let localapp = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:\\Users\\Default\\AppData\\Local".to_string());
+                    std::path::PathBuf::from(localapp).join("agy").join("bin")
+                })
+        } else {
+            crate::process_manager::find_gemini_executable()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                .unwrap_or_else(|| {
+                    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| "C:\\Users\\Default\\AppData\\Roaming".to_string());
+                    std::path::PathBuf::from(appdata).join("npm")
+                })
+        };
+
+        let target_dir_str = target_dir.to_string_lossy().to_string();
+
+        if is_dir_in_user_path(&target_dir) {
+            return Ok(PathAddResult {
+                success: true,
+                message: format!("'{}' is already present in your User PATH environment variable.", target_dir_str),
+                target_dir: target_dir_str,
+                already_in_path: true,
+            });
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let escaped_dir = target_dir_str.replace('\'', "''");
+            let ps_script = format!(
+                "$curr = [Environment]::GetEnvironmentVariable('Path', 'User'); if (-not $curr) {{ $curr = '' }}; $new = if ($curr.Trim().Length -gt 0) {{ $curr.TrimEnd(';') + ';' + '{}' }} else {{ '{}' }}; [Environment]::SetEnvironmentVariable('Path', $new, 'User')",
+                escaped_dir, escaped_dir
+            );
+
+            let mut cmd = Command::new("powershell.exe");
+            cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps_script]);
+            cmd.creation_flags(0x08000000);
+
+            match cmd.output() {
+                Ok(out) => {
+                    if out.status.success() {
+                        if let Ok(curr_proc_path) = std::env::var("PATH") {
+                            let updated_proc_path = format!("{};{}", target_dir_str, curr_proc_path);
+                            std::env::set_var("PATH", updated_proc_path);
+                        }
+
+                        Ok(PathAddResult {
+                            success: true,
+                            message: format!(
+                                "Successfully added '{}' to your User PATH. All new terminals and command prompts will now recognize '{}' globally.",
+                                target_dir_str,
+                                if is_agy { "agy" } else { "gemini" }
+                            ),
+                            target_dir: target_dir_str,
+                            already_in_path: false,
+                        })
+                    } else {
+                        let err = String::from_utf8_lossy(&out.stderr).to_string();
+                        Ok(PathAddResult {
+                            success: false,
+                            message: format!("Failed to update User PATH via PowerShell: {}", err.trim()),
+                            target_dir: target_dir_str,
+                            already_in_path: false,
+                        })
+                    }
+                }
+                Err(e) => {
+                    Ok(PathAddResult {
+                        success: false,
+                        message: format!("Failed to invoke PowerShell process to update User PATH: {}", e),
+                        target_dir: target_dir_str,
+                        already_in_path: false,
+                    })
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            Ok(PathAddResult {
+                success: false,
+                message: format!("Automatic PATH modification is only supported on Windows. Please manually add '{}' to your PATH.", target_dir_str),
+                target_dir: target_dir_str,
+                already_in_path: false,
+            })
+        }
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn update_or_install_agy_cli() -> Result<CliInstallResult, String> {
+    tokio::task::spawn_blocking(move || {
+        let user_home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+
+        let existing_bin = crate::process_manager::find_agy_executable();
+
+        #[cfg(target_os = "windows")]
+        let (output, method) = if let Some(ref bin_path) = existing_bin {
+            let path_str = bin_path.to_string_lossy().to_string();
+            let is_batch = path_str.to_lowercase().ends_with(".cmd") || path_str.to_lowercase().ends_with(".bat");
+            let mut c = if is_batch {
+                let mut cmd = Command::new("cmd.exe");
+                cmd.args(["/c", &path_str, "update"]);
+                cmd
+            } else {
+                let mut cmd = Command::new(&path_str);
+                cmd.arg("update");
+                cmd
+            };
+            c.current_dir(&user_home).creation_flags(0x08000000);
+            (c.output(), "agy update")
+        } else {
+            let mut c = Command::new("powershell.exe");
+            c.args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "irm https://antigravity.google/cli/install.ps1 | iex"
+            ]);
+            c.current_dir(&user_home).creation_flags(0x08000000);
+            (c.output(), "antigravity.google/cli/install.ps1")
+        };
+
+        #[cfg(not(target_os = "windows"))]
+        let (output, method) = if let Some(ref bin_path) = existing_bin {
+            let mut c = Command::new(bin_path);
+            c.arg("update").current_dir(&user_home);
+            (c.output(), "agy update")
+        } else {
+            let mut c = Command::new("bash");
+            c.args(["-c", "curl -fsSL https://antigravity.google/cli/install.sh | bash"]);
+            c.current_dir(&user_home);
+            (c.output(), "install.sh")
+        };
+
+        match output {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                if out.status.success() {
+                    let bin_path = crate::process_manager::find_agy_executable();
+                    let ver = bin_path.as_ref().and_then(|p| {
+                        let path_str = p.to_string_lossy().to_string();
+                        let is_batch = path_str.to_lowercase().ends_with(".cmd") || path_str.to_lowercase().ends_with(".bat");
+                        #[cfg(target_os = "windows")]
+                        let v_out = if is_batch {
+                            Command::new("cmd.exe").args(["/c", &path_str, "--version"]).creation_flags(0x08000000).output()
+                        } else {
+                            Command::new(&path_str).arg("--version").creation_flags(0x08000000).output()
+                        };
+                        #[cfg(not(target_os = "windows"))]
+                        let v_out = Command::new(&path_str).arg("--version").output();
+
+                        v_out.ok().and_then(|o| {
+                            if o.status.success() {
+                                let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                                if v.is_empty() { None } else { Some(v) }
+                            } else {
+                                None
+                            }
+                        })
+                    });
+
+                    Ok(CliInstallResult {
+                        success: true,
+                        message: format!("Antigravity CLI (agy) successfully updated via {}!", method),
+                        installed_path: bin_path.map(|p| p.to_string_lossy().to_string()),
+                        version: ver,
+                    })
+                } else {
+                    let err_msg = if !stderr.trim().is_empty() { stderr.trim().to_string() } else { stdout.trim().to_string() };
+                    Ok(CliInstallResult {
+                        success: false,
+                        message: format!("Antigravity CLI update via {} exited with error: {}", method, err_msg),
+                        installed_path: None,
+                        version: None,
+                    })
+                }
+            }
+            Err(e) => {
+                Ok(CliInstallResult {
+                    success: false,
+                    message: format!("Failed to launch {} updater process: {}", method, e),
+                    installed_path: None,
+                    version: None,
+                })
+            }
+        }
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn test_agy_cli(
+    _workspace_path: Option<String>,
+) -> Result<CliTestResult, String> {
+    tokio::task::spawn_blocking(move || {
+        let bin = match crate::process_manager::find_agy_executable() {
+            Some(p) => p,
+            None => {
+                return Ok(CliTestResult {
+                    success: false,
+                    latency_ms: 0,
+                    message: "Antigravity CLI (agy) not found on system PATH or standard directories.".to_string(),
+                    details: Some("Please install Antigravity CLI or add its directory to your PATH.".to_string()),
+                });
+            }
+        };
+
+        let start = Instant::now();
+        let path_str = bin.to_string_lossy().to_string();
+        let is_batch = path_str.to_lowercase().ends_with(".cmd") || path_str.to_lowercase().ends_with(".bat");
+
+        let user_home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+
+        #[cfg(target_os = "windows")]
+        let output = if is_batch {
+            let mut cmd = Command::new("cmd.exe");
+            cmd.args(["/c", &path_str, "--version"]);
+            cmd.current_dir(&user_home);
+            cmd.creation_flags(0x08000000);
+            cmd.output()
+        } else {
+            let mut cmd = Command::new(&path_str);
+            cmd.arg("--version");
+            cmd.current_dir(&user_home);
+            cmd.creation_flags(0x08000000);
+            cmd.output()
+        };
+
+        #[cfg(not(target_os = "windows"))]
+        let output = {
+            let mut cmd = Command::new(&path_str);
+            cmd.arg("--version");
+            cmd.current_dir(&user_home);
+            cmd.output()
+        };
+
+        let latency_ms = start.elapsed().as_millis() as u64;
+
+        match output {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                if out.status.success() {
+                    Ok(CliTestResult {
+                        success: true,
+                        latency_ms,
+                        message: format!("Antigravity CLI is operational (version {}).", if stdout.is_empty() { "verified" } else { &stdout }),
+                        details: Some(format!("Binary: {}\nOutput: {}", path_str, stdout)),
+                    })
+                } else {
+                    Ok(CliTestResult {
+                        success: false,
+                        latency_ms,
+                        message: format!("Antigravity CLI test failed with exit code: {:?}", out.status.code()),
+                        details: Some(if !stderr.is_empty() { stderr } else { stdout }),
+                    })
+                }
+            }
+            Err(e) => {
+                Ok(CliTestResult {
+                    success: false,
+                    latency_ms,
+                    message: format!("Failed to execute Antigravity CLI binary: {}", e),
+                    details: Some(path_str),
+                })
+            }
+        }
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PluginImportResult {
+    pub success: bool,
+    pub message: String,
+    pub output: String,
+}
+
+#[tauri::command]
+pub async fn import_gemini_plugins_via_agy() -> Result<PluginImportResult, String> {
+    let bin = match crate::process_manager::find_agy_executable() {
+        Some(p) => p,
+        None => {
+            return Ok(PluginImportResult {
+                success: false,
+                message: "Antigravity CLI (agy) executable not found.".to_string(),
+                output: String::new(),
+            });
+        }
+    };
+
+    let bin_path_str = bin.to_string_lossy().to_string();
+    let is_batch = bin_path_str.to_lowercase().ends_with(".cmd") || bin_path_str.to_lowercase().ends_with(".bat");
+
+    tokio::task::spawn_blocking(move || {
+        let user_home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+
+        #[cfg(target_os = "windows")]
+        let mut cmd = if is_batch {
+            let mut c = Command::new("cmd.exe");
+            c.args(["/c", &bin_path_str, "plugin", "import", "gemini"]);
+            c
+        } else {
+            let mut c = Command::new(&bin_path_str);
+            c.args(["plugin", "import", "gemini"]);
+            c
+        };
+
+        #[cfg(not(target_os = "windows"))]
+        let mut cmd = {
+            let mut c = Command::new(&bin_path_str);
+            c.args(["plugin", "import", "gemini"]);
+            c
+        };
+
+        #[cfg(target_os = "windows")]
+        {
+            cmd.creation_flags(0x08000000);
+        }
+        cmd.current_dir(&user_home);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        match cmd.output() {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                let combined = if !stderr.is_empty() {
+                    format!("{}\n{}", stdout, stderr).trim().to_string()
+                } else {
+                    stdout
+                };
+
+                Ok(PluginImportResult {
+                    success: out.status.success(),
+                    message: if out.status.success() {
+                        "Gemini extensions processed by Antigravity CLI.".to_string()
+                    } else {
+                        format!("Import exited with code: {:?}", out.status.code())
+                    },
+                    output: combined,
+                })
+            }
+            Err(e) => Ok(PluginImportResult {
+                success: false,
+                message: format!("Failed to execute agy plugin import: {}", e),
+                output: String::new(),
+            }),
+        }
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SkillsSyncResult {
+    pub success: bool,
+    pub synced_count: usize,
+    pub skill_names: Vec<String>,
+    pub message: String,
+}
+
+pub fn sync_workspace_skills_internal(workspace_path: &str) -> Result<SkillsSyncResult, String> {
+    let ws = std::path::PathBuf::from(workspace_path);
+    let gemini_skills = ws.join(".gemini").join("skills");
+    let agy_skills = ws.join(".agents").join("skills");
+
+    if !gemini_skills.is_dir() {
+        return Ok(SkillsSyncResult {
+            success: true,
+            synced_count: 0,
+            skill_names: Vec::new(),
+            message: "No .gemini/skills directory found in workspace.".to_string(),
+        });
+    }
+
+    std::fs::create_dir_all(&agy_skills)
+        .map_err(|e| format!("Failed to create .agents/skills directory: {}", e))?;
+
+    let mut synced_names = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&gemini_skills) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(folder_name) = path.file_name() {
+                    let target_dir = agy_skills.join(folder_name);
+                    if copy_dir_all_recursive(&path, &target_dir).is_ok() {
+                        synced_names.push(folder_name.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let count = synced_names.len();
+    Ok(SkillsSyncResult {
+        success: true,
+        synced_count: count,
+        skill_names: synced_names.clone(),
+        message: format!("Successfully synced {} skill(s) to .agents/skills: {}", count, synced_names.join(", ")),
+    })
+}
+
+fn copy_dir_all_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_all_recursive(&entry.path(), &dst.join(entry.file_name()))?;
+        } else {
+            std::fs::copy(entry.path(), dst.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sync_workspace_skills_for_agy(workspace_path: String) -> Result<SkillsSyncResult, String> {
+    tokio::task::spawn_blocking(move || {
+        sync_workspace_skills_internal(&workspace_path)
+    }).await.map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1019,5 +1634,64 @@ mod tests {
         assert_eq!(models[0].id, "auto");
         assert_eq!(models[1].id, "gemini-3.8-flash");
         assert_eq!(models[2].id, "gemini-3.5-flash-lite");
+    }
+
+    #[test]
+    fn test_parse_agy_models_output() {
+        let text_input = "Fetching available models...\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\nclaude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\ngpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n";
+        let models = parse_cli_models_json(text_input);
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].id, "gemini-3.8-flash-high");
+        assert_eq!(models[0].name.as_deref(), Some("Gemini 3.8 Flash (High)"));
+        assert_eq!(models[1].id, "claude-sonnet-4-6");
+        assert_eq!(models[2].id, "gpt-oss-120b-medium");
+    }
+
+    #[test]
+    fn test_cli_path_status_structure() {
+        let status = CliPathStatus {
+            gemini_path: Some("C:\\Users\\test\\AppData\\Roaming\\npm\\gemini.cmd".to_string()),
+            gemini_dir: Some("C:\\Users\\test\\AppData\\Roaming\\npm".to_string()),
+            gemini_in_user_path: true,
+            agy_path: Some("C:\\Users\\test\\AppData\\Local\\agy\\bin\\agy.exe".to_string()),
+            agy_dir: Some("C:\\Users\\test\\AppData\\Local\\agy\\bin".to_string()),
+            agy_in_user_path: false,
+        };
+        assert!(status.gemini_in_user_path);
+        assert!(!status.agy_in_user_path);
+        assert_eq!(status.agy_dir.as_deref(), Some("C:\\Users\\test\\AppData\\Local\\agy\\bin"));
+    }
+
+    #[test]
+    fn test_path_add_result_serialization() {
+        let res = PathAddResult {
+            success: true,
+            message: "Added to PATH".to_string(),
+            target_dir: "C:\\Users\\test\\bin".to_string(),
+            already_in_path: false,
+        };
+        let json = serde_json::to_string(&res).unwrap();
+        assert!(json.contains("\"alreadyInPath\":false"));
+        assert!(json.contains("\"targetDir\":\"C:\\\\Users\\\\test\\\\bin\""));
+    }
+
+    #[test]
+    fn test_sync_workspace_skills() {
+        let temp_dir = std::env::temp_dir().join(format!("gemini_skills_test_{}", uuid::Uuid::new_v4()));
+        let gemini_skills = temp_dir.join(".gemini").join("skills").join("test-skill");
+        std::fs::create_dir_all(&gemini_skills).unwrap();
+        std::fs::write(gemini_skills.join("SKILL.md"), "---\nname: test-skill\n---\n# Test").unwrap();
+
+        let res = sync_workspace_skills_internal(&temp_dir.to_string_lossy()).unwrap();
+        assert!(res.success);
+        assert_eq!(res.synced_count, 1);
+        assert_eq!(res.skill_names, vec!["test-skill".to_string()]);
+
+        let agy_skill_file = temp_dir.join(".agents").join("skills").join("test-skill").join("SKILL.md");
+        assert!(agy_skill_file.exists());
+        let content = std::fs::read_to_string(&agy_skill_file).unwrap();
+        assert!(content.contains("name: test-skill"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

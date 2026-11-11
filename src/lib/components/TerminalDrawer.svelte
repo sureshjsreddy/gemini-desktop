@@ -15,6 +15,10 @@
     Maximize2,
     Minimize2,
     Info,
+    Sparkles,
+    Cpu,
+    Layers,
+    Puzzle,
   } from "lucide-svelte";
   import { dialogManager } from "$lib/dialog.svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
@@ -22,9 +26,11 @@
   let {
     isOpen = $bindable(false),
     workspace = null,
+    activeEngine = "gemini",
   }: {
     isOpen: boolean;
     workspace: Workspace | null;
+    activeEngine?: string;
   } = $props();
 
   interface LogEntry {
@@ -145,16 +151,18 @@
     }
   }
 
-  async function handleReloadGemini() {
+  async function handleReloadSession() {
     if (isReloading) return;
     isReloading = true;
+    const isAgy = activeEngine === "agy";
+    const engineLabel = isAgy ? "Antigravity CLI" : "Gemini CLI";
     try {
       const msg = await invoke<string>("restart_gemini_session");
       logs = [
         ...logs,
         {
           id: "reload-" + Date.now(),
-          command: "[SYSTEM] Reload Gemini CLI Session",
+          command: `[SYSTEM] Reload ${engineLabel} Session`,
           stdout: `✓ ${msg}\nAny updated .env or environment variables in "${workspace?.path || "workspace"}" will take effect on the next prompt.`,
           stderr: "",
           exitCode: 0,
@@ -163,7 +171,7 @@
         },
       ];
       await dialogManager.alert(
-        "Gemini CLI session reset successfully!\n\nAll variables from your workspace .env file will be automatically injected on your next prompt.",
+        `${engineLabel} session reset successfully!\n\nAll variables from your workspace .env file will be automatically injected on your next prompt.`,
         "Environment Reloaded"
       );
     } catch (e: any) {
@@ -171,7 +179,7 @@
         ...logs,
         {
           id: "reload-err-" + Date.now(),
-          command: "[SYSTEM] Reload Gemini CLI Session",
+          command: `[SYSTEM] Reload ${engineLabel} Session`,
           stdout: "",
           stderr: `Failed to reload session: ${e}`,
           exitCode: 1,
@@ -192,11 +200,28 @@
     <!-- Header Controls -->
     <div class="px-4 py-2 border-b border-subtle flex items-center justify-between bg-surface-elevated/40 text-xs select-none">
       <div class="flex items-center gap-2 truncate">
-        <div class="p-1 rounded bg-accent-subtle text-accent-theme flex items-center justify-center">
+        <div class="p-1 rounded {activeEngine === 'agy' ? 'bg-purple-500/10 text-purple-400' : 'bg-accent-subtle text-accent-theme'} flex items-center justify-center">
           <Terminal size={14} />
         </div>
         <span class="font-semibold text-primary-theme">Terminal Console</span>
-        <Tooltip text="Interactive PowerShell Terminal" subtext="Executes commands inside the active workspace directory. Adding variables to .env and clicking 'Reload Gemini' updates your AI session." position="bottom">
+        {#if activeEngine === "agy"}
+          <span class="text-[10px] px-2 py-0.5 rounded-full font-medium bg-purple-500/15 text-purple-300 border border-purple-500/30 flex items-center gap-1 shadow-sm">
+            <Sparkles size={11} class="text-purple-400" />
+            <span>Antigravity (agy)</span>
+          </span>
+        {:else}
+          <span class="text-[10px] px-2 py-0.5 rounded-full font-medium bg-sky-500/10 text-sky-400 border border-sky-500/20 flex items-center gap-1">
+            <Terminal size={11} />
+            <span>Gemini CLI</span>
+          </span>
+        {/if}
+        <Tooltip
+          text="Interactive PowerShell Terminal"
+          subtext={activeEngine === "agy"
+            ? "Executes commands inside the active workspace directory with Antigravity CLI (agy) on PATH. Adding variables to .env and clicking 'Reload Antigravity' updates your AI session."
+            : "Executes commands inside the active workspace directory with Gemini CLI on PATH. Adding variables to .env and clicking 'Reload Gemini' updates your AI session."}
+          position="bottom"
+        >
           <div class="p-0.5 text-muted-theme hover:text-accent-theme cursor-help">
             <Info size={13} />
           </div>
@@ -205,7 +230,7 @@
           {workspace?.path || "C:\\"}
         </span>
         {#if isExecuting}
-          <span class="text-[10px] text-accent-theme flex items-center gap-1 animate-pulse">
+          <span class="text-[10px] {activeEngine === 'agy' ? 'text-purple-400' : 'text-accent-theme'} flex items-center gap-1 animate-pulse">
             <RefreshCw size={11} class="animate-spin" />
             Executing...
           </span>
@@ -249,15 +274,70 @@
 
         <div class="h-3.5 w-px bg-subtle mx-1"></div>
 
-        <Tooltip text="Reload Gemini AI Session" subtext="Restarts the background Gemini CLI process to apply newly added .env or system environment variables immediately" position="bottom">
+        <!-- Engine-specific quick action tools -->
+        {#if activeEngine === "agy"}
+          <Tooltip text="Antigravity Models" subtext="Inspect available models, licensed frontier models, and quotas in Antigravity" position="bottom">
+            <button
+              type="button"
+              onclick={() => executeCommand("agy models")}
+              class="px-2 py-1 rounded text-[11px] text-purple-300 hover:text-purple-200 hover:bg-purple-900/30 border border-purple-500/20 flex items-center gap-1 transition-colors cursor-pointer"
+            >
+              <Cpu size={12} class="text-purple-400" />
+              <span>agy models</span>
+            </button>
+          </Tooltip>
+
+          <Tooltip text="Antigravity MCP Servers" subtext="Inspect active Model Context Protocol tools and servers configured in Antigravity" position="bottom">
+            <button
+              type="button"
+              onclick={() => executeCommand("agy mcp list")}
+              class="px-2 py-1 rounded text-[11px] text-purple-300 hover:text-purple-200 hover:bg-purple-900/30 border border-purple-500/20 flex items-center gap-1 transition-colors cursor-pointer"
+            >
+              <Layers size={12} class="text-purple-400" />
+              <span>agy mcp</span>
+            </button>
+          </Tooltip>
+
+          <Tooltip text="Antigravity Plugins & Skills" subtext="Inspect installed plugins, skills, and extensions in Antigravity" position="bottom">
+            <button
+              type="button"
+              onclick={() => executeCommand("agy plugin list")}
+              class="px-2 py-1 rounded text-[11px] text-purple-300 hover:text-purple-200 hover:bg-purple-900/30 border border-purple-500/20 flex items-center gap-1 transition-colors cursor-pointer"
+            >
+              <Puzzle size={12} class="text-purple-400" />
+              <span>agy plugins</span>
+            </button>
+          </Tooltip>
+        {:else}
+          <Tooltip text="Gemini CLI Version" subtext="Check installed Gemini CLI version and build information" position="bottom">
+            <button
+              type="button"
+              onclick={() => executeCommand("gemini --version")}
+              class="px-2 py-1 rounded text-[11px] text-secondary-theme hover:text-primary-theme hover:bg-surface border border-transparent hover:border-subtle flex items-center gap-1 transition-colors cursor-pointer"
+            >
+              <Info size={12} />
+              <span>gemini -v</span>
+            </button>
+          </Tooltip>
+        {/if}
+
+        <div class="h-3.5 w-px bg-subtle mx-1"></div>
+
+        <Tooltip
+          text={activeEngine === "agy" ? "Reload Antigravity AI Session" : "Reload Gemini AI Session"}
+          subtext={activeEngine === "agy"
+            ? "Restarts the background Antigravity CLI process to apply newly added .env or system environment variables immediately"
+            : "Restarts the background Gemini CLI process to apply newly added .env or system environment variables immediately"}
+          position="bottom"
+        >
           <button
             type="button"
-            onclick={handleReloadGemini}
+            onclick={handleReloadSession}
             disabled={isReloading}
-            class="px-2.5 py-1 rounded text-[11px] bg-accent-subtle hover:bg-accent-theme hover:text-white text-accent-theme font-medium flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50"
+            class="px-2.5 py-1 rounded text-[11px] {activeEngine === 'agy' ? 'bg-purple-500/15 hover:bg-purple-600 hover:text-white text-purple-300 border border-purple-500/30' : 'bg-accent-subtle hover:bg-accent-theme hover:text-white text-accent-theme'} font-medium flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50"
           >
             <RefreshCw size={12} class={isReloading ? "animate-spin" : ""} />
-            <span>Reload Gemini</span>
+            <span>{activeEngine === "agy" ? "Reload Antigravity" : "Reload Gemini"}</span>
           </button>
         </Tooltip>
 
@@ -304,16 +384,35 @@
     >
       {#if logs.length === 0}
         <div class="text-slate-500 py-1 space-y-1">
-          <div><span class="text-accent-theme font-semibold">Gemini Desktop Terminal Console</span> — PowerShell environment initialized.</div>
-          <div class="text-[10px]">
-            • Current working directory: <code class="text-slate-400">{workspace?.path || "C:\\"}</code>
-          </div>
-          <div class="text-[10px]">
-            • To set environment variables for Gemini CLI, add them to <code class="text-accent-theme">.env</code> (e.g. <code>echo "AZURE_DEVOPS_EXT_PAT=..." &gt;&gt; .env</code>) and click <b class="text-slate-300">Reload Gemini</b>.
-          </div>
-          <div class="text-[10px]">
-            • Use <code class="text-slate-400">Up / Down</code> arrows for history, <code class="text-slate-400">clear</code> to wipe terminal.
-          </div>
+          {#if activeEngine === "agy"}
+            <div><span class="text-purple-400 font-semibold">Antigravity Terminal Console</span> — PowerShell environment initialized with Antigravity CLI (<code class="text-purple-300">agy</code>) on PATH.</div>
+            <div class="text-[10px]">
+              • Current working directory: <code class="text-slate-400">{workspace?.path || "C:\\"}</code>
+            </div>
+            <div class="text-[10px]">
+              • To inject variables or API tokens into Antigravity, add them to <code class="text-purple-400">.env</code> (e.g. <code>echo "ANTHROPIC_API_KEY=..." &gt;&gt; .env</code>) and click <b class="text-purple-300">Reload Antigravity</b>.
+            </div>
+            <div class="text-[10px]">
+              • Antigravity quick commands: <code class="text-purple-300">agy models</code> (inspect models & licenses), <code class="text-purple-300">agy mcp list</code>, <code class="text-purple-300">agy plugin list</code>, <code class="text-purple-300">agy plugin import gemini</code>, <code class="text-purple-300">agy --help</code>.
+            </div>
+            <div class="text-[10px]">
+              • Use <code class="text-slate-400">Up / Down</code> arrows for history, <code class="text-slate-400">clear</code> to wipe terminal.
+            </div>
+          {:else}
+            <div><span class="text-accent-theme font-semibold">Gemini Desktop Terminal Console</span> — PowerShell environment initialized with Gemini CLI (<code class="text-sky-300">gemini</code>) on PATH.</div>
+            <div class="text-[10px]">
+              • Current working directory: <code class="text-slate-400">{workspace?.path || "C:\\"}</code>
+            </div>
+            <div class="text-[10px]">
+              • To set environment variables for Gemini CLI, add them to <code class="text-accent-theme">.env</code> (e.g. <code>echo "GEMINI_API_KEY=..." &gt;&gt; .env</code>) and click <b class="text-slate-300">Reload Gemini</b>.
+            </div>
+            <div class="text-[10px]">
+              • Gemini quick commands: <code class="text-sky-300">gemini --version</code>, <code class="text-sky-300">gemini --help</code>.
+            </div>
+            <div class="text-[10px]">
+              • Use <code class="text-slate-400">Up / Down</code> arrows for history, <code class="text-slate-400">clear</code> to wipe terminal.
+            </div>
+          {/if}
         </div>
       {:else}
         {#each logs as log}
@@ -361,8 +460,11 @@
       <div class="flex items-center gap-1 text-emerald-400 font-mono text-[11px] shrink-0 select-none">
         <span>PS</span>
         <span class="text-sky-400 truncate max-w-[150px]">
-          {workspace?.path ? workspace.path.split(/[\\/]/).pop() || workspace.name : "gemini"}
+          {workspace?.path ? workspace.path.split(/[\\/]/).pop() || workspace.name : "workspace"}
         </span>
+        {#if activeEngine === "agy"}
+          <span class="text-[10px] px-1 py-0.2 rounded bg-purple-500/20 text-purple-300 font-semibold">(agy)</span>
+        {/if}
         <span>&gt;</span>
       </div>
 
@@ -372,7 +474,11 @@
         bind:value={commandInput}
         onkeydown={handleKeyDown}
         disabled={isExecuting}
-        placeholder={isExecuting ? "Command is running..." : "Type command (e.g. echo \"KEY=VAL\" >> .env, git status, npm test)..."}
+        placeholder={isExecuting
+          ? "Command is running..."
+          : activeEngine === "agy"
+            ? "Type command (e.g. agy models, agy mcp list, git status, npm test)..."
+            : "Type command (e.g. echo \"KEY=VAL\" >> .env, git status, npm test)..."}
         class="flex-1 bg-transparent border-none text-slate-100 font-mono text-xs focus:outline-none placeholder:text-slate-600"
       />
 

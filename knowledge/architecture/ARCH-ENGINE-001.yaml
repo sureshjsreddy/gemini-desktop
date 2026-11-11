@@ -1,0 +1,70 @@
+id: ARCH-ENGINE-001
+type: architecture_standard
+title: Dual Engine Runtime Architecture: Gemini CLI and Antigravity CLI (agy)
+domain: architecture
+status: approved
+version: 1.1.0
+authority:
+  level: official
+  confidence: high
+owner:
+  team: core_architecture
+
+applies_to:
+  - backend
+  - frontend
+  - process_manager
+  - settings
+  - setup
+  - workspace
+
+rule:
+  "Gemini Desktop supports a dual-engine CLI runtime architecture, allowing seamless app-level switching between official Gemini CLI (`gemini`) and Antigravity CLI (`agy`). Process execution, ACP JSON-RPC communication, Windows Job Objects supervision, workspace mode translation, and configuration isolation must operate deterministically across both engines."
+
+do:
+  - "Store the active CLI engine choice at application level in SQLite `app_settings` under key `active_cli_engine` ('gemini' or 'agy'); when no engine has been selected and persisted by the user, strictly default to official Gemini CLI (`gemini`)."
+  - "Resolve binary paths dynamically via `find_cli_executable(engine)`: use `find_gemini_executable()` for Gemini CLI and `find_agy_executable()` for Antigravity CLI, scanning `%LOCALAPPDATA%\\agy\\bin\\agy.exe`, `%USERPROFILE%\\.antigravity\\bin\\agy.exe`, and system PATH."
+  - "Supervise child processes spawned for both engines under Windows Job Objects with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` to prevent orphaned background processes."
+  - "Communicate with both CLI engines via standard Agent Client Protocol (ACP) JSON-RPC over `stdin`/`stdout`."
+  - "Map workspace execution approval modes to engine-specific CLI invocation flags:"
+  - "  - `yolo`: `--dangerously-skip-permissions` (both engines)"
+  - "  - `auto_edit`: `--mode accept-edits` for `agy`; `--mode auto_edit` for `gemini`"
+  - "  - `plan`: `--mode plan` (both engines)"
+  - "Respect CLI argument positioning rules for Antigravity CLI: root options (`--model`, `--mode`, `--effort`) must strictly precede the `acp` subcommand (`agy [--model <m>] [--mode <mode>] acp [acp-flags]`), while ACP subcommand flags (`--dangerously-skip-permissions`, `--sandbox`) follow it."
+  - "Sanitize cross-engine model compatibility dynamically via `sanitize_model_for_engine`: when switching between `gemini` and `agy`, if a workspace was configured with an engine-incompatible model (e.g. `gemini-2.5-pro` on `agy`, or `claude-sonnet-4-6`/`gemini-3.8-flash-high` on `gemini`), seamlessly fallback to 'auto' to prevent fatal CLI model recognition crashes."
+  - "Isolate global disk settings paths: route Gemini CLI to `%USERPROFILE%/.gemini/settings.json` and Antigravity CLI to `%USERPROFILE%/.gemini/antigravity-cli/settings.json`."
+  - "Route Model Context Protocol (MCP) server configurations based on engine and scope via `resolve_mcp_config_file`:"
+  - "  - Gemini CLI Global: `%USERPROFILE%/.gemini/settings.json`"
+  - "  - Gemini CLI Workspace: `<workspace>/.gemini/settings.json`"
+  - "  - Antigravity CLI Global: `%USERPROFILE%/.gemini/config/mcp_config.json`"
+  - "  - Antigravity CLI Workspace: `<workspace>/.agents/mcp_config.json`"
+  - "Support dynamic model discovery via `discover_gemini_models`: execute `agy models` when `agy` is active and `gemini models` when `gemini` is active, parsing tab-delimited (`<id>\t<name>`) and JSON outputs."
+  - "Differentiate model catalogs: show `gemini-4-argon` under 'Gemini 4 Frontier (Enterprise / Licensed)' exclusively when `agy` is active; exclude it from standard Gemini CLI catalogs."
+  - "Support in-app updates for both engines: `winget upgrade Google.GeminiCLI` or `npm install -g @google/gemini-cli@latest` for Gemini CLI; `agy update` or PowerShell release installer for `agy`."
+  - "Support Model Context Protocol (MCP) server migration: provide 1-click import from Gemini CLI (`settings.json`) to Antigravity CLI (`mcp_config.json`) at both Global and Workspace scopes via `import_mcp_from_gemini` and `detect_importable_gemini_mcp`."
+  - "Support extension & skill migration: execute `agy plugin import gemini` to auto-convert Gemini CLI extensions, TOML commands, and global skills into native Antigravity plugins."
+  - "Support workspace skill synchronization: copy custom workspace skills from `.gemini/skills/` to `.agents/skills/` via `sync_workspace_skills_for_agy` for seamless backward compatibility."
+  - "Adapt integrated terminal console: dynamically prepend detected CLI binary directories to terminal `PATH`, display engine badge, provide adaptive quick action tools (`agy models`, `agy mcp`, `agy plugins`), and support dynamic session reloading for both engines."
+  - "Support stateful conversation rewind across both engines via `rewind_turn`: because conversations, turns, and message pruning reside in local-first SQLite (`gemini_desktop.db`) and file reversions use Git restore, rewinding operates deterministically regardless of active CLI engine."
+  - "Provide a 1-click action to add either CLI executable directory to the Windows User Environment Variable `Path` (`[Environment]::SetEnvironmentVariable('Path', ..., 'User')`) without corrupting or duplicating paths."
+
+dont:
+  - "Do not lock engine selection to workspace scope; persist engine selection globally at application level."
+  - "Do not share or overwrite `settings.json` between Gemini CLI and Antigravity CLI."
+  - "Do not expose `gemini-4-argon` in the model catalog when `gemini` CLI is active, as upstream Gemini CLI does not license or support Argon checkpoints."
+  - "Do not bypass Windows Job Objects when launching `agy` processes."
+  - "Do not modify the Machine/System PATH without elevation; strictly update the User Environment PATH."
+
+reason:
+  "Provides enterprise and advanced developers with unified desktop ergonomics for both Google's standard open Gemini CLI and the advanced Antigravity CLI agentic engine, while preserving strict process safety, credential isolation, and configuration integrity."
+
+related_items:
+  - ARCH-SYS-001
+  - ARCH-PROC-001
+  - ARCH-ACP-001
+  - PROD-MODEL-001
+  - PROD-SETTINGS-001
+  - PROD-SETUP-001
+  - PROD-WS-001
+  - PROD-MCP-001
+  - PROD-TERM-001

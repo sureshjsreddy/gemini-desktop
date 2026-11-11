@@ -62,6 +62,7 @@
     showTerminalDrawer = $bindable(false),
     showSolutionExplorer = $bindable(true),
     approvalMode = "default",
+    activeEngine = "gemini",
     onSendPrompt,
     onCancelPrompt,
     onSteerPrompt,
@@ -92,11 +93,12 @@
     showTerminalDrawer?: boolean;
     showSolutionExplorer?: boolean;
     approvalMode?: ApprovalMode;
+    activeEngine?: string;
     onSendPrompt: (prompt: string) => void;
     onCancelPrompt: () => void;
     onSteerPrompt?: (hint: string) => void;
     onExecutePlan?: (mode: "auto_edit" | "default", tasks: PlanTaskItem[]) => void;
-    onToolResponse: (requestId: number, optionId?: string, allowed?: boolean) => void;
+    onToolResponse: (requestId: number | string, optionId?: string, allowed?: boolean) => void;
     onExport: (format: string) => void;
     onOpenMcpModal?: () => void;
     onOpenRewindModal?: (targetId?: string) => void;
@@ -203,6 +205,31 @@
       await loadSessionChanges();
     } catch (e) {
       console.error("Failed to revert all files", e);
+    }
+  }
+
+  function getEffectiveModel(m: string | undefined, engine: string | undefined): string {
+    const raw = (m || "").trim();
+    if (!raw || raw.toLowerCase() === "auto") return "auto";
+    const lower = raw.toLowerCase();
+    if (engine === "agy") {
+      const isGeminiCliSpecific =
+        lower.startsWith("gemini-2.5") ||
+        lower.startsWith("gemini-1.5") ||
+        lower.startsWith("gemini-3.5") ||
+        lower.startsWith("gemini-3.1") ||
+        lower.startsWith("gemini-3-") ||
+        lower === "gemini-3.8-flash";
+      return isGeminiCliSpecific ? "auto (fallback)" : raw;
+    } else {
+      const isAgySpecific =
+        lower.startsWith("claude-") ||
+        lower.startsWith("gpt-oss-") ||
+        lower.startsWith("gemini-4-") ||
+        lower.endsWith("-high") ||
+        lower.endsWith("-medium") ||
+        lower.endsWith("-low");
+      return isAgySpecific ? "auto (fallback)" : raw;
     }
   }
 
@@ -470,7 +497,7 @@
       </h2>
       {#if workspace}
         <span class="text-[11px] px-2 py-0.5 rounded-full bg-surface-elevated text-accent-theme font-mono border border-subtle shrink-0 hidden sm:inline-block">
-          {workspace.name} &bull; {workspace.model}
+          {activeEngine === 'agy' ? '🚀 agy' : '♊ gemini'} &bull; {workspace.name} &bull; {getEffectiveModel(workspace.model, activeEngine)}
         </span>
       {/if}
     </div>
@@ -877,7 +904,7 @@
   />
 
   <!-- Terminal Drawer -->
-  <TerminalDrawer bind:isOpen={showTerminalDrawer} {workspace} />
+  <TerminalDrawer bind:isOpen={showTerminalDrawer} {workspace} {activeEngine} />
 
   <!-- Session Changes & Visual Diff Modal -->
   <SessionChangesModal

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use tauri::State;
+use crate::AppState;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -72,16 +74,24 @@ pub struct SaveGlobalCliSettingsPayload {
     pub raw_json: Option<String>,
 }
 
-pub fn get_global_settings_path() -> Result<PathBuf, String> {
+pub fn get_global_settings_path(engine: Option<&str>) -> Result<PathBuf, String> {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .map_err(|_| "Could not determine user home directory".to_string())?;
+    if let Some(eng) = engine {
+        if eng.trim().eq_ignore_ascii_case("agy") {
+            return Ok(PathBuf::from(home).join(".gemini").join("antigravity-cli").join("settings.json"));
+        }
+    }
     Ok(PathBuf::from(home).join(".gemini").join("settings.json"))
 }
 
 #[tauri::command]
-pub async fn get_global_cli_settings() -> Result<GlobalCliSettings, String> {
-    let file_path = get_global_settings_path()?;
+pub async fn get_global_cli_settings(
+    state: State<'_, AppState>,
+) -> Result<GlobalCliSettings, String> {
+    let engine = state.db.get_setting("active_cli_engine").ok().flatten().unwrap_or_else(|| "gemini".to_string());
+    let file_path = get_global_settings_path(Some(&engine))?;
     let path_str = file_path.to_string_lossy().to_string();
 
     if !file_path.exists() {
@@ -160,14 +170,18 @@ pub async fn get_global_cli_settings() -> Result<GlobalCliSettings, String> {
 }
 
 #[tauri::command]
-pub async fn save_global_cli_settings(payload: SaveGlobalCliSettingsPayload) -> Result<GlobalCliSettings, String> {
-    let file_path = get_global_settings_path()?;
+pub async fn save_global_cli_settings(
+    state: State<'_, AppState>,
+    payload: SaveGlobalCliSettingsPayload,
+) -> Result<GlobalCliSettings, String> {
+    let engine = state.db.get_setting("active_cli_engine").ok().flatten().unwrap_or_else(|| "gemini".to_string());
+    let file_path = get_global_settings_path(Some(&engine))?;
     let path_str = file_path.to_string_lossy().to_string();
 
     if let Some(parent) = file_path.parent() {
         if !parent.exists() {
             std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create .gemini directory: {}", e))?;
+                .map_err(|e| format!("Failed to create settings parent directory: {}", e))?;
         }
     }
 
@@ -237,7 +251,70 @@ pub async fn save_global_cli_settings(payload: SaveGlobalCliSettingsPayload) -> 
     std::fs::write(&file_path, &formatted)
         .map_err(|e| format!("Failed to write settings file {}: {}", path_str, e))?;
 
-    get_global_cli_settings().await
+    get_global_cli_settings(state).await
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CliEnginesStatus {
+    pub active_engine: String,
+    pub gemini_installed: bool,
+    pub gemini_path: Option<String>,
+    pub agy_installed: bool,
+    pub agy_path: Option<String>,
+}
+
+#[tauri::command]
+pub async fn get_active_cli_engine(state: State<'_, AppState>) -> Result<String, String> {
+    let engine = state.db.get_setting("active_cli_engine")
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "gemini".to_string());
+    Ok(engine)
+}
+
+#[tauri::command]
+pub async fn set_active_cli_engine(
+    state: State<'_, AppState>,
+    engine: String,
+) -> Result<String, String> {
+    let normalized = match engine.trim().to_lowercase().as_str() {
+        "agy" => "agy",
+        _ => "gemini",
+    };
+
+    state.db.set_setting("active_cli_engine", normalized)
+        .map_err(|e| e.to_string())?;
+
+    // Terminate any currently running CLI process and reset ACP state so subsequent turns launch the newly active engine
+    let mut child_guard = state.active_child.lock().await;
+    if let Some(old_child) = child_guard.take() {
+        crate::process_manager::ProcessSupervisor::terminate_child(old_child);
+    }
+    let mut ws_guard = state.active_process_workspace.lock().await;
+    *ws_guard = None;
+    state.acp_session.clear_sessions();
+
+    Ok(normalized.to_string())
+}
+
+#[tauri::command]
+pub async fn get_cli_engines_status(state: State<'_, AppState>) -> Result<CliEnginesStatus, String> {
+    let active = state.db.get_setting("active_cli_engine")
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "gemini".to_string());
+
+    let gemini_exe = crate::process_manager::find_gemini_executable();
+    let agy_exe = crate::process_manager::find_agy_executable();
+
+    Ok(CliEnginesStatus {
+        active_engine: active,
+        gemini_installed: gemini_exe.is_some(),
+        gemini_path: gemini_exe.map(|p| p.to_string_lossy().to_string()),
+        agy_installed: agy_exe.is_some(),
+        agy_path: agy_exe.map(|p| p.to_string_lossy().to_string()),
+    })
 }
 
 fn read_or_create_base_json(path: &std::path::Path) -> Result<serde_json::Value, String> {
@@ -286,5 +363,38 @@ mod tests {
         });
         ensure_object(&mut val, "model");
         assert_eq!(val["model"]["existingKey"], "preserved");
+    }
+
+    #[test]
+    fn test_active_cli_engine_persistence() {
+        let db = crate::database::DbManager::new_in_memory().unwrap();
+        // Initially empty
+        assert_eq!(db.get_setting("active_cli_engine").unwrap(), None);
+
+        // When unpersisted, default fallback is strictly "gemini"
+        let fallback_engine = db.get_setting("active_cli_engine")
+            .unwrap()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "gemini".to_string());
+        assert_eq!(fallback_engine, "gemini");
+
+        // Set to agy
+        db.set_setting("active_cli_engine", "agy").unwrap();
+        assert_eq!(db.get_setting("active_cli_engine").unwrap().as_deref(), Some("agy"));
+
+        // Switch to gemini
+        db.set_setting("active_cli_engine", "gemini").unwrap();
+        assert_eq!(db.get_setting("active_cli_engine").unwrap().as_deref(), Some("gemini"));
+    }
+
+    #[test]
+    fn test_get_global_settings_path_routing() {
+        let p_gemini = get_global_settings_path(Some("gemini")).unwrap();
+        let s_gemini = p_gemini.to_string_lossy().to_lowercase().replace('/', "\\");
+        assert!(s_gemini.ends_with(".gemini\\settings.json"));
+
+        let p_agy = get_global_settings_path(Some("agy")).unwrap();
+        let s_agy = p_agy.to_string_lossy().to_lowercase().replace('/', "\\");
+        assert!(s_agy.ends_with("antigravity-cli\\settings.json"));
     }
 }

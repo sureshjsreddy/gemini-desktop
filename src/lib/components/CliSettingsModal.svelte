@@ -1,6 +1,13 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import type { GlobalCliSettings, SaveGlobalCliSettingsPayload } from "$lib/types";
+  import type {
+    GlobalCliSettings,
+    SaveGlobalCliSettingsPayload,
+    CliEngine,
+    CliEnginesStatus,
+    CliPathStatus,
+    PathAddResult,
+  } from "$lib/types";
   import {
     Sliders,
     Zap,
@@ -14,6 +21,8 @@
     FolderOpen,
     Copy,
     AlertCircle,
+    Globe,
+    CheckCircle2,
   } from "lucide-svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
 
@@ -35,6 +44,9 @@
   let hasCopiedPath = $state(false);
 
   // Settings State
+  let activeEngine = $state<CliEngine>("gemini");
+  let engineStatus = $state<CliEnginesStatus | null>(null);
+  let isSwitchingEngine = $state(false);
   let settingsFilePath = $state("");
   let chatCompressionEnabled = $state(false);
   let compressionThresholdPercent = $state(75);
@@ -44,6 +56,12 @@
   let retentionEnabled = $state(true);
   let retentionMaxAge = $state("30d");
   let rawJson = $state("");
+
+  // PATH State
+  let cliPathStatus = $state<CliPathStatus | null>(null);
+  let isCheckingPath = $state(false);
+  let isAddingToPath = $state(false);
+  let pathAddResult = $state<PathAddResult | null>(null);
 
   $effect(() => {
     if (isOpen) {
@@ -56,7 +74,11 @@
     errorMessage = null;
     successNotice = null;
     try {
-      const res = await invoke<GlobalCliSettings>("get_global_cli_settings");
+      const [res, engines, pathStatus] = await Promise.all([
+        invoke<GlobalCliSettings>("get_global_cli_settings"),
+        invoke<CliEnginesStatus>("get_cli_engines_status"),
+        invoke<CliPathStatus>("check_cli_path_status").catch(() => null),
+      ]);
       settingsFilePath = res.filePath;
       chatCompressionEnabled = res.chatCompression.enabled;
       compressionThresholdPercent = Math.round(res.chatCompression.contextPercentageThreshold * 100);
@@ -66,10 +88,62 @@
       retentionEnabled = res.sessionRetention.enabled;
       retentionMaxAge = res.sessionRetention.maxAge;
       rawJson = res.rawJson;
+
+      engineStatus = engines;
+      activeEngine = engines.activeEngine;
+      cliPathStatus = pathStatus;
     } catch (e: any) {
       errorMessage = typeof e === "string" ? e : e?.message || "Failed to load global CLI settings.";
     } finally {
       isLoading = false;
+    }
+  }
+
+  async function handleSwitchEngine(engine: CliEngine) {
+    if (activeEngine === engine || isSwitchingEngine) return;
+    isSwitchingEngine = true;
+    errorMessage = null;
+    successNotice = null;
+    try {
+      const updated = await invoke<CliEngine>("set_active_cli_engine", { engine });
+      activeEngine = updated;
+      if (typeof window !== "undefined") {
+        localStorage.setItem("gemini_desktop_active_engine", updated);
+      }
+      if (engineStatus) {
+        engineStatus.activeEngine = updated;
+      }
+      await loadSettings();
+      cliPathStatus = await invoke<CliPathStatus>("check_cli_path_status").catch(() => null);
+      successNotice = `Switched agent engine to ${updated === "agy" ? "Antigravity CLI (agy)" : "Gemini CLI"}! All workspaces will now use this engine.`;
+      setTimeout(() => {
+        if (successNotice) successNotice = null;
+      }, 4000);
+    } catch (e: any) {
+      errorMessage = typeof e === "string" ? e : e?.message || "Failed to switch engine.";
+    } finally {
+      isSwitchingEngine = false;
+    }
+  }
+
+  async function handleAddToPath(engine: CliEngine) {
+    isAddingToPath = true;
+    pathAddResult = null;
+    try {
+      const res = await invoke<PathAddResult>("add_cli_to_user_path", { engine });
+      pathAddResult = res;
+      cliPathStatus = await invoke<CliPathStatus>("check_cli_path_status").catch(() => null);
+      const engines = await invoke<CliEnginesStatus>("get_cli_engines_status").catch(() => null);
+      if (engines) engineStatus = engines;
+    } catch (e: any) {
+      pathAddResult = {
+        success: false,
+        message: e?.toString() || "Failed to add to User PATH.",
+        targetDir: "",
+        alreadyInPath: false,
+      };
+    } finally {
+      isAddingToPath = false;
     }
   }
 
@@ -181,10 +255,10 @@
           </div>
           <div>
             <h2 id="cli-settings-title" class="text-sm font-semibold text-primary-theme flex items-center gap-2">
-              Gemini CLI Global Settings
+              {activeEngine === 'agy' ? 'Antigravity CLI Global Settings' : 'Gemini CLI Global Settings'}
             </h2>
             <p class="text-xs text-muted-theme mt-0.5">
-              Configure session compaction, turn limits, and token retention policies in <code class="font-mono text-secondary-theme">~/.gemini/settings.json</code>.
+              Configure session compaction, turn limits, and token retention policies in <code class="font-mono text-secondary-theme">{settingsFilePath || (activeEngine === 'agy' ? '~/.gemini/antigravity-cli/settings.json' : '~/.gemini/settings.json')}</code>.
             </p>
           </div>
         </div>
@@ -236,6 +310,147 @@
         {/if}
 
         {#if activeTab === "general"}
+          <!-- Engine Selection Card -->
+          <div class="p-4 rounded-lg border border-subtle bg-surface space-y-3">
+            <div class="flex items-start justify-between">
+              <div>
+                <span class="text-xs font-semibold text-primary-theme flex items-center gap-2">
+                  <Sliders size={14} class="text-accent-theme" />
+                  Active Agent Engine
+                </span>
+                <p class="text-[11px] text-muted-theme mt-1 leading-relaxed">
+                  Select which underlying CLI agent runs across all your project workspaces and chat turns.
+                </p>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3 pt-1">
+              <!-- Antigravity (agy) Option -->
+              <button
+                type="button"
+                onclick={() => handleSwitchEngine("agy")}
+                disabled={isSwitchingEngine}
+                class="flex flex-col text-left p-3 rounded-lg border transition-all cursor-pointer {activeEngine === 'agy' ? 'border-accent-theme bg-accent-theme/10 shadow-xs ring-1 ring-accent-theme/50' : 'border-subtle bg-surface-elevated hover:border-theme-default'}"
+              >
+                <div class="flex items-center justify-between w-full mb-1">
+                  <span class="text-xs font-semibold text-primary-theme flex items-center gap-1.5">
+                    🚀 Antigravity (<code class="font-mono text-[11px]">agy</code>)
+                  </span>
+                  {#if activeEngine === "agy"}
+                    <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                  {/if}
+                </div>
+                <p class="text-[10px] text-secondary-theme leading-normal">
+                  Enterprise Antigravity agent runtime with native Agent Client Protocol (ACP) support.
+                </p>
+                <div class="mt-2 text-[10px] flex items-center gap-1.5 font-mono {engineStatus?.agyInstalled ? 'text-emerald-400' : 'text-amber-400'}">
+                  <span class="w-1.5 h-1.5 rounded-full {engineStatus?.agyInstalled ? 'bg-emerald-400' : 'bg-amber-400'}"></span>
+                  <span>{engineStatus?.agyInstalled ? "Installed & Detected" : "Not found in PATH"}</span>
+                </div>
+              </button>
+
+              <!-- Gemini CLI Option -->
+              <button
+                type="button"
+                onclick={() => handleSwitchEngine("gemini")}
+                disabled={isSwitchingEngine}
+                class="flex flex-col text-left p-3 rounded-lg border transition-all cursor-pointer {activeEngine === 'gemini' ? 'border-accent-theme bg-accent-theme/10 shadow-xs ring-1 ring-accent-theme/50' : 'border-subtle bg-surface-elevated hover:border-theme-default'}"
+              >
+                <div class="flex items-center justify-between w-full mb-1">
+                  <span class="text-xs font-semibold text-primary-theme flex items-center gap-1.5">
+                    ♊ Gemini CLI (<code class="font-mono text-[11px]">gemini</code>)
+                  </span>
+                  {#if activeEngine === "gemini"}
+                    <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                  {/if}
+                </div>
+                <p class="text-[10px] text-secondary-theme leading-normal">
+                  Standard Gemini CLI supporting Google AI Studio and Vertex AI dual authentication.
+                </p>
+                <div class="mt-2 text-[10px] flex items-center gap-1.5 font-mono {engineStatus?.geminiInstalled ? 'text-emerald-400' : 'text-amber-400'}">
+                  <span class="w-1.5 h-1.5 rounded-full {engineStatus?.geminiInstalled ? 'bg-emerald-400' : 'bg-amber-400'}"></span>
+                  <span>{engineStatus?.geminiInstalled ? "Installed & Detected" : "Not found in PATH"}</span>
+                </div>
+              </button>
+            </div>
+
+            <!-- Active Engine PATH Status / Quick Add -->
+            {#if activeEngine === "agy"}
+              <div class="mt-2.5 p-2.5 rounded-lg bg-surface-elevated border border-subtle flex items-center justify-between text-xs">
+                <div class="min-w-0 mr-2">
+                  <div class="flex items-center gap-1.5">
+                    <Globe size={13} class="text-accent-theme" />
+                    <span class="font-medium text-primary-theme">Antigravity CLI (agy)</span>
+                    {#if cliPathStatus?.agyInUserPath}
+                      <span class="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-mono font-medium flex items-center gap-1">
+                        <Check size={10} /> In User PATH
+                      </span>
+                    {:else}
+                      <span class="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-400 font-mono font-medium">
+                        Not in User PATH
+                      </span>
+                    {/if}
+                  </div>
+                  <p class="text-[11px] font-mono text-muted-theme truncate mt-0.5">
+                    {cliPathStatus?.agyDir || "Directory not located"}
+                  </p>
+                </div>
+                {#if !cliPathStatus?.agyInUserPath}
+                  <button
+                    type="button"
+                    onclick={() => handleAddToPath("agy")}
+                    disabled={isAddingToPath}
+                    class="px-2.5 py-1 rounded bg-accent-theme hover:bg-accent-hover text-white text-[11px] font-medium transition-colors cursor-pointer shrink-0 disabled:opacity-50"
+                  >
+                    {isAddingToPath ? "Adding..." : "Add to User PATH"}
+                  </button>
+                {/if}
+              </div>
+            {:else}
+              <div class="mt-2.5 p-2.5 rounded-lg bg-surface-elevated border border-subtle flex items-center justify-between text-xs">
+                <div class="min-w-0 mr-2">
+                  <div class="flex items-center gap-1.5">
+                    <Globe size={13} class="text-accent-theme" />
+                    <span class="font-medium text-primary-theme">Gemini CLI (gemini)</span>
+                    {#if cliPathStatus?.geminiInUserPath}
+                      <span class="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-mono font-medium flex items-center gap-1">
+                        <Check size={10} /> In User PATH
+                      </span>
+                    {:else}
+                      <span class="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-400 font-mono font-medium">
+                        Not in User PATH
+                      </span>
+                    {/if}
+                  </div>
+                  <p class="text-[11px] font-mono text-muted-theme truncate mt-0.5">
+                    {cliPathStatus?.geminiDir || "Directory not located"}
+                  </p>
+                </div>
+                {#if !cliPathStatus?.geminiInUserPath}
+                  <button
+                    type="button"
+                    onclick={() => handleAddToPath("gemini")}
+                    disabled={isAddingToPath}
+                    class="px-2.5 py-1 rounded bg-accent-theme hover:bg-accent-hover text-white text-[11px] font-medium transition-colors cursor-pointer shrink-0 disabled:opacity-50"
+                  >
+                    {isAddingToPath ? "Adding..." : "Add to User PATH"}
+                  </button>
+                {/if}
+              </div>
+            {/if}
+
+            {#if pathAddResult}
+              <div class="p-2.5 rounded-lg text-xs flex items-start gap-2 {pathAddResult.success ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'}">
+                {#if pathAddResult.success}
+                  <CheckCircle2 size={14} class="text-emerald-400 shrink-0 mt-0.5" />
+                {:else}
+                  <AlertCircle size={14} class="text-rose-400 shrink-0 mt-0.5" />
+                {/if}
+                <span class="leading-relaxed">{pathAddResult.message}</span>
+              </div>
+            {/if}
+          </div>
+
           <!-- Card 1: Context Compression -->
           <div class="p-4 rounded-lg border border-subtle bg-surface space-y-3">
             <div class="flex items-start justify-between">

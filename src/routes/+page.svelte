@@ -40,9 +40,15 @@
   import { getAppVersion, APP_VERSION_FALLBACK } from "$lib/version";
 
   const LAST_WORKSPACE_KEY = "gemini_desktop_last_workspace_id";
+  const ACTIVE_ENGINE_STORAGE_KEY = "gemini_desktop_active_engine";
 
   // Reactive State (Svelte 5 Runes)
   let appVersion = $state(APP_VERSION_FALLBACK);
+  let activeEngine = $state<string>(
+    typeof window !== "undefined"
+      ? localStorage.getItem(ACTIVE_ENGINE_STORAGE_KEY) || "gemini"
+      : "gemini"
+  );
   let workspaces = $state<Workspace[]>([]);
   let activeWorkspace = $state<Workspace | null>(null);
   let sessions = $state<Session[]>([]);
@@ -151,6 +157,20 @@
   let dismissedErrorSignature = $state<string | null>(null);
   let rewindTargetMessageId = $state<string | null>(null);
 
+  async function refreshActiveEngine() {
+    try {
+      const eng = await invoke<string>("get_active_cli_engine");
+      if (eng) {
+        activeEngine = eng;
+        if (typeof window !== "undefined") {
+          localStorage.setItem(ACTIVE_ENGINE_STORAGE_KEY, eng);
+        }
+      }
+    } catch (e) {
+      console.warn("Could not fetch active CLI engine:", e);
+    }
+  }
+
   onMount(async () => {
     // 0. Initialize theme & dynamic app version
     themeManager.init();
@@ -158,6 +178,7 @@
     getAppVersion().then((ver) => {
       if (ver) appVersion = ver;
     });
+    refreshActiveEngine();
 
     // 1. Check Gemini environment status
     try {
@@ -1042,7 +1063,7 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
     finishStreamingForSession(sid);
   }
 
-  async function handleToolResponse(requestId: number, optionId?: string, allowed: boolean = true) {
+  async function handleToolResponse(requestId: number | string, optionId?: string, allowed: boolean = true) {
     if (activeSessionId && streamStates[activeSessionId]) {
       streamStates[activeSessionId].toolPermission = null;
     }
@@ -1138,6 +1159,7 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
     {generatingSessionIds}
     {envStatus}
     {appVersion}
+    {activeEngine}
     onToggle={() => (showSidebar = !showSidebar)}
     onSelectWorkspace={selectWorkspace}
     onSelectSession={selectSession}
@@ -1166,6 +1188,7 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
       bind:this={chatViewRef}
       workspace={activeWorkspace}
       session={activeSession}
+      {activeEngine}
       {workspaceFiles}
       {messages}
       {isStreaming}
@@ -1255,6 +1278,7 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
     isOpen={modalManager.isOpen("workspace")}
     {activeWorkspace}
     {workspaces}
+    {activeEngine}
     onClose={() => modalManager.close()}
     onSaveWorkspace={handleSaveWorkspace}
     onDeleteWorkspace={handleDeleteWorkspace}
@@ -1277,6 +1301,7 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
   <McpModal
     isOpen={modalManager.isOpen("mcp")}
     {activeWorkspace}
+    {activeEngine}
     onClose={() => modalManager.close()}
   />
 
@@ -1284,7 +1309,10 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
     isOpen={modalManager.isOpen("cli-setup")}
     {envStatus}
     {activeWorkspace}
-    onClose={() => modalManager.close()}
+    onClose={() => {
+      modalManager.close();
+      refreshActiveEngine();
+    }}
     onEnvStatusUpdated={(newStatus) => {
       envStatus = newStatus;
     }}
@@ -1292,6 +1320,9 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
 
   <CliSettingsModal
     isOpen={modalManager.isOpen("cli-settings")}
-    onClose={() => modalManager.close()}
+    onClose={() => {
+      modalManager.close();
+      refreshActiveEngine();
+    }}
   />
 </div>

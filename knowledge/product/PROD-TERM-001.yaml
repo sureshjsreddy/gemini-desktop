@@ -3,7 +3,7 @@ type: product_standard
 title: Integrated Terminal Drawer, PowerShell Workspace Execution & Session Sync
 domain: product
 status: approved
-version: 1.1.0
+version: 1.2.0
 authority:
   level: official
   confidence: high
@@ -17,18 +17,20 @@ applies_to:
   - process_manager
 
 rule:
-  "The desktop app must provide an integrated workspace terminal drawer (`Ctrl+` `) that executes commands directly in the active workspace root with exit code, duration tracking, environment synchronization, and enterprise EDR-safe execution posture."
+  "The desktop app must provide an integrated workspace terminal drawer (`Ctrl+` `) that dynamically adapts to the active CLI engine (Gemini CLI or Antigravity CLI `agy`), injecting detected CLI binary paths and workspace environment variables into PowerShell without script bypass flags."
 
 do:
   - "Provide a collapsible bottom drawer toggleable via shortcut (`Ctrl+` `) or UI buttons with height expansion controls."
   - "Execute commands via native shell (`powershell.exe` on Windows, `sh` on Unix) bound to the current workspace root directory."
   - "Execute Windows PowerShell commands without `-ExecutionPolicy Bypass` (using standard `-NoProfile -NonInteractive -Command`) to prevent triggering CrowdStrike Falcon MITRE T1059.001 Scripting Policy Bypass IOAs."
+  - "Automatically detect and prepend both `find_agy_executable()` and `find_gemini_executable()` binary directories to the terminal process `PATH` so `agy` and `gemini` commands run out-of-the-box regardless of Windows user/system PATH state."
   - "Enforce a 3-tier safe fallback directory hierarchy (`fallback_safe_terminal_dir`: active workspace directory -> `%USERPROFILE%` -> `%LOCALAPPDATA%\\GeminiDesktop`), strictly prohibiting drive roots, `%WINDIR%`, `Program Files`, and `%TEMP%` as terminal working directories."
   - "Automatically check for, parse, and inject workspace `.env` and `.env.local` files into the shell process environment on every command execution."
   - "Capture and format stdout, stderr, exit code, and millisecond execution duration in a scrollable console."
-  - "Support command history recall via keyboard (`↑`/`↓`) and console clearing (`clear`/`cls`)."
-  - "Offer quick-action buttons for common developer tasks (`git status`, `git diff --stat`, directory listing)."
-  - "Provide an interactive 'Reload Gemini' environment sync action (`restart_gemini_session`) to clear active ACP sessions so newly edited `.env` variables take immediate effect."
+  - "Display dynamic engine pill badge in terminal header: 'Antigravity (agy)' (purple) or 'Gemini CLI' (blue)."
+  - "Offer engine-adaptive quick-action buttons: common developer actions (`git status`, `dir`, `View .env`) alongside Antigravity commands (`agy models`, `agy mcp`, `agy plugins`) or Gemini commands (`gemini -v`)."
+  - "Provide an interactive environment sync action ('Reload Antigravity' or 'Reload Gemini') invoking `restart_gemini_session` to reset active ACP child processes and apply newly added `.env` keys on next turn."
+  - "Render engine-tailored welcome consoles detailing relevant commands, environment variable setup, and quick actions."
 
 dont:
   - "Do not block the webview UI thread during terminal execution."

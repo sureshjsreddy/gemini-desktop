@@ -39,6 +39,27 @@ pub async fn run_terminal_command(
         c
     };
 
+    // Prepend detected CLI binary directories to PATH so agy and gemini can be invoked directly
+    if let Ok(current_path) = std::env::var("PATH") {
+        let mut path_dirs: Vec<PathBuf> = Vec::new();
+        if let Some(agy_bin) = crate::process_manager::find_agy_executable() {
+            if let Some(agy_dir) = agy_bin.parent() {
+                path_dirs.push(agy_dir.to_path_buf());
+            }
+        }
+        if let Some(gemini_bin) = crate::process_manager::find_gemini_executable() {
+            if let Some(gemini_dir) = gemini_bin.parent() {
+                path_dirs.push(gemini_dir.to_path_buf());
+            }
+        }
+        if !path_dirs.is_empty() {
+            let combined = path_dirs.into_iter().chain(std::env::split_paths(&current_path));
+            if let Ok(new_path) = std::env::join_paths(combined) {
+                cmd.env("PATH", new_path);
+            }
+        }
+    }
+
     let safe_cwd = if let Some(ref wp) = workspace_path {
         let p = PathBuf::from(wp);
         if p.is_dir() {

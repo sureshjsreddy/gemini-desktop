@@ -50,7 +50,7 @@ export interface PermissionOption {
 }
 
 export interface ToolPermissionPayload {
-  request_id: number;
+  request_id: number | string;
   session_id: string;
   tool_call_id?: string;
   tool_name: string;
@@ -321,6 +321,34 @@ export interface ContinuationResult {
   newSession: Session;
   continuationMessage: Message;
 }
+
+export type CliEngine = "gemini" | "agy";
+
+export interface CliEnginesStatus {
+  activeEngine: CliEngine;
+  geminiInstalled: boolean;
+  geminiPath?: string;
+  agyInstalled: boolean;
+  agyPath?: string;
+}
+
+export interface CliPathStatus {
+  geminiPath?: string;
+  geminiDir?: string;
+  geminiInUserPath: boolean;
+  agyPath?: string;
+  agyDir?: string;
+  agyInUserPath: boolean;
+}
+
+export interface PathAddResult {
+  success: boolean;
+  message: string;
+  targetDir: string;
+  alreadyInPath: boolean;
+}
+
+
 
 
 

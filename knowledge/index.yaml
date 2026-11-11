@@ -1,14 +1,17 @@
 # Gemini Desktop Master Knowledge Graph & Index
 system_name: GeminiDesktop
 repository_root: "c:/AIFiles/gemini-desktop"
-knowledge_units_count: 27
-last_updated: "2026-11-07"
+knowledge_units_count: 28
+last_updated: "2026-11-12"
 
 knowledge_units:
   architecture:
     - id: ARCH-SYS-001
       file: "knowledge/architecture/ARCH-SYS-001.yaml"
       title: "Tauri v2 Native Desktop & SvelteKit Hybrid Architecture"
+    - id: ARCH-ENGINE-001
+      file: "knowledge/architecture/ARCH-ENGINE-001.yaml"
+      title: "Dual Engine Runtime Architecture: Gemini CLI and Antigravity CLI (agy)"
     - id: ARCH-ACP-001
       file: "knowledge/architecture/ARCH-ACP-001.yaml"
       title: "Agent Client Protocol (ACP) JSON-RPC Streaming & Tool Intercepts"

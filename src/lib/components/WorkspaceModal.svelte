@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Workspace, ApprovalMode, WorkspacePathValidation, CliModelInfo, CliModelDiscoveryResult } from "$lib/types";
-  import { X, Plus, Trash2, Check, Bell, BellRing, FileDiff, AlertTriangle, RefreshCw } from "lucide-svelte";
+  import { X, Plus, Trash2, Check, Bell, BellRing, FileDiff, AlertTriangle, RefreshCw, Sparkles } from "lucide-svelte";
   import { isNotificationSettingEnabled, setNotificationSetting, notifyBackgroundTaskComplete } from "$lib/utils/notifications";
   import { dialogManager } from "$lib/dialog.svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -91,10 +91,47 @@
     },
   ];
 
+  const AGY_MODEL_GROUPS: ModelOptionGroup[] = [
+    {
+      group: "Antigravity Default",
+      options: [
+        { value: "auto", label: "Auto — Default Antigravity model" },
+      ],
+    },
+    {
+      group: "Gemini 4 Frontier (Enterprise / Licensed)",
+      options: [
+        { value: "gemini-4-argon", label: "gemini-4-argon (Gemini 4 Argon — Frontier Deep Reasoning & Architecture)" },
+      ],
+    },
+    {
+      group: "Gemini 3.8 Flash (Reasoning & Speed)",
+      options: [
+        { value: "gemini-3.8-flash-high", label: "gemini-3.8-flash-high (Gemini 3.8 Flash High Reasoning)" },
+        { value: "gemini-3.8-flash-medium", label: "gemini-3.8-flash-medium (Gemini 3.8 Flash Medium Reasoning)" },
+        { value: "gemini-3.8-flash-low", label: "gemini-3.8-flash-low (Gemini 3.8 Flash Low Reasoning)" },
+      ],
+    },
+    {
+      group: "Anthropic Claude (Extended Thinking)",
+      options: [
+        { value: "claude-sonnet-4-6", label: "claude-sonnet-4-6 (Claude Sonnet 4.6 Thinking)" },
+        { value: "claude-opus-4-6-thinking", label: "claude-opus-4-6-thinking (Claude Opus 4.6 Thinking)" },
+      ],
+    },
+    {
+      group: "Open Models",
+      options: [
+        { value: "gpt-oss-120b-medium", label: "gpt-oss-120b-medium (GPT-OSS 120B Medium Reasoning)" },
+      ],
+    },
+  ];
+
   let {
     isOpen = false,
     activeWorkspace = null,
     workspaces = [],
+    activeEngine = "gemini",
     onClose,
     onSaveWorkspace,
     onDeleteWorkspace,
@@ -102,10 +139,13 @@
     isOpen: boolean;
     activeWorkspace?: Workspace | null;
     workspaces: Workspace[];
+    activeEngine?: string;
     onClose: () => void;
     onSaveWorkspace: (ws: Workspace) => void;
     onDeleteWorkspace: (id: string) => void;
   } = $props();
+
+  let effectiveModelGroups = $derived(activeEngine === "agy" ? AGY_MODEL_GROUPS : MODEL_GROUPS);
 
   let editingWorkspace: Workspace = $state({
     id: "",
@@ -127,6 +167,29 @@
   let isDiscoveringModels = $state(false);
   let discoveryStatus = $state<{ type: "success" | "info" | "error"; text: string } | null>(null);
   let liveDiscoveredModels = $state<CliModelInfo[]>([]);
+
+  let isSyncingSkills = $state(false);
+  let skillsSyncResult = $state<{ success: boolean; message: string; synced_count: number } | null>(null);
+
+  async function handleSyncSkills() {
+    if (!editingWorkspace.path) return;
+    isSyncingSkills = true;
+    skillsSyncResult = null;
+    try {
+      const res = await invoke<{ success: boolean; message: string; synced_count: number }>("sync_workspace_skills_for_agy", {
+        workspacePath: editingWorkspace.path,
+      });
+      skillsSyncResult = res;
+    } catch (err: any) {
+      skillsSyncResult = {
+        success: false,
+        message: `Sync failed: ${err}`,
+        synced_count: 0,
+      };
+    } finally {
+      isSyncingSkills = false;
+    }
+  }
 
   async function handleDiscoverModels() {
     isDiscoveringModels = true;
@@ -201,7 +264,7 @@
     // Only re-sync dropdown state when editing workspace changes (avoids clobbering manual typing)
     if (editingWorkspace.id !== lastSyncedWorkspaceId) {
       lastSyncedWorkspaceId = editingWorkspace.id;
-      const isKnown = MODEL_GROUPS.some((g) =>
+      const isKnown = effectiveModelGroups.some((g) =>
         g.options.some((o) => o.value === editingWorkspace.model)
       );
       if (isKnown) {
@@ -219,7 +282,7 @@
     selectedDropdownValue = target.value;
     if (target.value === "manual_custom") {
       if (!customModelInput.trim()) {
-        const isKnown = MODEL_GROUPS.some((g) =>
+        const isKnown = effectiveModelGroups.some((g) =>
           g.options.some((o) => o.value === editingWorkspace.model)
         );
         customModelInput = isKnown ? "" : (editingWorkspace.model || "");
@@ -394,7 +457,7 @@
                   {/each}
                 </optgroup>
               {/if}
-              {#each MODEL_GROUPS as group}
+              {#each effectiveModelGroups as group}
                 <optgroup label={group.group}>
                   {#each group.options as opt}
                     <option value={opt.value}>{opt.label}</option>
@@ -584,6 +647,40 @@
               </button>
             </div>
           </div>
+
+          <!-- Antigravity Skills Compatibility Sync Card (When Agy Engine is selected) -->
+          {#if activeEngine === "agy"}
+            <div class="p-3 bg-app border border-subtle rounded-lg space-y-2">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                  <Sparkles size={14} class="text-purple-400" />
+                  <span class="font-medium text-primary-theme text-xs">Antigravity Skills Compatibility Sync</span>
+                </div>
+                <button
+                  type="button"
+                  onclick={handleSyncSkills}
+                  disabled={isSyncingSkills}
+                  class="px-2.5 py-1 text-xs rounded bg-purple-600 hover:bg-purple-500 text-white font-medium transition-colors cursor-pointer flex items-center gap-1.5 disabled:opacity-50 shrink-0"
+                >
+                  {#if isSyncingSkills}
+                    <RefreshCw size={12} class="animate-spin" />
+                    <span>Syncing...</span>
+                  {:else}
+                    <Sparkles size={12} />
+                    <span>Sync to .agents/skills</span>
+                  {/if}
+                </button>
+              </div>
+              <p class="text-[11px] text-muted-theme">
+                Copies workspace skills from <code class="font-mono text-secondary-theme">.gemini/skills/</code> to <code class="font-mono text-secondary-theme">.agents/skills/</code> so Antigravity CLI recognizes them natively.
+              </p>
+              {#if skillsSyncResult}
+                <div class="p-2 rounded text-xs {skillsSyncResult.success ? 'bg-purple-500/10 text-purple-200 border border-purple-500/25' : 'bg-rose-500/10 text-rose-300 border border-rose-500/25'}">
+                  {skillsSyncResult.message}
+                </div>
+              {/if}
+            </div>
+          {/if}
 
           <div class="pt-2 flex items-center justify-between border-t border-subtle">
             <button

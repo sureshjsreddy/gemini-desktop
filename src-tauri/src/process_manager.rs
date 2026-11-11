@@ -14,13 +14,13 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 
-/// Locates the real Gemini CLI executable on the system.
-/// Handles .cmd, .bat, and .exe files on Windows and skips extensionless bash scripts.
-pub fn find_gemini_executable() -> Option<PathBuf> {
+/// Locates an executable by name on the system.
+/// Handles .exe, .cmd, and .bat files on Windows and checks PATH and well-known locations.
+pub fn find_binary_by_name(name: &str) -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        // 1. Run `where.exe gemini` and inspect all results
-        if let Ok(output) = Command::new("where.exe").arg("gemini").output() {
+        // 1. Run `where.exe <name>` and inspect all results
+        if let Ok(output) = Command::new("where.exe").arg(name).output() {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let lines: Vec<&str> = stdout.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
@@ -55,29 +55,39 @@ pub fn find_gemini_executable() -> Option<PathBuf> {
         let mut candidates = Vec::new();
 
         if let Ok(appdata) = std::env::var("APPDATA") {
-            candidates.push(PathBuf::from(&appdata).join("npm").join("gemini.cmd"));
-            candidates.push(PathBuf::from(&appdata).join("npm").join("gemini.exe"));
+            candidates.push(PathBuf::from(&appdata).join("npm").join(format!("{}.cmd", name)));
+            candidates.push(PathBuf::from(&appdata).join("npm").join(format!("{}.exe", name)));
+            candidates.push(PathBuf::from(&appdata).join("npm").join(format!("{}.bat", name)));
         }
 
         if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
-            candidates.push(PathBuf::from(&localappdata).join("Programs").join("gemini").join("gemini.exe"));
-            candidates.push(PathBuf::from(&localappdata).join("pnpm").join("gemini.cmd"));
-            candidates.push(PathBuf::from(&localappdata).join("Yarn").join("bin").join("gemini.cmd"));
-            candidates.push(PathBuf::from(&localappdata).join("Microsoft").join("WinGet").join("Links").join("gemini.exe"));
+            candidates.push(PathBuf::from(&localappdata).join(name).join("bin").join(format!("{}.exe", name)));
+            candidates.push(PathBuf::from(&localappdata).join(name).join("bin").join(format!("{}.cmd", name)));
+            candidates.push(PathBuf::from(&localappdata).join(name).join(format!("{}.exe", name)));
+            candidates.push(PathBuf::from(&localappdata).join("Programs").join(name).join(format!("{}.exe", name)));
+            candidates.push(PathBuf::from(&localappdata).join("Programs").join(name).join("bin").join(format!("{}.exe", name)));
+            candidates.push(PathBuf::from(&localappdata).join("pnpm").join(format!("{}.cmd", name)));
+            candidates.push(PathBuf::from(&localappdata).join("Yarn").join("bin").join(format!("{}.cmd", name)));
+            candidates.push(PathBuf::from(&localappdata).join("Microsoft").join("WinGet").join("Links").join(format!("{}.exe", name)));
         }
 
         if let Ok(userprofile) = std::env::var("USERPROFILE") {
-            candidates.push(PathBuf::from(&userprofile).join(".gemini").join("bin").join("gemini.exe"));
-            candidates.push(PathBuf::from(&userprofile).join(".gemini").join("bin").join("gemini.cmd"));
-            candidates.push(PathBuf::from(&userprofile).join(".cargo").join("bin").join("gemini.exe"));
+            candidates.push(PathBuf::from(&userprofile).join(".gemini").join("bin").join(format!("{}.exe", name)));
+            candidates.push(PathBuf::from(&userprofile).join(".gemini").join("bin").join(format!("{}.cmd", name)));
+            candidates.push(PathBuf::from(&userprofile).join(".gemini").join("antigravity").join("bin").join(format!("{}.exe", name)));
+            candidates.push(PathBuf::from(&userprofile).join(".gemini").join("antigravity").join("bin").join(format!("{}.cmd", name)));
+            candidates.push(PathBuf::from(&userprofile).join(".gemini").join("antigravity").join("bin").join(format!("{}.bat", name)));
+            candidates.push(PathBuf::from(&userprofile).join(".cargo").join("bin").join(format!("{}.exe", name)));
         }
 
         if let Ok(pf) = std::env::var("ProgramFiles") {
-            candidates.push(PathBuf::from(&pf).join("nodejs").join("gemini.cmd"));
+            candidates.push(PathBuf::from(&pf).join("nodejs").join(format!("{}.cmd", name)));
+            candidates.push(PathBuf::from(&pf).join(name).join(format!("{}.exe", name)));
+            candidates.push(PathBuf::from(&pf).join("Google").join(name).join(format!("{}.exe", name)));
         }
 
         if let Ok(pf86) = std::env::var("ProgramFiles(x86)") {
-            candidates.push(PathBuf::from(&pf86).join("nodejs").join("gemini.cmd"));
+            candidates.push(PathBuf::from(&pf86).join("nodejs").join(format!("{}.cmd", name)));
         }
 
         for candidate in candidates {
@@ -89,7 +99,7 @@ pub fn find_gemini_executable() -> Option<PathBuf> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        if let Ok(output) = Command::new("which").arg("gemini").output() {
+        if let Ok(output) = Command::new("which").arg(name).output() {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let first = stdout.lines().next().unwrap_or("").trim();
@@ -104,6 +114,27 @@ pub fn find_gemini_executable() -> Option<PathBuf> {
     }
 
     None
+}
+
+/// Locates the real Gemini CLI executable on the system.
+/// Handles .cmd, .bat, and .exe files on Windows and skips extensionless bash scripts.
+pub fn find_gemini_executable() -> Option<PathBuf> {
+    find_binary_by_name("gemini")
+}
+
+/// Locates the real Antigravity CLI (agy) executable on the system.
+pub fn find_agy_executable() -> Option<PathBuf> {
+    find_binary_by_name("agy")
+}
+
+/// Locates the appropriate CLI executable for the given engine ("agy" | "gemini").
+#[allow(dead_code)]
+pub fn find_cli_executable(engine: &str) -> Option<PathBuf> {
+    if engine.trim().eq_ignore_ascii_case("agy") {
+        find_agy_executable()
+    } else {
+        find_gemini_executable()
+    }
 }
 
 pub struct ProcessSupervisor {
@@ -198,14 +229,16 @@ impl ProcessSupervisor {
         map
     }
 
-    pub fn spawn_gemini(
+    pub fn spawn_agent(
         &self,
-        gemini_binary: &Path,
+        engine: &str,
+        binary: &Path,
         working_dir: Option<PathBuf>,
         extra_args: &[String],
         extra_envs: &[(String, String)],
     ) -> Result<Child, String> {
-        let path_str = gemini_binary.to_string_lossy().to_string();
+        let is_agy = engine.trim().eq_ignore_ascii_case("agy");
+        let path_str = binary.to_string_lossy().to_string();
         let is_batch = path_str.to_lowercase().ends_with(".cmd")
                     || path_str.to_lowercase().ends_with(".bat");
 
@@ -214,26 +247,48 @@ impl ProcessSupervisor {
             let mut c = Command::new("cmd.exe");
             c.arg("/c");
             c.arg(&path_str);
-            c.arg("--skip-trust");
-            c.arg("--acp");
             c
         } else {
-            let mut c = Command::new(&path_str);
-            c.arg("--skip-trust");
-            c.arg("--acp");
-            c
+            Command::new(&path_str)
         };
 
         #[cfg(not(target_os = "windows"))]
-        let mut cmd = {
-            let mut c = Command::new(&path_str);
-            c.arg("--skip-trust");
-            c.arg("--acp");
-            c
-        };
+        let mut cmd = Command::new(&path_str);
 
-        for arg in extra_args {
-            cmd.arg(arg);
+        if is_agy {
+            // Antigravity CLI ACP server signature: `agy [root-options] acp [acp-options]`
+            // Root options (--model, --mode, --effort) must precede the `acp` subcommand.
+            let mut root_args = Vec::new();
+            let mut acp_args = Vec::new();
+            let mut i = 0;
+            while i < extra_args.len() {
+                let arg = &extra_args[i];
+                if arg == "--model" || arg == "--mode" || arg == "--effort" {
+                    root_args.push(arg.clone());
+                    if i + 1 < extra_args.len() {
+                        i += 1;
+                        root_args.push(extra_args[i].clone());
+                    }
+                } else {
+                    acp_args.push(arg.clone());
+                }
+                i += 1;
+            }
+
+            for arg in root_args {
+                cmd.arg(arg);
+            }
+            cmd.arg("acp");
+            for arg in acp_args {
+                cmd.arg(arg);
+            }
+        } else {
+            // Gemini CLI ACP signature: `gemini --skip-trust --acp [options]`
+            cmd.arg("--skip-trust");
+            cmd.arg("--acp");
+            for arg in extra_args {
+                cmd.arg(arg);
+            }
         }
 
         // Inject global credentials and extra environment variables
@@ -243,9 +298,11 @@ impl ProcessSupervisor {
 
         let safe_cwd = if let Some(dir) = working_dir {
             if dir.exists() {
-                ensure_folder_trusted(&dir);
+                if !is_agy {
+                    ensure_folder_trusted(&dir);
+                }
 
-                // Auto-inject workspace .env and .env.local into Gemini CLI and its child tools
+                // Auto-inject workspace .env and .env.local into CLI agent and its child tools
                 let dot_env = dir.join(".env");
                 if dot_env.is_file() {
                     let envs = Self::parse_dotenv_file(&dot_env);
@@ -265,17 +322,23 @@ impl ProcessSupervisor {
         };
         cmd.current_dir(&safe_cwd);
 
-        // Ensure GEMINI_MODEL environment variable matches CLI --model argument if provided
+        // Ensure model environment variable matches CLI --model argument if provided
         if let Some(model_arg) = extra_args.windows(2).find(|w| w[0] == "--model").map(|w| &w[1]) {
-            cmd.env("GEMINI_MODEL", model_arg);
+            if is_agy {
+                cmd.env("AGY_MODEL", model_arg);
+            } else {
+                cmd.env("GEMINI_MODEL", model_arg);
+            }
         }
 
         // Ensure GEMINI_APPROVAL_MODE environment variable matches CLI --approval-mode argument if provided
-        if let Some(mode_arg) = extra_args.windows(2).find(|w| w[0] == "--approval-mode").map(|w| &w[1]) {
-            cmd.env("GEMINI_APPROVAL_MODE", mode_arg);
+        if !is_agy {
+            if let Some(mode_arg) = extra_args.windows(2).find(|w| w[0] == "--approval-mode").map(|w| &w[1]) {
+                cmd.env("GEMINI_APPROVAL_MODE", mode_arg);
+            }
         }
 
-        // Enforce non-interactive pagers and CI environment to prevent blocking child tools in YOLO mode
+        // Enforce non-interactive pagers and CI environment to prevent blocking child tools in autonomous mode
         cmd.env("CI", "true");
         cmd.env("PAGER", "cat");
         cmd.env("GIT_PAGER", "cat");
@@ -289,9 +352,10 @@ impl ProcessSupervisor {
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
 
+        let engine_name = if is_agy { "agy" } else { "gemini" };
         let child = cmd
             .spawn()
-            .map_err(|e| format!("Failed to spawn gemini CLI ({}): {}", path_str, e))?;
+            .map_err(|e| format!("Failed to spawn {} CLI ({}): {}", engine_name, path_str, e))?;
 
         #[cfg(target_os = "windows")]
         {
@@ -304,6 +368,17 @@ impl ProcessSupervisor {
         }
 
         Ok(child)
+    }
+
+    #[allow(dead_code)]
+    pub fn spawn_gemini(
+        &self,
+        gemini_binary: &Path,
+        working_dir: Option<PathBuf>,
+        extra_args: &[String],
+        extra_envs: &[(String, String)],
+    ) -> Result<Child, String> {
+        self.spawn_agent("gemini", gemini_binary, working_dir, extra_args, extra_envs)
     }
 
     /// Gracefully kills a child process and its child processes on Windows or Unix without hanging the runtime.
@@ -423,6 +498,14 @@ DEBUG='true'
         let custom_args = vec!["--model".to_string(), "custom/org-gemini-3.5-flash:nightly".to_string()];
         let custom_model = custom_args.windows(2).find(|w| w[0] == "--model").map(|w| &w[1]);
         assert_eq!(custom_model, Some(&"custom/org-gemini-3.5-flash:nightly".to_string()));
+    }
+
+    #[test]
+    fn test_find_cli_executable_routing() {
+        // Test that routing correctly delegates without crashing
+        let _ = find_cli_executable("gemini");
+        let _ = find_cli_executable("agy");
+        let _ = find_cli_executable("unknown_fallback");
     }
 }
 

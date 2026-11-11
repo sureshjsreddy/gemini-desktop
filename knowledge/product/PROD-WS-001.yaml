@@ -3,7 +3,7 @@ type: product_standard
 title: Workspace Context Profiles & Working Directory Isolation
 domain: product
 status: approved
-version: 1.4.0
+version: 1.6.0
 authority:
   level: official
   confidence: high
@@ -17,20 +17,22 @@ applies_to:
   - security
 
 rule:
-  "Workspaces provide isolated context profiles. Each workspace binds to a specific directory path, a preferred model, an execution approval mode (Ask Permission, Auto-Edit, YOLO Autonomous, or Plan Mode), and optional custom system instructions, strictly validated against enterprise EDR boundaries."
+  "Workspaces provide isolated context profiles. Each workspace binds to a specific directory path, a preferred model, an execution approval mode (Ask Permission, Auto-Edit, YOLO Autonomous, or Plan Mode), and optional custom system instructions, strictly validated against enterprise EDR boundaries and automatically translated to engine CLI flags (`gemini` vs `agy`)."
 
 do:
   - "Seed exactly one default workspace (`Personal`) on initial install."
   - "Allow users to create, edit, and delete custom workspace profiles via the Workspace Management modal."
-  - "Support model selection using grouped presets (Auto, Gemini 3 / 3.5 / 3.8, Gemini 2.5, Legacy 1.5) and manual custom model names, decoupling reactive input state to prevent typing clobbering."
-  - "Support four granular Workspace Execution Approval Modes (`src/lib/utils/approvalModes.ts`):"
+  - "Support model selection using grouped presets branched by active CLI engine (Standard Gemini CLI tiers vs Antigravity Enterprise / Frontier tiers) and manual custom model names, decoupling reactive input state to prevent typing clobbering."
+  - "Support four granular Workspace Execution Approval Modes (`src/lib/utils/approvalModes.ts`), translated cleanly per engine:"
   - "  1. `default` ('Ask Permission'): Strict zero-trust mode prompting an interactive confirmation modal before any file modifications or terminal command executions."
-  - "  2. `auto_edit` ('Auto-Edit'): Automatically approves workspace inspection (read, search, glob) and code modifications (write, edit, patch, replace) while requiring explicit interactive authorization for shell/terminal command execution."
-  - "  3. `yolo` ('YOLO Autonomous'): High-velocity autonomous turn execution; the Tauri Rust ACP backend immediately approves all tool requests over stdin (0ms latency, immune to WebView2 background throttling) and emits `[YOLO Auto-approved]` activity indicators."
-  - "  4. `plan` ('Plan Mode'): Read-only architecture research and planning phase; code writes and command executions are disabled, while markdown checklists (`- [ ]`, `- [x]`) are dynamically extracted into the interactive Plan Workbench."
+  - "  2. `auto_edit` ('Auto-Edit'): Automatically approves workspace inspection (read, search, glob) and code modifications (write, edit, patch, replace) while requiring explicit authorization for shell/terminal commands (mapped to `--mode accept-edits` for `agy` and `--mode auto_edit` for `gemini`)."
+  - "  3. `yolo` ('YOLO Autonomous'): High-velocity autonomous turn execution; the Tauri Rust ACP backend immediately approves all tool requests over stdin (mapped to `--dangerously-skip-permissions` for both engines) and emits `[YOLO Auto-approved]` indicators."
+  - "  4. `plan` ('Plan Mode'): Read-only architecture research and planning phase; code writes and commands are disallowed (mapped to `--mode plan`), while markdown checklists (`- [ ]`, `- [x]`) are dynamically extracted into the interactive Plan Workbench."
+  - "Support Antigravity Skills Compatibility Sync via `sync_workspace_skills_for_agy`: when Antigravity CLI is active, provide an in-modal sync card in WorkspaceModal to copy custom workspace skills from `.gemini/skills/` to `.agents/skills/` for seamless backward compatibility."
+  - "Support conversation rewinding: `rewind_turn` resets ACP session state via `acp_session.remove_session(&session_id)`, reverts Git-tracked file modifications, removes newly created untracked files, prunes SQLite messages, and restores the user prompt in the chat input box across both CLI engines."
   - "Default new workspace creations to safe developer directories (`%USERPROFILE%\\Projects` or user home) via `get_default_workspace_dir` instead of the root drive (`C:\\`)."
   - "Enforce strict Enterprise EDR & UAC directory validation via `validate_workspace_path`: verify physical existence on disk and proactively reject dangerous paths including root drives (`C:\\`), Windows system folders (`C:\\Windows`, `System32`), Program Files, and volatile temp folders (`%TEMP%`)."
-  - "Pass the workspace's target working directory when spawning the Gemini CLI process so project-level `GEMINI.md` files are recognized automatically."
+  - "Pass the workspace's target working directory when spawning the CLI process so project-level `GEMINI.md` or `AGENTS.md` files are recognized automatically."
   - "Enforce cascade deletion of associated chat sessions and messages when a workspace profile is deleted."
   - "Persist the last active workspace ID locally across app sessions and reload it automatically on application startup instead of defaulting to the first workspace."
   - "Disable the Save button until both workspace name and folder path fields are non-empty, using `$derived` reactive validation (`canSave`)."
@@ -46,5 +48,6 @@ reason:
 
 related_items:
   - ARCH-DATA-001
+  - ARCH-ENGINE-001
   - PROD-MODEL-001
 
