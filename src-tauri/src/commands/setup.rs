@@ -687,6 +687,9 @@ pub struct CliModelDiscoveryResult {
     pub supported: bool,
     pub models: Vec<CliModelInfo>,
     pub message: String,
+    pub engine: Option<String>,
+    #[serde(rename = "cli_version")]
+    pub cli_version: Option<String>,
 }
 
 pub fn parse_cli_models_json(stdout: &str) -> Vec<CliModelInfo> {
@@ -771,6 +774,38 @@ pub fn parse_cli_models_json(stdout: &str) -> Vec<CliModelInfo> {
     text_models
 }
 
+pub fn get_cli_binary_version(bin_path: &std::path::Path) -> Option<String> {
+    let path_str = bin_path.to_string_lossy().to_string();
+    let is_batch = path_str.to_lowercase().ends_with(".cmd") || path_str.to_lowercase().ends_with(".bat");
+    #[cfg(target_os = "windows")]
+    let v_out = if is_batch {
+        Command::new("cmd.exe")
+            .args(["/c", &path_str, "--version"])
+            .creation_flags(0x08000000)
+            .output()
+    } else {
+        Command::new(&path_str)
+            .arg("--version")
+            .creation_flags(0x08000000)
+            .output()
+    };
+    #[cfg(not(target_os = "windows"))]
+    let v_out = Command::new(&path_str).arg("--version").output();
+
+    v_out.ok().and_then(|o| {
+        if o.status.success() {
+            let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
+        } else {
+            None
+        }
+    })
+}
+
 #[tauri::command]
 pub async fn discover_gemini_models(
     state: State<'_, AppState>,
@@ -784,12 +819,15 @@ pub async fn discover_gemini_models(
                     supported: false,
                     models: Vec::new(),
                     message: "Antigravity CLI (agy) executable not found on PATH or standard directories.".to_string(),
+                    engine: Some("agy".to_string()),
+                    cli_version: None,
                 });
             }
         };
 
         let bin_path_str = bin.to_string_lossy().to_string();
         let is_batch = bin_path_str.to_lowercase().ends_with(".cmd") || bin_path_str.to_lowercase().ends_with(".bat");
+        let cli_version = get_cli_binary_version(&bin);
 
         return tokio::task::spawn_blocking(move || {
             #[cfg(target_os = "windows")]
@@ -825,6 +863,8 @@ pub async fn discover_gemini_models(
                         supported: false,
                         models: Vec::new(),
                         message: format!("Failed to spawn agy models: {}", e),
+                        engine: Some("agy".to_string()),
+                        cli_version,
                     });
                 }
             };
@@ -832,10 +872,13 @@ pub async fn discover_gemini_models(
             let stdout_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let parsed = parse_cli_models_json(&stdout_str);
             if !parsed.is_empty() {
+                let ver_str = cli_version.as_deref().map(|v| format!(" (v{})", v.trim_start_matches('v'))).unwrap_or_default();
                 return Ok(CliModelDiscoveryResult {
                     supported: true,
                     models: parsed,
-                    message: "Models discovered successfully from Antigravity CLI (agy).".to_string(),
+                    message: format!("Discovered models successfully from Antigravity CLI (agy){}.", ver_str),
+                    engine: Some("agy".to_string()),
+                    cli_version,
                 });
             }
 
@@ -843,6 +886,8 @@ pub async fn discover_gemini_models(
                 supported: false,
                 models: Vec::new(),
                 message: "No models returned from agy models.".to_string(),
+                engine: Some("agy".to_string()),
+                cli_version,
             })
         }).await.map_err(|e| e.to_string())?;
     }
@@ -854,12 +899,15 @@ pub async fn discover_gemini_models(
                 supported: false,
                 models: Vec::new(),
                 message: "Gemini CLI executable not found on PATH.".to_string(),
+                engine: Some("gemini".to_string()),
+                cli_version: None,
             });
         }
     };
 
     let bin_path_str = bin.to_string_lossy().to_string();
     let is_batch = bin_path_str.to_lowercase().ends_with(".cmd") || bin_path_str.to_lowercase().ends_with(".bat");
+    let cli_version = get_cli_binary_version(&bin);
     let effective_config = match get_gemini_auth_config(state.clone()).await {
         Ok(c) => c,
         Err(_) => GeminiAuthConfig {
@@ -921,6 +969,8 @@ pub async fn discover_gemini_models(
                     supported: false,
                     models: Vec::new(),
                     message: format!("Failed to spawn gemini models: {}", e),
+                    engine: Some("gemini".to_string()),
+                    cli_version,
                 });
             }
         };
@@ -930,10 +980,13 @@ pub async fn discover_gemini_models(
 
         let parsed = parse_cli_models_json(&stdout_str);
         if !parsed.is_empty() {
+            let ver_str = cli_version.as_deref().map(|v| format!(" (v{})", v.trim_start_matches('v'))).unwrap_or_else(|| " (v0.67+)".to_string());
             return Ok(CliModelDiscoveryResult {
                 supported: true,
                 models: parsed,
-                message: "Models discovered successfully from Gemini CLI.".to_string(),
+                message: format!("Discovered models successfully from Gemini CLI{}.", ver_str),
+                engine: Some("gemini".to_string()),
+                cli_version,
             });
         }
 
@@ -967,10 +1020,13 @@ pub async fn discover_gemini_models(
             let flag_stdout = String::from_utf8_lossy(&flag_output.stdout).trim().to_string();
             let flag_parsed = parse_cli_models_json(&flag_stdout);
             if !flag_parsed.is_empty() {
+                let ver_str = cli_version.as_deref().map(|v| format!(" (v{})", v.trim_start_matches('v'))).unwrap_or_else(|| " (v0.67+)".to_string());
                 return Ok(CliModelDiscoveryResult {
                     supported: true,
                     models: flag_parsed,
-                    message: "Models discovered successfully via --list-models.".to_string(),
+                    message: format!("Discovered models successfully via Gemini CLI --list-models{}.", ver_str),
+                    engine: Some("gemini".to_string()),
+                    cli_version,
                 });
             }
         }
@@ -988,6 +1044,8 @@ pub async fn discover_gemini_models(
             supported: false,
             models: Vec::new(),
             message: notice,
+            engine: Some("gemini".to_string()),
+            cli_version,
         })
     }).await.map_err(|e| e.to_string())?
 }
@@ -1693,5 +1751,32 @@ mod tests {
         assert!(content.contains("name: test-skill"));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_cli_model_discovery_result_serialization() {
+        let res_agy = CliModelDiscoveryResult {
+            supported: true,
+            models: vec![CliModelInfo {
+                id: "gemini-3.8-flash-high".to_string(),
+                name: Some("Gemini 3.8 Flash (High)".to_string()),
+                description: None,
+                input_token_limit: None,
+                output_token_limit: None,
+                is_default: Some(false),
+            }],
+            message: "Discovered models successfully from Antigravity CLI (agy) (v1.5.8).".to_string(),
+            engine: Some("agy".to_string()),
+            cli_version: Some("1.5.8".to_string()),
+        };
+
+        let json = serde_json::to_string(&res_agy).expect("failed to serialize");
+        assert!(json.contains("\"engine\":\"agy\""));
+        assert!(json.contains("\"cli_version\":\"1.5.8\""));
+
+        let deserialized: CliModelDiscoveryResult = serde_json::from_str(&json).expect("failed to deserialize");
+        assert_eq!(deserialized.engine.as_deref(), Some("agy"));
+        assert_eq!(deserialized.cli_version.as_deref(), Some("1.5.8"));
+        assert_eq!(deserialized.models.len(), 1);
     }
 }

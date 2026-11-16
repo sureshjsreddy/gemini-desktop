@@ -77,6 +77,8 @@ export interface CliModelDiscoveryResult {
   supported: boolean;
   models: CliModelInfo[];
   message: string;
+  engine?: string;
+  cli_version?: string;
 }
 
 export interface ToolExecutionStep {

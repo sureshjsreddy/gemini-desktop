@@ -3,7 +3,7 @@ type: product_standard
 title: Dual-Engine Model Routing & Categorization Standard (Gemini CLI & Antigravity)
 domain: product
 status: approved
-version: 1.4.0
+version: 1.5.0
 authority:
   level: official
   confidence: high
@@ -27,7 +27,7 @@ do:
   - "Surface deprecation warnings and 1-click migration paths for legacy Gemini 1.5 models (`gemini-1.5-pro`, `gemini-1.5-flash`, `gemini-1.5-flash-8b`) retired upstream by Google."
   - "Recommend `gemini-3.5-flash-lite` or `gemini-3.8-flash` as fast, lightweight upgrades for retired 1.5 and sunsetting 2.5 preview configurations."
   - "Provide a Manual custom model input allowing users to specify any arbitrary model identifier or fine-tuned endpoint."
-  - "Execute live model discovery via `discover_gemini_models`: run `agy models` when `agy` is active and `gemini models` when `gemini` is active, supporting tab-delimited and JSON output."
+  - "Execute live model discovery via `discover_gemini_models`: run `agy models` when `agy` is active and `gemini models` when `gemini` is active, returning engine metadata (`engine` and `cli_version`) to dynamically render active CLI name and version in notifications, buttons, and optgroup labels without hardcoding Gemini CLI branding."
   - "Sanitize cross-engine models via `sanitize_model_for_engine`: when a workspace is loaded under an engine incompatible with its saved model (e.g. `gemini-2.5-pro` on `agy`, or `claude-sonnet-4-6` on `gemini`), seamlessly fallback to 'auto' to prevent fatal CLI crashes, displaying `auto (fallback)` in the chat header."
   - "Send active model configurations to the ACP agent session via `session/set_model` before dispatching prompts, omitting `session/set_model` when the sanitized model is 'auto'."
   - "Forward `--model` and inject `GEMINI_MODEL` into the spawned CLI process environment."

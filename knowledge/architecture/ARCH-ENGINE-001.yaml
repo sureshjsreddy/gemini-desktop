@@ -3,7 +3,7 @@ type: architecture_standard
 title: Dual Engine Runtime Architecture: Gemini CLI and Antigravity CLI (agy)
 domain: architecture
 status: approved
-version: 1.1.0
+version: 1.2.0
 authority:
   level: official
   confidence: high
@@ -38,7 +38,7 @@ do:
   - "  - Gemini CLI Workspace: `<workspace>/.gemini/settings.json`"
   - "  - Antigravity CLI Global: `%USERPROFILE%/.gemini/config/mcp_config.json`"
   - "  - Antigravity CLI Workspace: `<workspace>/.agents/mcp_config.json`"
-  - "Support dynamic model discovery via `discover_gemini_models`: execute `agy models` when `agy` is active and `gemini models` when `gemini` is active, parsing tab-delimited (`<id>\t<name>`) and JSON outputs."
+  - "Support dynamic model discovery via `discover_gemini_models`: execute `agy models` when `agy` is active and `gemini models` when `gemini` is active, parsing tab-delimited (`<id>\t<name>`) and JSON outputs. Return active engine identity and binary CLI version in `CliModelDiscoveryResult` to ensure frontend notifications, button labels, and dropdown groups dynamically reflect Antigravity CLI without hardcoded Gemini CLI branding."
   - "Differentiate model catalogs: show `gemini-4-argon` under 'Gemini 4 Frontier (Enterprise / Licensed)' exclusively when `agy` is active; exclude it from standard Gemini CLI catalogs."
   - "Support in-app updates for both engines: `winget upgrade Google.GeminiCLI` or `npm install -g @google/gemini-cli@latest` for Gemini CLI; `agy update` or PowerShell release installer for `agy`."
   - "Support Model Context Protocol (MCP) server migration: provide 1-click import from Gemini CLI (`settings.json`) to Antigravity CLI (`mcp_config.json`) at both Global and Workspace scopes via `import_mcp_from_gemini` and `detect_importable_gemini_mcp`."

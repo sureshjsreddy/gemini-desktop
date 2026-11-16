@@ -167,6 +167,23 @@
   let isDiscoveringModels = $state(false);
   let discoveryStatus = $state<{ type: "success" | "info" | "error"; text: string } | null>(null);
   let liveDiscoveredModels = $state<CliModelInfo[]>([]);
+  let discoveredEngine = $state<string | null>(null);
+  let discoveredVersion = $state<string | null>(null);
+  let previousActiveEngine = $state<string | null>(null);
+
+  $effect(() => {
+    if (previousActiveEngine === null) {
+      previousActiveEngine = activeEngine;
+      return;
+    }
+    if (activeEngine !== previousActiveEngine) {
+      previousActiveEngine = activeEngine;
+      liveDiscoveredModels = [];
+      discoveryStatus = null;
+      discoveredEngine = null;
+      discoveredVersion = null;
+    }
+  });
 
   let isSyncingSkills = $state(false);
   let skillsSyncResult = $state<{ success: boolean; message: string; synced_count: number } | null>(null);
@@ -196,16 +213,26 @@
     discoveryStatus = null;
     try {
       const res = await invoke<CliModelDiscoveryResult>("discover_gemini_models");
+      const eng = res.engine || activeEngine;
+      discoveredEngine = eng;
+      discoveredVersion = res.cli_version || null;
+      const engName = eng === "agy" ? "Antigravity CLI (agy)" : "Gemini CLI";
+      const verSuffix = res.cli_version
+        ? ` (v${res.cli_version.replace(/^v/i, "")})`
+        : eng === "agy"
+          ? ""
+          : " (v0.67+)";
+
       if (res.supported && res.models.length > 0) {
         liveDiscoveredModels = res.models;
         discoveryStatus = {
           type: "success",
-          text: `Discovered ${res.models.length} active models directly via Gemini CLI (v0.67+).`,
+          text: `Discovered ${res.models.length} active models directly via ${engName}${verSuffix}.`,
         };
       } else {
         discoveryStatus = {
           type: "info",
-          text: res.message || "Model discovery returned no models. Standard models remain available.",
+          text: res.message || `Model discovery returned no models from ${engName}. Standard models remain available.`,
         };
       }
     } catch (e: any) {
@@ -425,7 +452,11 @@
               bind:value={editingWorkspace.path}
               class="w-full px-3 py-2 bg-app border border-theme-default rounded-lg text-primary-theme font-mono focus:outline-none focus:border-accent-theme"
             />
-            <span class="text-[11px] text-muted-theme mt-1 block">Gemini CLI will run inside this directory and auto-read GEMINI.md.</span>
+            <span class="text-[11px] text-muted-theme mt-1 block">
+              {activeEngine === "agy"
+                ? "Antigravity CLI will run inside this directory and auto-read GEMINI.md or AGENTS.md."
+                : "Gemini CLI will run inside this directory and auto-read GEMINI.md."}
+            </span>
           </div>
 
           <div>
@@ -436,10 +467,10 @@
                 onclick={handleDiscoverModels}
                 disabled={isDiscoveringModels}
                 class="flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-medium text-accent-theme hover:bg-accent-subtle/30 rounded transition-colors cursor-pointer disabled:opacity-50"
-                title="Discover active models from Gemini CLI v0.67+ models command"
+                title={activeEngine === "agy" ? "Discover active models from Antigravity CLI (agy models)" : "Discover active models from Gemini CLI v0.67+ models command"}
               >
                 <RefreshCw size={11} class={isDiscoveringModels ? "animate-spin" : ""} />
-                <span>{isDiscoveringModels ? "Querying CLI..." : "Discover Live Models (v0.67+)"}</span>
+                <span>{isDiscoveringModels ? "Querying CLI..." : activeEngine === "agy" ? "Discover Live Models (agy)" : "Discover Live Models (v0.67+)"}</span>
               </button>
             </div>
             <select
@@ -449,7 +480,7 @@
               class="w-full px-3 py-2 bg-app border border-theme-default rounded-lg text-primary-theme focus:outline-none focus:border-accent-theme font-mono"
             >
               {#if liveDiscoveredModels.length > 0}
-                <optgroup label="Discovered via Gemini CLI (Live API)">
+                <optgroup label={`Discovered via ${(discoveredEngine || activeEngine) === "agy" ? "Antigravity CLI (agy)" : "Gemini CLI"} (Live API)`}>
                   {#each liveDiscoveredModels as lm}
                     <option value={lm.id}>
                       {lm.id} {lm.input_token_limit ? `(${Math.round(lm.input_token_limit / 1000)}k ctx)` : ""} {lm.is_default ? "— Default" : ""}
@@ -479,11 +510,11 @@
                   type="text"
                   value={customModelInput}
                   oninput={onCustomModelInput}
-                  placeholder="e.g. gemini-3.8-flash, gemini-3.5-flash-lite, or custom model"
+                  placeholder={activeEngine === "agy" ? "e.g. gemini-4-argon, gemini-3.8-flash-high, or custom model" : "e.g. gemini-3.8-flash, gemini-3.5-flash-lite, or custom model"}
                   class="w-full px-2.5 py-1.5 bg-surface border border-theme-default rounded text-primary-theme font-mono text-xs focus:outline-none focus:border-accent-theme"
                 />
                 <span class="text-[10px] text-muted-theme mt-1 block">
-                  Passed directly to Gemini CLI via ACP protocol.
+                  Passed directly to {activeEngine === "agy" ? "Antigravity CLI (agy)" : "Gemini CLI"} via ACP protocol.
                 </span>
               </div>
             {/if}

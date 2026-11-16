@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.1] - 2026-11-16
+
+### Fixed
+- **Engine-Aware Dynamic Model Discovery Branding**:
+  - Enhanced `discover_gemini_models` Tauri IPC command to return `engine` and `cli_version` metadata alongside discovered models.
+  - Resolved issue in `WorkspaceModal` where discovering models under Antigravity CLI (`agy`) displayed hardcoded Gemini CLI version notifications (`via Gemini CLI (v0.67+)`).
+  - Discovery notification banner, button title/label (`Discover Live Models (agy)` vs `Discover Live Models (v0.67+)`), and dropdown optgroup headers now dynamically adapt to the active CLI engine.
+  - Automatically resets discovered live models state when switching between `gemini` and `agy` engines.
+
+---
+
+## [0.7.0] - 2026-11-12
+
+### Added
+- **Dual-Engine CLI Runtime Architecture**:
+  - Full support for switching between official Gemini CLI (`gemini`) and Antigravity CLI (`agy`) at application level with persistent SQLite storage.
+  - Cross-engine model sanitization fallback (`sanitize_model_for_engine`) preventing incompatible model crashes.
+  - Windows Job Objects supervision with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` applied across both engines.
+  - Configuration isolation between `~/.gemini/settings.json` and `~/.gemini/antigravity-cli/settings.json`.
+  - Seamless 1-click workspace skill synchronization from `.gemini/skills/` to `.agents/skills/`.
+
+---
+
 ## [0.6.0] - 2026-11-07
 
 ### Added
