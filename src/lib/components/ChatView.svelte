@@ -11,6 +11,7 @@
     ToolExecutionStep,
     PlanTaskItem,
     SessionFileChange,
+    CliEngine,
   } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -93,7 +94,7 @@
     showTerminalDrawer?: boolean;
     showSolutionExplorer?: boolean;
     approvalMode?: ApprovalMode;
-    activeEngine?: string;
+    activeEngine?: CliEngine;
     onSendPrompt: (prompt: string) => void;
     onCancelPrompt: () => void;
     onSteerPrompt?: (hint: string) => void;
@@ -889,9 +890,15 @@
     {workspaceFiles}
     {isStreaming}
     {approvalMode}
+    {activeEngine}
     {onTriggerDebugDoctor}
     {onDebugErrorDetected}
     {onSteerPrompt}
+    onOpenDiffModal={() => (isChangesModalOpen = true)}
+    onToggleTerminal={() => (showTerminalDrawer = !showTerminalDrawer)}
+    onTogglePlanWorkbench={() => (isPlanWorkbenchOpen = true)}
+    onOpenMcpModal={onOpenMcpModal}
+    onOpenRewindModal={onOpenRewindModal}
     onSendPrompt={(prompt) => {
       isUserScrolledUp = false;
       tick().then(() => scrollToBottom(true));

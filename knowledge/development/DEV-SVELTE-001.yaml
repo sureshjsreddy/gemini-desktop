@@ -3,7 +3,7 @@ type: development_standard
 title: Svelte 5 Runes State Management & Tailwind CSS v4 Component Standard
 domain: development
 status: approved
-version: 1.6.0
+version: 1.7.0
 authority:
   level: official
   confidence: high
@@ -29,7 +29,7 @@ do:
   - "Replace HTML `autofocus` with programmatic focus inside `$effect` with a small `setTimeout` to eliminate `a11y_autofocus` compiler warnings."
   - "Use `$derived.by` for reactive configuration presets that depend on component props to avoid capturing initial state."
   - "Use `modalManager` (`src/lib/modal.svelte.ts`) to govern dialog modals (`search`, `workspace`, `templates`, `theme`, `mcp`) with `isOpen(type)`, `open(type)`, `close()`, and `toggle(type)`, preventing multiple competing open modals and eliminating scattered boolean flags."
-  - "Decompose high-complexity views into focused subcomponents (e.g. `ToolPermissionCard.svelte`, `ToolCallNode.svelte`, `ChatPromptComposer.svelte`, `ChatMentionPopover.svelte`, `ExplorerContextMenu.svelte`, `ExplorerTreeRow.svelte`) and extract reusable domain logic into pure utility modules (`approvalModes.ts`, `toolSteps.ts`, `fileIcons.ts`, `fileFilters.ts`)."
+  - "Decompose high-complexity views into focused subcomponents (e.g. `ToolPermissionCard.svelte`, `ToolCallNode.svelte`, `ChatPromptComposer.svelte`, `ChatMentionPopover.svelte`, `ChatSlashPopover.svelte`, `ExplorerContextMenu.svelte`, `ExplorerTreeRow.svelte`) and extract reusable domain logic into pure utility modules (`approvalModes.ts`, `toolSteps.ts`, `fileIcons.ts`, `fileFilters.ts`)."
   - "Render agent tool execution steps as collapsible task nodes via `ToolCallNode.svelte`: active and expanded during execution (`in_progress`), automatically collapsing to a single-line summary header with chevron toggle upon completion, keeping the assistant's final response clean and fully expanded without layout clutter."
   - "Enforce strict CSS stacking context hierarchy: header has `relative z-30`, chat message viewport has `z-0`, bottom prompt bar has `relative z-20`, tooltips elevate dynamically to `z-50` on hover, and dropdown menus (Export, Workspace profile) use `z-40` with outside-click dismissal backdrops so chat messages never occlude menus or tooltips."
   - "Design collateral navigation panels (Sidebar, SolutionExplorer) with dual-state layouts: full-width drawer when open, and a compact vertical icon strip (`w-12` on left, `w-7` on right) when collapsed to maximize chat and code viewing space while retaining 1-click access to core actions."

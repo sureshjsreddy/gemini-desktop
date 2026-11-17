@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.2] - 2026-11-17
+
+### Added
+- **Interactive `/` Tools & Slash Commands Autocomplete Palette**:
+  - Introduced an interactive `/` tools and commands autocomplete popover (`ChatSlashPopover.svelte`) in the chat prompt composer.
+  - Dynamically adapts available tools based on the active CLI engine (`gemini` vs `agy`):
+    - **Antigravity CLI (`agy`)**: Surfaces `/plugins` (browse marketplace plugins, custom skills, and extensions).
+    - **Gemini CLI (`gemini`)**: Surfaces `/compress` (prompt context compression).
+    - **Core Desktop Tools**: Surfaces `/plan` (Plan Mode Workbench), `/diff` (Visual Diff & File Changes), `/terminal` (Integrated Terminal Drawer), `/mcp` (MCP Server Manager), `/doctor` (Instant Debug Doctor), `/compact` (Session Context Compaction), `/tools` (List Agent Capabilities), `/model` (Model Parameters), `/settings` (Global CLI Settings), `/setup` (CLI Environment & Auth Setup), `/rewind` (Turn Rewind), and `/clear` (Clear Messages).
+  - Full keyboard navigation with `↑`/`↓` arrow keys, `Enter`/`Tab` execution, and `Esc` dismissal, with instant GUI action dispatch and ACP command expansion.
+
+### Fixed & Optimized
+- **Zero-Process-Spawn CLI Diagnostics & Process Optimization**:
+  - Eliminated process flooding (`cmd.exe`, `where.exe`, `powershell.exe`) previously spawned every time the CLI Setup or Settings modals were opened.
+  - Implemented thread-safe in-memory cache `CLI_PATH_CACHE` with `invalidate_cli_path_cache()` in `process_manager.rs`, checking well-known directories and in-memory `PATH` without spawning external shell processes.
+  - Replaced PowerShell child process execution with native Win32 Registry reading (`HKCU\Environment\Path`) using `windows-sys` (`RegOpenKeyExW` / `RegQueryValueExW`) for instantaneous path validation.
+  - Replaced `cmd.exe /c where.exe gcloud` with direct disk inspection of Google Cloud configuration files.
+  - Applied Windows `CREATE_NO_WINDOW` (flag `0x08000000`) across all child process executions to prevent console window flashing.
+  - Cached environment checks in `CliSetupModal.svelte` to prevent redundant invocations when engine state has not changed.
+- **Dual-Engine MCP Server Routing & Diagnostics**:
+  - Documented and verified configuration isolation between Gemini CLI (`%USERPROFILE%/.gemini/settings.json`) and Antigravity CLI (`%USERPROFILE%/.gemini/config/mcp_config.json`).
+  - Verified Playwright MCP browser automation and tool schema generation across both engines.
+
+---
+
 ## [0.7.1] - 2026-11-16
 
 ### Fixed

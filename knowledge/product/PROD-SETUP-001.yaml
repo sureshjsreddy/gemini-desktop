@@ -3,7 +3,7 @@ type: product_standard
 title: Dual-Engine Setup, In-App Upgrades, Dual Auth & CrowdStrike EDR Safe Execution Standard
 domain: product
 status: approved
-version: 1.2.0
+version: 1.3.0
 authority:
   level: official
   confidence: high
@@ -33,6 +33,8 @@ do:
   - "Enforce the 3-Tier Enterprise Working Directory Hierarchy for process execution and diagnostics: Priority 1 = User's Active Project Workspace; Priority 2 = User Home Directory (`%USERPROFILE%`, e.g. `C:\\Users\\<username>`); Priority 3 = LocalAppData persistent directory (`%LOCALAPPDATA%\\GeminiDesktop`)."
   - "Perform lightweight diagnostic pings (`gemini --skip-trust -p \"Respond with 'OK'\" --model <selected_model> --output-format text`) defaulting to `gemini-3.8-flash` (or `auto`) rather than deprecated `gemini-2.5-flash`, with structured diagnostic reporting, timing latency in milliseconds and mapping API errors (missing keys, invalid credentials, disabled Vertex AI API, quota exhaustion, deprecated model) into actionable recommendations."
   - "Support dynamic model discovery via `discover_gemini_models`: route to `agy models` when `agy` is active and `gemini models` when `gemini` is active, allowing users to query live available models and context limits directly from the CLI."
+  - "Eliminate external shell process spawning during environment diagnostics: read Windows User PATH directly from the Windows Registry (`HKCU\\Environment\\Path`) via native Win32 APIs (`RegOpenKeyExW`, `RegQueryValueExW`) instead of spawning `powershell.exe`, check Google Cloud CLI config directly on disk instead of invoking `where.exe gcloud`, and use an in-memory thread-safe cache (`CLI_PATH_CACHE`) to avoid repeated `where.exe` child process forks when opening CLI Setup or Settings."
+  - "Set Windows `CREATE_NO_WINDOW` (creation flag `0x08000000`) on all background child process commands to prevent command prompt window flickering during CLI verification pings."
 
 dont:
   - "Never execute diagnostic tests or CLI processes with current working directory set to `%TEMP%` (`C:\\Users\\<user>\\AppData\\Local\\Temp`), which triggers CrowdStrike Falcon's volatile directory network connection IOAs."

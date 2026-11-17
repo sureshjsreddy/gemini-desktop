@@ -19,6 +19,7 @@
     ToolCallPayload,
     PlanTaskItem,
     ContinuationResult,
+    CliEngine,
   } from "$lib/types";
   import { parseDebugError } from "$lib/utils/debugParser";
   import { notifyBackgroundTaskComplete, setupNotificationActionListener } from "$lib/utils/notifications";
@@ -44,9 +45,9 @@
 
   // Reactive State (Svelte 5 Runes)
   let appVersion = $state(APP_VERSION_FALLBACK);
-  let activeEngine = $state<string>(
+  let activeEngine = $state<CliEngine>(
     typeof window !== "undefined"
-      ? localStorage.getItem(ACTIVE_ENGINE_STORAGE_KEY) || "gemini"
+      ? (localStorage.getItem(ACTIVE_ENGINE_STORAGE_KEY) as CliEngine) || "gemini"
       : "gemini"
   );
   let workspaces = $state<Workspace[]>([]);
@@ -160,7 +161,7 @@
   async function refreshActiveEngine() {
     try {
       const eng = await invoke<string>("get_active_cli_engine");
-      if (eng) {
+      if (eng === "agy" || eng === "gemini") {
         activeEngine = eng;
         if (typeof window !== "undefined") {
           localStorage.setItem(ACTIVE_ENGINE_STORAGE_KEY, eng);
@@ -931,24 +932,39 @@
       );
     }
 
-    // Intercept slash commands like /compress or /compact over ACP
-    const isCompressionCommand =
-      prompt.trim().toLowerCase() === "/compress" ||
-      prompt.trim().toLowerCase() === "/compact";
+    // Intercept slash commands like /compress, /compact, /tools, /plugins, /model over ACP
+    const trimmedPrompt = prompt.trim();
+    const lowerPrompt = trimmedPrompt.toLowerCase();
 
-    const promptToSend = isCompressionCommand
-      ? `Please perform a context compression and milestone summary of our conversation so far:
+    const isCompressionCommand =
+      lowerPrompt === "/compress" ||
+      lowerPrompt === "/compact";
+    const isToolsCommand = lowerPrompt === "/tools";
+    const isPluginsCommand = lowerPrompt === "/plugins";
+    const isModelCommand = lowerPrompt === "/model";
+
+    let promptToSend = prompt;
+    let displayPrompt = prompt;
+
+    if (isCompressionCommand) {
+      promptToSend = `Please perform a context compression and milestone summary of our conversation so far:
 1. Primary Objectives: What we set out to accomplish and what has been completed.
 2. Modified & Touched Files: List files created, modified, or reviewed with key changes.
 3. Architecture & Technical Decisions: Key decisions made and current working state.
 4. Immediate Next Steps: Pending tasks or unresolved questions.
 
-Keep this summary dense, structured, and actionable so it serves as our clean working context moving forward.`
-      : prompt;
-
-    const displayPrompt = isCompressionCommand
-      ? "🔄 /compress: Summarize and compress conversation context"
-      : prompt;
+Keep this summary dense, structured, and actionable so it serves as our clean working context moving forward.`;
+      displayPrompt = "🔄 /compact: Summarize and compress conversation context";
+    } else if (isToolsCommand) {
+      promptToSend = `Please list all currently active and available tools, functions, and Model Context Protocol (MCP) integrations you have access to in this environment.`;
+      displayPrompt = "🔧 /tools: Inspect active tools and capabilities";
+    } else if (isPluginsCommand) {
+      promptToSend = `Please list all currently installed Antigravity plugins, extensions, and custom workspace skills active in this session.`;
+      displayPrompt = "🧩 /plugins: Inspect installed plugins and skills";
+    } else if (isModelCommand) {
+      promptToSend = `Please tell me which model you are currently running as, along with your context limits and primary capabilities.`;
+      displayPrompt = "🧠 /model: Query active model capabilities";
+    }
 
     // Add user message to UI immediately
     const userMsg: Message = {

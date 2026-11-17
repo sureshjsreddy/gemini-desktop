@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::RwLock;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::io::AsRawHandle;
@@ -14,61 +16,59 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 
-/// Locates an executable by name on the system.
-/// Handles .exe, .cmd, and .bat files on Windows and checks PATH and well-known locations.
+static CLI_PATH_CACHE: RwLock<Option<HashMap<String, Option<PathBuf>>>> = RwLock::new(None);
+
+/// Clears the in-memory CLI executable path cache so changes (e.g. installs, updates, engine switches) are immediately detected.
+pub fn invalidate_cli_path_cache() {
+    if let Ok(mut cache) = CLI_PATH_CACHE.write() {
+        *cache = None;
+    }
+}
+
+fn cache_binary_result(name: &str, result: &Option<PathBuf>) {
+    if let Ok(mut cache) = CLI_PATH_CACHE.write() {
+        let map = cache.get_or_insert_with(HashMap::new);
+        map.insert(name.to_string(), result.clone());
+    }
+}
+
+/// Locates an executable by name on the system without spawning external processes.
+/// Fast in-memory check with thread-safe caching: inspects well-known locations and system PATH.
+/// Handles .exe, .cmd, and .bat files on Windows.
 pub fn find_binary_by_name(name: &str) -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        // 1. Run `where.exe <name>` and inspect all results
-        if let Ok(output) = Command::new("where.exe").arg(name).output() {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let lines: Vec<&str> = stdout.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
-
-                // Pass 1: Prioritize .exe binaries
-                for line in &lines {
-                    let p = PathBuf::from(line);
-                    if p.is_file() && line.to_lowercase().ends_with(".exe") {
-                        return Some(p);
-                    }
-                }
-
-                // Pass 2: Prioritize .cmd scripts (standard npm/pnpm wrapper on Windows)
-                for line in &lines {
-                    let p = PathBuf::from(line);
-                    if p.is_file() && line.to_lowercase().ends_with(".cmd") {
-                        return Some(p);
-                    }
-                }
-
-                // Pass 3: Prioritize .bat scripts
-                for line in &lines {
-                    let p = PathBuf::from(line);
-                    if p.is_file() && line.to_lowercase().ends_with(".bat") {
-                        return Some(p);
-                    }
+    // 1. Check in-memory cache first
+    if let Ok(cache) = CLI_PATH_CACHE.read() {
+        if let Some(map) = cache.as_ref() {
+            if let Some(cached) = map.get(name) {
+                match cached {
+                    Some(p) if p.is_file() => return Some(p.clone()),
+                    None => return None,
+                    _ => {} // Stale entry: re-detect
                 }
             }
         }
+    }
 
-        // 2. Check well-known global installation directories on Windows
+    #[cfg(target_os = "windows")]
+    {
+        // 2. Check well-known global installation directories on Windows (fastest path, 0 subprocesses)
         let mut candidates = Vec::new();
+
+        if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
+            candidates.push(PathBuf::from(&localappdata).join(name).join("bin").join(format!("{}.exe", name)));
+            candidates.push(PathBuf::from(&localappdata).join(name).join("bin").join(format!("{}.cmd", name)));
+            candidates.push(PathBuf::from(&localappdata).join(name).join("bin").join(format!("{}.bat", name)));
+            candidates.push(PathBuf::from(&localappdata).join("Microsoft").join("WinGet").join("Links").join(format!("{}.exe", name)));
+            candidates.push(PathBuf::from(&localappdata).join("Programs").join(name).join(format!("{}.exe", name)));
+            candidates.push(PathBuf::from(&localappdata).join("Programs").join(name).join("bin").join(format!("{}.exe", name)));
+            candidates.push(PathBuf::from(&localappdata).join("pnpm").join(format!("{}.cmd", name)));
+            candidates.push(PathBuf::from(&localappdata).join("Yarn").join("bin").join(format!("{}.cmd", name)));
+        }
 
         if let Ok(appdata) = std::env::var("APPDATA") {
             candidates.push(PathBuf::from(&appdata).join("npm").join(format!("{}.cmd", name)));
             candidates.push(PathBuf::from(&appdata).join("npm").join(format!("{}.exe", name)));
             candidates.push(PathBuf::from(&appdata).join("npm").join(format!("{}.bat", name)));
-        }
-
-        if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
-            candidates.push(PathBuf::from(&localappdata).join(name).join("bin").join(format!("{}.exe", name)));
-            candidates.push(PathBuf::from(&localappdata).join(name).join("bin").join(format!("{}.cmd", name)));
-            candidates.push(PathBuf::from(&localappdata).join(name).join(format!("{}.exe", name)));
-            candidates.push(PathBuf::from(&localappdata).join("Programs").join(name).join(format!("{}.exe", name)));
-            candidates.push(PathBuf::from(&localappdata).join("Programs").join(name).join("bin").join(format!("{}.exe", name)));
-            candidates.push(PathBuf::from(&localappdata).join("pnpm").join(format!("{}.cmd", name)));
-            candidates.push(PathBuf::from(&localappdata).join("Yarn").join("bin").join(format!("{}.cmd", name)));
-            candidates.push(PathBuf::from(&localappdata).join("Microsoft").join("WinGet").join("Links").join(format!("{}.exe", name)));
         }
 
         if let Ok(userprofile) = std::env::var("USERPROFILE") {
@@ -84,35 +84,73 @@ pub fn find_binary_by_name(name: &str) -> Option<PathBuf> {
             candidates.push(PathBuf::from(&pf).join("nodejs").join(format!("{}.cmd", name)));
             candidates.push(PathBuf::from(&pf).join(name).join(format!("{}.exe", name)));
             candidates.push(PathBuf::from(&pf).join("Google").join(name).join(format!("{}.exe", name)));
+            candidates.push(PathBuf::from(&pf).join("Google").join("Cloud SDK").join("google-cloud-sdk").join("bin").join(format!("{}.cmd", name)));
         }
 
         if let Ok(pf86) = std::env::var("ProgramFiles(x86)") {
             candidates.push(PathBuf::from(&pf86).join("nodejs").join(format!("{}.cmd", name)));
+            candidates.push(PathBuf::from(&pf86).join("Google").join("Cloud SDK").join("google-cloud-sdk").join("bin").join(format!("{}.cmd", name)));
         }
 
         for candidate in candidates {
             if candidate.is_file() {
-                return Some(candidate);
+                let res = Some(candidate);
+                cache_binary_result(name, &res);
+                return res;
+            }
+        }
+
+        // 3. Scan system PATH in memory without spawning where.exe (0 subprocesses)
+        if let Some(path_var) = std::env::var_os("PATH") {
+            let dirs: Vec<PathBuf> = std::env::split_paths(&path_var).collect();
+
+            // Pass 1: Prioritize .exe binaries
+            for dir in &dirs {
+                let p = dir.join(format!("{}.exe", name));
+                if p.is_file() {
+                    let res = Some(p);
+                    cache_binary_result(name, &res);
+                    return res;
+                }
+            }
+
+            // Pass 2: Prioritize .cmd scripts (standard npm/pnpm wrapper on Windows)
+            for dir in &dirs {
+                let p = dir.join(format!("{}.cmd", name));
+                if p.is_file() {
+                    let res = Some(p);
+                    cache_binary_result(name, &res);
+                    return res;
+                }
+            }
+
+            // Pass 3: Prioritize .bat scripts
+            for dir in &dirs {
+                let p = dir.join(format!("{}.bat", name));
+                if p.is_file() {
+                    let res = Some(p);
+                    cache_binary_result(name, &res);
+                    return res;
+                }
             }
         }
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        if let Ok(output) = Command::new("which").arg(name).output() {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let first = stdout.lines().next().unwrap_or("").trim();
-                if !first.is_empty() {
-                    let p = PathBuf::from(first);
-                    if p.is_file() {
-                        return Some(p);
-                    }
+        if let Some(path_var) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path_var) {
+                let p = dir.join(name);
+                if p.is_file() {
+                    let res = Some(p);
+                    cache_binary_result(name, &res);
+                    return res;
                 }
             }
         }
     }
 
+    cache_binary_result(name, &None);
     None
 }
 
@@ -506,6 +544,20 @@ DEBUG='true'
         let _ = find_cli_executable("gemini");
         let _ = find_cli_executable("agy");
         let _ = find_cli_executable("unknown_fallback");
+    }
+
+    #[test]
+    fn test_cli_path_cache_invalidation() {
+        invalidate_cli_path_cache();
+        let first = find_binary_by_name("nonexistent_binary_xyz_123");
+        assert_eq!(first, None);
+
+        // Subsequent lookup should return from cache
+        let second = find_binary_by_name("nonexistent_binary_xyz_123");
+        assert_eq!(second, None);
+
+        // Cache invalidation should reset cache without panic
+        invalidate_cli_path_cache();
     }
 }
 

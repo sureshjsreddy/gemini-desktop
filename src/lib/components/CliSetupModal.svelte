@@ -111,9 +111,14 @@
   $effect(() => {
     if (isOpen) {
       loadSavedConfig();
-      loadGCloudStatus();
       loadEngineStatus();
       loadPathStatus();
+    }
+  });
+
+  $effect(() => {
+    if (isOpen && activeTab === "auth" && !gcloudStatus) {
+      loadGCloudStatus();
     }
   });
 

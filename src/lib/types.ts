@@ -155,6 +155,16 @@ export interface MentionOption {
   kind: "file" | "directory" | "git";
 }
 
+export interface SlashCommandOption {
+  id: string;
+  label: string;
+  insertText: string;
+  title: string;
+  description: string;
+  category: "action" | "tool" | "mode" | "config";
+  engine?: "gemini" | "agy" | "all";
+}
+
 export interface McpServerConfig {
   command: string;
   args?: string[];

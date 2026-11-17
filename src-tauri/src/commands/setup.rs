@@ -234,6 +234,7 @@ pub async fn install_gemini_cli() -> Result<CliInstallResult, String> {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 if out.status.success() {
+                    crate::process_manager::invalidate_cli_path_cache();
                     let bin_path = crate::process_manager::find_gemini_executable();
                     let ver = bin_path.as_ref().and_then(|p| {
                         let path_str = p.to_string_lossy().to_string();
@@ -292,27 +293,10 @@ pub async fn detect_gcloud_status() -> Result<GCloudStatus, String> {
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
 
-        #[cfg(target_os = "windows")]
-        let which_gcloud = Command::new("cmd.exe")
-            .args(["/c", "where.exe", "gcloud"])
-            .current_dir(&user_home)
-            .creation_flags(0x08000000)
-            .output();
-
-        #[cfg(not(target_os = "windows"))]
-        let which_gcloud = Command::new("which")
-            .arg("gcloud")
-            .current_dir(&user_home)
-            .output();
-
-        let (installed, path) = match which_gcloud {
-            Ok(out) if out.status.success() => {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                let first_line = stdout.lines().next().unwrap_or("").trim().to_string();
-                (true, Some(first_line))
-            }
-            _ => (false, None),
-        };
+        // Fast in-memory check without spawning cmd.exe or where.exe
+        let gcloud_exe = crate::process_manager::find_binary_by_name("gcloud");
+        let installed = gcloud_exe.is_some();
+        let path = gcloud_exe.map(|p| p.to_string_lossy().to_string());
 
         let mut has_adc = false;
         if let Ok(appdata) = std::env::var("APPDATA") {
@@ -340,45 +324,42 @@ pub async fn detect_gcloud_status() -> Result<GCloudStatus, String> {
         let mut active_account = None;
 
         if installed {
-            #[cfg(target_os = "windows")]
-            let proj_out = Command::new("cmd.exe")
-                .args(["/c", "gcloud", "config", "get-value", "project"])
-                .current_dir(&user_home)
-                .creation_flags(0x08000000)
-                .output();
-            #[cfg(not(target_os = "windows"))]
-            let proj_out = Command::new("gcloud")
-                .args(["config", "get-value", "project"])
-                .current_dir(&user_home)
-                .output();
+            // Direct in-process config parsing from disk (avoids heavy cmd.exe / python.exe gcloud subshells)
+            let config_dirs = [
+                std::env::var("APPDATA").ok().map(|a| std::path::PathBuf::from(a).join("gcloud")),
+                std::env::var("USERPROFILE").ok().map(|u| std::path::PathBuf::from(u).join(".config").join("gcloud")),
+            ];
 
-            if let Ok(po) = proj_out {
-                if po.status.success() {
-                    let p = String::from_utf8_lossy(&po.stdout).trim().to_string();
-                    if !p.is_empty() && p != "(unset)" {
-                        active_project = Some(p);
+            for gcloud_dir in config_dirs.into_iter().flatten() {
+                let active_cfg_name = std::fs::read_to_string(gcloud_dir.join("active_config"))
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|_| "default".to_string());
+                let config_file = gcloud_dir.join("configurations").join(format!("config_{}", active_cfg_name));
+                if config_file.is_file() {
+                    if let Ok(content) = std::fs::read_to_string(&config_file) {
+                        for line in content.lines() {
+                            let line = line.trim();
+                            if let Some(rest) = line.strip_prefix("project") {
+                                if let Some(val) = rest.trim().strip_prefix('=') {
+                                    let v = val.trim().to_string();
+                                    if !v.is_empty() && v != "(unset)" {
+                                        active_project = Some(v);
+                                    }
+                                }
+                            }
+                            if let Some(rest) = line.strip_prefix("account") {
+                                if let Some(val) = rest.trim().strip_prefix('=') {
+                                    let v = val.trim().to_string();
+                                    if !v.is_empty() && v != "(unset)" {
+                                        active_account = Some(v);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-            }
-
-            #[cfg(target_os = "windows")]
-            let acc_out = Command::new("cmd.exe")
-                .args(["/c", "gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"])
-                .current_dir(&user_home)
-                .creation_flags(0x08000000)
-                .output();
-            #[cfg(not(target_os = "windows"))]
-            let acc_out = Command::new("gcloud")
-                .args(["auth", "list", "--filter=status:ACTIVE", "--format=value(account)"])
-                .current_dir(&user_home)
-                .output();
-
-            if let Ok(ao) = acc_out {
-                if ao.status.success() {
-                    let a = String::from_utf8_lossy(&ao.stdout).trim().to_string();
-                    if !a.is_empty() {
-                        active_account = Some(a);
-                    }
+                if active_project.is_some() && active_account.is_some() {
+                    break;
                 }
             }
         }
@@ -1073,18 +1054,42 @@ pub struct PathAddResult {
 pub fn get_user_path_dirs() -> Vec<std::path::PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        let mut cmd = Command::new("powershell.exe");
-        cmd.args(["-NoProfile", "-Command", "[Environment]::GetEnvironmentVariable('Path', 'User')"]);
-        cmd.creation_flags(0x08000000);
-        if let Ok(out) = cmd.output() {
-            if out.status.success() {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                return stdout
-                    .split(';')
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty())
-                    .map(std::path::PathBuf::from)
-                    .collect();
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::System::Registry::{
+            RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
+        };
+
+        // In-process native Win32 Registry lookup of HKCU\Environment\Path (0 subprocesses, <0.01ms)
+        unsafe {
+            let subkey: Vec<u16> = OsStr::new("Environment")
+                .encode_wide()
+                .chain(Some(0))
+                .collect();
+            let val_name: Vec<u16> = OsStr::new("Path")
+                .encode_wide()
+                .chain(Some(0))
+                .collect();
+
+            let mut hkey: HKEY = std::ptr::null_mut();
+            if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut hkey) == 0 && !hkey.is_null() {
+                let mut data_len: u32 = 0;
+                if RegQueryValueExW(hkey, val_name.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), &mut data_len) == 0 && data_len > 0 {
+                    let mut buffer: Vec<u8> = vec![0u8; data_len as usize + 2];
+                    if RegQueryValueExW(hkey, val_name.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), buffer.as_mut_ptr(), &mut data_len) == 0 {
+                        let _ = RegCloseKey(hkey);
+                        let u16_slice: &[u16] = std::slice::from_raw_parts(buffer.as_ptr() as *const u16, data_len as usize / 2);
+                        let end = u16_slice.iter().position(|&c| c == 0).unwrap_or(u16_slice.len());
+                        let path_str = String::from_utf16_lossy(&u16_slice[..end]);
+                        return path_str
+                            .split(';')
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                            .map(std::path::PathBuf::from)
+                            .collect();
+                    }
+                }
+                let _ = RegCloseKey(hkey);
             }
         }
     }
@@ -1099,16 +1104,20 @@ pub fn get_user_path_dirs() -> Vec<std::path::PathBuf> {
     Vec::new()
 }
 
-pub fn is_dir_in_user_path(target_dir: &std::path::Path) -> bool {
+pub fn is_dir_in_path_list(target_dir: &std::path::Path, path_list: &[std::path::PathBuf]) -> bool {
     let norm_target = target_dir.to_string_lossy().to_lowercase().replace('/', "\\").trim_end_matches('\\').to_string();
-    let dirs = get_user_path_dirs();
-    for d in dirs {
+    for d in path_list {
         let norm_d = d.to_string_lossy().to_lowercase().replace('/', "\\").trim_end_matches('\\').to_string();
         if norm_d == norm_target {
             return true;
         }
     }
     false
+}
+
+pub fn is_dir_in_user_path(target_dir: &std::path::Path) -> bool {
+    let dirs = get_user_path_dirs();
+    is_dir_in_path_list(target_dir, &dirs)
 }
 
 #[tauri::command]
@@ -1126,8 +1135,9 @@ pub async fn check_cli_path_status() -> Result<CliPathStatus, String> {
                 std::env::var("LOCALAPPDATA").ok().map(|l| std::path::PathBuf::from(l).join("agy").join("bin"))
             });
 
-        let gemini_in_user_path = gemini_dir.as_ref().map(|d| is_dir_in_user_path(d)).unwrap_or(false);
-        let agy_in_user_path = agy_dir.as_ref().map(|d| is_dir_in_user_path(d)).unwrap_or(false);
+        let user_dirs = get_user_path_dirs();
+        let gemini_in_user_path = gemini_dir.as_ref().map(|d| is_dir_in_path_list(d, &user_dirs)).unwrap_or(false);
+        let agy_in_user_path = agy_dir.as_ref().map(|d| is_dir_in_path_list(d, &user_dirs)).unwrap_or(false);
 
         Ok(CliPathStatus {
             gemini_path: gemini_exe.map(|p| p.to_string_lossy().to_string()),
@@ -1190,6 +1200,7 @@ pub async fn add_cli_to_user_path(engine: String) -> Result<PathAddResult, Strin
                             let updated_proc_path = format!("{};{}", target_dir_str, curr_proc_path);
                             std::env::set_var("PATH", updated_proc_path);
                         }
+                        crate::process_manager::invalidate_cli_path_cache();
 
                         Ok(PathAddResult {
                             success: true,
@@ -1288,6 +1299,7 @@ pub async fn update_or_install_agy_cli() -> Result<CliInstallResult, String> {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 if out.status.success() {
+                    crate::process_manager::invalidate_cli_path_cache();
                     let bin_path = crate::process_manager::find_agy_executable();
                     let ver = bin_path.as_ref().and_then(|p| {
                         let path_str = p.to_string_lossy().to_string();
@@ -1703,6 +1715,17 @@ mod tests {
         assert_eq!(models[0].name.as_deref(), Some("Gemini 3.8 Flash (High)"));
         assert_eq!(models[1].id, "claude-sonnet-4-6");
         assert_eq!(models[2].id, "gpt-oss-120b-medium");
+    }
+
+    #[test]
+    fn test_is_dir_in_path_list_case_and_slash_insensitivity() {
+        let list = vec![
+            std::path::PathBuf::from("C:\\Users\\test\\AppData\\Local\\agy\\bin"),
+            std::path::PathBuf::from("C:\\Program Files\\nodejs"),
+        ];
+        assert!(is_dir_in_path_list(&std::path::PathBuf::from("c:/users/test/appdata/local/agy/bin/"), &list));
+        assert!(is_dir_in_path_list(&std::path::PathBuf::from("C:\\Program Files\\nodejs"), &list));
+        assert!(!is_dir_in_path_list(&std::path::PathBuf::from("C:\\Program Files\\git"), &list));
     }
 
     #[test]

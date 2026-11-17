@@ -29,6 +29,8 @@ use crate::database::DbManager;
 use crate::process_manager::ProcessSupervisor;
 use serde::{Deserialize, Serialize};
 use std::process::Command;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::sync::Mutex;
@@ -62,10 +64,12 @@ pub async fn check_gemini_env() -> Result<GeminiEnvStatus, String> {
             let ver_check = if is_batch {
                 Command::new("cmd.exe")
                     .args(["/c", &path_str, "--version"])
+                    .creation_flags(0x08000000)
                     .output()
             } else {
                 Command::new(&path_str)
                     .arg("--version")
+                    .creation_flags(0x08000000)
                     .output()
             };
 

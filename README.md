@@ -25,6 +25,14 @@ A modern, blazing-fast native desktop application for interacting with the **Gem
   - **Gemini 2.5 Series**: `gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite`.
   - **Manual / Custom Entry**: Enter any custom model identifier, fine-tuned endpoint, or preview string.
 
+- **🧰 Dynamic `/` Tools & Slash Commands Autocomplete**
+  - Instant tool discovery palette triggered by typing `/` in the prompt composer.
+  - Dynamically filters available tools and actions based on the active CLI engine:
+    - **Antigravity CLI (`agy`)**: Access Antigravity plugins and extensions (`/plugins`).
+    - **Gemini CLI (`gemini`)**: Access prompt context compression (`/compress`).
+    - **Unified Desktop Actions**: Instant 1-click execution for Plan Workbench (`/plan`), Session Diff (`/diff`), Terminal Drawer (`/terminal`), MCP Manager (`/mcp`), Debug Doctor (`/doctor`), Context Compaction (`/compact`), Capabilities (`/tools`), Model Parameters (`/model`), Settings (`/settings`), Setup (`/setup`), Rewind (`/rewind`), and Clear (`/clear`).
+  - Full keyboard navigation (`↑`/`↓` selection, `Enter`/`Tab` execution, `Esc` dismiss).
+
 - **🔌 Model Context Protocol (MCP) Server Integration (`Ctrl+M`)**
   - Native dual-scope configuration management: **Workspace-scoped** (`<workspace>/.gemini/settings.json`) or **Global** (`~/.gemini/settings.json`).
   - 1-click popular presets: 🐙 **GitHub (Docker)**, 📁 **Local Filesystem**, 🐘 **PostgreSQL**, 🔍 **Brave Web Search**, and 🧠 **Knowledge Graph Memory**.
@@ -76,6 +84,8 @@ A modern, blazing-fast native desktop application for interacting with the **Gem
 
 - **🛡️ Process Management & Safety**
   - Supervised with native **Windows Job Objects** (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`).
+  - Zero-process-spawn environment diagnostics using native Win32 Registry APIs (`RegOpenKeyExW`) and in-memory executable path caching (`CLI_PATH_CACHE`), eliminating `cmd.exe`/`where.exe` child process forks when opening settings.
+  - Windows `CREATE_NO_WINDOW` execution flags preventing console window flashing.
   - Guarantees child CLI processes are terminated cleanly on exit without leaving orphaned background tasks.
   - Fallback mock / offline mode when the CLI is in standby.
 
@@ -89,6 +99,7 @@ A modern, blazing-fast native desktop application for interacting with the **Gem
 | **`Ctrl + M`** | Toggle MCP Server Manager | Global |
 | **`Ctrl + K`** | Open Full-Text SQLite FTS5 Search | Global |
 | **`Ctrl + N`** | Start New Chat Session | Global |
+| **`/`** | Trigger Tools & Slash Commands Autocomplete Palette | Prompt Textarea |
 | **`@`** | Trigger Context Mention Autocomplete (Files, Dirs, Git) | Prompt Textarea |
 | **`Enter`** | Send Prompt / Execute Terminal Command | Prompt / Terminal |
 | **`Shift + Enter`** | Insert Newline in Prompt | Prompt Textarea |

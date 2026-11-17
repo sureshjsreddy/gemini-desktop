@@ -294,6 +294,7 @@ pub async fn set_active_cli_engine(
     let mut ws_guard = state.active_process_workspace.lock().await;
     *ws_guard = None;
     state.acp_session.clear_sessions();
+    crate::process_manager::invalidate_cli_path_cache();
 
     Ok(normalized.to_string())
 }

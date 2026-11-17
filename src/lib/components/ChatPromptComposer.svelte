@@ -5,9 +5,13 @@
     AttachmentItem,
     ApprovalMode,
     MentionOption,
+    SlashCommandOption,
+    CliEngine,
   } from "$lib/types";
   import FilePickerModal from "$lib/components/FilePickerModal.svelte";
   import ChatMentionPopover from "$lib/components/ChatMentionPopover.svelte";
+  import ChatSlashPopover from "$lib/components/ChatSlashPopover.svelte";
+  import { modalManager } from "$lib/modal.svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { dialogManager } from "$lib/dialog.svelte";
   import { getModeConfig } from "$lib/utils/approvalModes";
@@ -34,21 +38,33 @@
     workspaceFiles = [],
     isStreaming = false,
     approvalMode = "default",
+    activeEngine = "gemini",
     onSendPrompt,
     onCancelPrompt,
     onSteerPrompt,
     onTriggerDebugDoctor,
     onDebugErrorDetected,
+    onOpenDiffModal,
+    onToggleTerminal,
+    onTogglePlanWorkbench,
+    onOpenMcpModal,
+    onOpenRewindModal,
   }: {
     workspace: Workspace | null;
     workspaceFiles?: WorkspaceFileEntry[];
     isStreaming: boolean;
     approvalMode?: ApprovalMode;
+    activeEngine?: CliEngine;
     onSendPrompt: (prompt: string) => void;
     onCancelPrompt: () => void;
     onSteerPrompt?: (hint: string) => void;
     onTriggerDebugDoctor?: () => void;
     onDebugErrorDetected?: (error: ParsedDebugError) => void;
+    onOpenDiffModal?: () => void;
+    onToggleTerminal?: () => void;
+    onTogglePlanWorkbench?: () => void;
+    onOpenMcpModal?: () => void;
+    onOpenRewindModal?: () => void;
   } = $props();
 
   let inputPrompt = $state("");
@@ -66,6 +82,199 @@
   let mentionMatchStart = $state(0);
   let mentionSelectedIndex = $state(0);
   let dismissedMatchStart: number | null = $state(null);
+
+  // Inline / Slash Command Autocomplete State
+  let showSlashPopover = $state(false);
+  let slashQuery = $state("");
+  let slashMatchStart = $state(0);
+  let slashSelectedIndex = $state(0);
+  let dismissedSlashMatchStart: number | null = $state(null);
+
+  let availableSlashCommands = $derived.by(() => {
+    const isAgy = activeEngine === "agy";
+    const commands: SlashCommandOption[] = [
+      {
+        id: "plan",
+        label: "/plan",
+        insertText: "/plan ",
+        title: "Plan Mode Workbench",
+        description: "Enter structured planning mode and task checklist extraction",
+        category: "mode",
+        engine: "all",
+      },
+      {
+        id: "compact",
+        label: "/compact",
+        insertText: "/compact",
+        title: "Context Compaction",
+        description: "Distill conversation history into a dense summary to save context",
+        category: "action",
+        engine: "all",
+      },
+    ];
+
+    if (!isAgy) {
+      commands.push({
+        id: "compress",
+        label: "/compress",
+        insertText: "/compress",
+        title: "Compress Context",
+        description: "Gemini CLI native conversation context compression",
+        category: "action",
+        engine: "gemini",
+      });
+    }
+
+    commands.push({
+      id: "diff",
+      label: "/diff",
+      insertText: "/diff",
+      title: "File Changes & Git Diff",
+      description: "Inspect session modified files, unstaged diffs, and reverts",
+      category: "tool",
+      engine: "all",
+    });
+
+    commands.push({
+      id: "rewind",
+      label: "/rewind",
+      insertText: "/rewind",
+      title: "Rewind Turn",
+      description: "Rollback to previous conversation turn or checkpoint",
+      category: "action",
+      engine: "all",
+    });
+
+    commands.push({
+      id: "terminal",
+      label: "/terminal",
+      insertText: "/terminal",
+      title: "Workspace Terminal",
+      description: isAgy
+        ? "Toggle integrated terminal with Antigravity agy environment"
+        : "Toggle integrated PowerShell workspace terminal drawer",
+      category: "tool",
+      engine: "all",
+    });
+
+    commands.push({
+      id: "mcp",
+      label: "/mcp",
+      insertText: "/mcp",
+      title: isAgy ? "Antigravity MCP Config" : "MCP Server Config",
+      description: isAgy
+        ? "Configure Antigravity MCP servers (.agents/mcp_config.json)"
+        : "Configure Gemini CLI MCP servers (~/.gemini/settings.json)",
+      category: "config",
+      engine: "all",
+    });
+
+    if (isAgy) {
+      commands.push({
+        id: "plugins",
+        label: "/plugins",
+        insertText: "/plugins",
+        title: "Plugins & Skills",
+        description: "Inspect active Antigravity plugins, extensions, and custom skills",
+        category: "tool",
+        engine: "agy",
+      });
+    }
+
+    commands.push({
+      id: "tools",
+      label: "/tools",
+      insertText: "/tools",
+      title: "List Active Tools",
+      description: isAgy
+        ? "View Antigravity agent tools, plugins, and custom skills"
+        : "View official Gemini CLI file, terminal, and MCP tool capabilities",
+      category: "tool",
+      engine: "all",
+    });
+
+    commands.push({
+      id: "model",
+      label: "/model",
+      insertText: "/model ",
+      title: "Switch Model",
+      description: isAgy
+        ? "Switch Antigravity models (gemini-4-argon, claude-sonnet-4-6, 3.8-flash)"
+        : "Switch Gemini CLI models (gemini-3.8-flash, 3.5-flash, auto)",
+      category: "config",
+      engine: "all",
+    });
+
+    commands.push({
+      id: "mode",
+      label: "/mode",
+      insertText: "/mode ",
+      title: "Approval Mode",
+      description: isAgy
+        ? "Switch approval mode (yolo, accept-edits, plan, ask)"
+        : "Switch approval mode (yolo, auto_edit, plan, ask)",
+      category: "mode",
+      engine: "all",
+    });
+
+    commands.push({
+      id: "doctor",
+      label: "/doctor",
+      insertText: "/doctor",
+      title: "Debug Doctor",
+      description: "Analyze clipboard errors or run instant diagnostics",
+      category: "tool",
+      engine: "all",
+    });
+
+    commands.push({
+      id: "settings",
+      label: "/settings",
+      insertText: "/settings",
+      title: isAgy ? "Antigravity Settings" : "Global CLI Settings",
+      description: isAgy
+        ? "Configure settings in ~/.gemini/antigravity-cli/settings.json"
+        : "Configure settings in ~/.gemini/settings.json",
+      category: "config",
+      engine: "all",
+    });
+
+    commands.push({
+      id: "setup",
+      label: "/setup",
+      insertText: "/setup",
+      title: "Engine & Auth Setup",
+      description: isAgy
+        ? "Configure Antigravity CLI binary, updates, and environment"
+        : "Configure Gemini CLI, Google Cloud Vertex AI, and API key",
+      category: "config",
+      engine: "all",
+    });
+
+    commands.push({
+      id: "clear",
+      label: "/clear",
+      insertText: "/clear",
+      title: "Clear Composer",
+      description: "Clear input prompt and reset attached files",
+      category: "action",
+      engine: "all",
+    });
+
+    return commands;
+  });
+
+  let filteredSlashOptions = $derived.by(() => {
+    const q = slashQuery.toLowerCase().trim();
+    if (!q) return availableSlashCommands;
+    return availableSlashCommands.filter((cmd) => {
+      return (
+        cmd.label.toLowerCase().includes(q) ||
+        cmd.title.toLowerCase().includes(q) ||
+        cmd.description.toLowerCase().includes(q)
+      );
+    });
+  });
 
   onMount(() => {
     function handlePrefill(e: Event) {
@@ -230,6 +439,7 @@
       mentionQuery = match[1];
       mentionMatchStart = matchStart;
       showMentionPopover = true;
+      showSlashPopover = false;
       mentionSelectedIndex = 0;
     } else {
       showMentionPopover = false;
@@ -240,6 +450,128 @@
   function dismissMentionPopover() {
     showMentionPopover = false;
     dismissedMatchStart = mentionMatchStart;
+  }
+
+  function checkSlashTrigger() {
+    if (!textareaElem) return;
+    const cursor = textareaElem.selectionStart;
+    const textBeforeCursor = inputPrompt.slice(0, cursor);
+
+    // Matches "/" or "/xyz" right before cursor at start of line or after whitespace
+    const match = textBeforeCursor.match(/(?:^|\s)\/([^\s]*)$/);
+    if (match) {
+      const matchStart = cursor - match[1].length - 1;
+      if (dismissedSlashMatchStart === matchStart) {
+        showSlashPopover = false;
+        return;
+      }
+      slashQuery = match[1];
+      slashMatchStart = matchStart;
+      showSlashPopover = true;
+      showMentionPopover = false;
+      slashSelectedIndex = 0;
+    } else {
+      showSlashPopover = false;
+      dismissedSlashMatchStart = null;
+    }
+  }
+
+  function dismissSlashPopover() {
+    showSlashPopover = false;
+    dismissedSlashMatchStart = slashMatchStart;
+  }
+
+  function executeSlashAction(commandId: string, fullPrompt?: string): boolean {
+    switch (commandId) {
+      case "plan":
+        if (fullPrompt && fullPrompt.trim().length > "/plan".length) {
+          const taskDescription = fullPrompt.slice(fullPrompt.indexOf(" ") + 1).trim();
+          if (onTogglePlanWorkbench) onTogglePlanWorkbench();
+          onSendPrompt(`Plan Mode: Please analyze and create a comprehensive step-by-step plan for the following task:\n\n${taskDescription}`);
+          return true;
+        }
+        if (onTogglePlanWorkbench) {
+          onTogglePlanWorkbench();
+          return true;
+        }
+        return false;
+      case "compact":
+      case "compress":
+        onSendPrompt("/compact");
+        return true;
+      case "diff":
+        if (onOpenDiffModal) {
+          onOpenDiffModal();
+          return true;
+        }
+        return false;
+      case "rewind":
+        if (onOpenRewindModal) {
+          onOpenRewindModal();
+        } else {
+          modalManager.open("rewind");
+        }
+        return true;
+      case "terminal":
+        if (onToggleTerminal) {
+          onToggleTerminal();
+          return true;
+        }
+        return false;
+      case "mcp":
+        if (onOpenMcpModal) {
+          onOpenMcpModal();
+        } else {
+          modalManager.open("mcp");
+        }
+        return true;
+      case "settings":
+        modalManager.open("cli-settings");
+        return true;
+      case "setup":
+        modalManager.open("cli-setup");
+        return true;
+      case "doctor":
+        if (onTriggerDebugDoctor) {
+          onTriggerDebugDoctor();
+          return true;
+        }
+        return false;
+      case "clear":
+        inputPrompt = "";
+        attachments = [];
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  function applySlashCommand(option: SlashCommandOption, isEnter: boolean) {
+    if (!textareaElem) return;
+    const cursor = textareaElem.selectionStart;
+    const textBefore = inputPrompt.slice(0, slashMatchStart);
+    const textAfter = inputPrompt.slice(cursor);
+
+    showSlashPopover = false;
+    dismissedSlashMatchStart = null;
+
+    const directActionIds = ["settings", "setup", "mcp", "rewind", "diff", "terminal", "doctor", "clear", "compact", "compress"];
+    if (isEnter && directActionIds.includes(option.id)) {
+      if (executeSlashAction(option.id)) {
+        inputPrompt = (textBefore + textAfter).trim();
+        return;
+      }
+    }
+
+    const insert = option.insertText.endsWith(" ") ? option.insertText : option.insertText + " ";
+    inputPrompt = textBefore + insert + textAfter;
+    tick().then(() => {
+      if (textareaElem) {
+        const newPos = textBefore.length + insert.length;
+        textareaElem.focus();
+        textareaElem.setSelectionRange(newPos, newPos);
+      }
+    });
   }
 
   function applyMention(option: MentionOption) {
@@ -313,6 +645,27 @@
   }
 
   function handleKeyDown(e: KeyboardEvent) {
+    if (showSlashPopover && filteredSlashOptions.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        slashSelectedIndex = (slashSelectedIndex + 1) % filteredSlashOptions.length;
+        return;
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        slashSelectedIndex =
+          (slashSelectedIndex - 1 + filteredSlashOptions.length) % filteredSlashOptions.length;
+        return;
+      } else if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        applySlashCommand(filteredSlashOptions[slashSelectedIndex], e.key === "Enter");
+        return;
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        dismissSlashPopover();
+        return;
+      }
+    }
+
     if (showMentionPopover && filteredMentionOptions.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -350,6 +703,22 @@
   function handleSubmit() {
     const trimmed = inputPrompt.trim();
     if ((!trimmed && attachments.length === 0) || isStreaming) return;
+
+    if (trimmed.startsWith("/")) {
+      const parts = trimmed.split(/\s+/);
+      const commandId = parts[0].replace(/^\//, "").toLowerCase();
+      const directActions = ["settings", "setup", "mcp", "rewind", "diff", "terminal", "doctor", "clear"];
+      if (directActions.includes(commandId) && trimmed === parts[0]) {
+        inputPrompt = "";
+        executeSlashAction(commandId);
+        return;
+      }
+      if (commandId === "plan") {
+        inputPrompt = "";
+        executeSlashAction("plan", trimmed);
+        return;
+      }
+    }
 
     let finalPrompt = trimmed;
 
@@ -397,6 +766,17 @@
       onSelectIndex={(idx) => (mentionSelectedIndex = idx)}
     />
 
+    <!-- Inline / Slash Command Autocomplete Floating Popover -->
+    <ChatSlashPopover
+      show={showSlashPopover}
+      options={filteredSlashOptions}
+      selectedIndex={slashSelectedIndex}
+      {activeEngine}
+      onSelect={(opt) => applySlashCommand(opt, true)}
+      onDismiss={dismissSlashPopover}
+      onSelectIndex={(idx) => (slashSelectedIndex = idx)}
+    />
+
     <!-- Visual Attachment Chips Row -->
     {#if attachments.length > 0}
       <div class="px-3.5 pt-2.5 pb-1.5 flex flex-wrap items-center gap-1.5 border-b border-subtle/60 bg-surface/50 rounded-t-xl">
@@ -438,11 +818,11 @@
       bind:this={textareaElem}
       bind:value={inputPrompt}
       onkeydown={handleKeyDown}
-      oninput={checkMentionTrigger}
+      oninput={() => { checkMentionTrigger(); checkSlashTrigger(); }}
       onpaste={handlePaste}
       placeholder={isStreaming
         ? "🎯 Steer active agent in real time (e.g. skip tests, focus on src/api)... Press Enter or click Steer"
-        : "Type prompt or use @file, @dir/, @git:diff... (Shift+Enter for newline, Enter to send)"}
+        : "Type prompt, '/' for tools & commands, or @file, @git:diff... (Shift+Enter for newline, Enter to send)"}
       rows="3"
       class="w-full px-3.5 py-2.5 bg-transparent text-primary-theme placeholder:text-muted-theme text-xs focus:outline-none resize-none font-sans select-text"
     ></textarea>
