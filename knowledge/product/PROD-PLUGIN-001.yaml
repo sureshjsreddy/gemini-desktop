@@ -1,0 +1,44 @@
+id: PROD-PLUGIN-001
+type: product_standard
+title: Antigravity CLI (agy) Plugins & Extensions Management Standard
+domain: product
+status: approved
+version: 1.0.0
+authority:
+  level: official
+  confidence: high
+owner:
+  team: integration_and_product
+
+applies_to:
+  - frontend
+  - backend
+  - plugins
+  - configuration
+  - commands
+
+rule:
+  "Gemini Desktop provides native GUI management for Antigravity CLI (`agy`) plugins and extension bundles. When `agy` is active, users can inspect installed plugins, toggle them on/off live, install marketplace packages, and scaffold custom plugin bundles. When official Gemini CLI (`gemini`) is active, an informative banner guides users that plugins are an `agy` agentic feature without disruptive conversion prompts."
+
+do:
+  - "Query installed plugins dynamically via `list_agy_plugins` (`agy plugin list --json`), enriching metadata with local `plugin.json` (`displayName`, `description`, `version`, `logo`)."
+  - "Support live 1-click enable/disable toggles via `toggle_agy_plugin` (`agy plugin enable/disable <name>`) without requiring application restart."
+  - "Provide direct folder access via `open_plugin_directory` (`explorer.exe`) to view plugin assets, skills, and configuration."
+  - "Support installing official, partner, or custom plugins via `install_agy_plugin` (`agy plugin install <target>`)."
+  - "Support custom plugin scaffolding via `create_custom_plugin`: generate `plugin.json`, `README.md`, and optional `skills/<skill>/SKILL.md`, `mcp_config.json`, `rules/AGENTS.md`, and `agents/<agent>.md` in `%USERPROFILE%/.gemini/config/plugins/<name>/`."
+  - "Surface capability pills (`Skills count`, `MCP tools`, `Rules`) on installed plugin cards."
+  - "When `activeEngine === 'gemini'`, display an informative educational banner explaining that plugins are an Antigravity (`agy`) feature, guiding users to switch engines if desired."
+  - "Provide a 1-click launcher in the Tools & Settings bottom popover of `Sidebar.svelte`."
+
+dont:
+  - "Do not attempt to execute `agy plugin` commands when `activeEngine === 'gemini'` or when `agy` binary is not found on the system."
+  - "Do not hardcode machine-specific local paths in marketplace-facing plugin configurations; prefer portable npm/npx runners (`npx -y <package> mcp`)."
+  - "Do not overwrite existing plugin directories during custom plugin scaffolding without user confirmation."
+
+reason:
+  "Antigravity CLI plugins package skills, MCP servers, rules, and subagents into modular bundles. Providing a native desktop GUI allows developers to easily discover, manage, and author extensions."
+
+related_items:
+  - ARCH-ENGINE-001
+  - PROD-MCP-001
+  - DEV-SVELTE-001

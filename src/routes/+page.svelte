@@ -31,6 +31,7 @@
   import TemplatesModal from "$lib/components/TemplatesModal.svelte";
   import ThemeModal from "$lib/components/ThemeModal.svelte";
   import McpModal from "$lib/components/McpModal.svelte";
+  import PluginsModal from "$lib/components/PluginsModal.svelte";
   import CliSetupModal from "$lib/components/CliSetupModal.svelte";
   import CliSettingsModal from "$lib/components/CliSettingsModal.svelte";
   import RewindModal from "$lib/components/RewindModal.svelte";
@@ -1187,6 +1188,7 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
     onOpenWorkspaceModal={() => modalManager.open("workspace")}
     onOpenThemeModal={() => modalManager.open("theme")}
     onOpenMcpModal={() => modalManager.open("mcp")}
+    onOpenPluginsModal={() => modalManager.open("plugins")}
     onOpenCliSetup={() => modalManager.open("cli-setup")}
     onOpenCliSettings={() => modalManager.open("cli-settings")}
     onToggleTerminal={() => (showTerminalDrawer = !showTerminalDrawer)}
@@ -1317,6 +1319,12 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
   <McpModal
     isOpen={modalManager.isOpen("mcp")}
     {activeWorkspace}
+    {activeEngine}
+    onClose={() => modalManager.close()}
+  />
+
+  <PluginsModal
+    isOpen={modalManager.isOpen("plugins")}
     {activeEngine}
     onClose={() => modalManager.close()}
   />

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.3] - 2026-11-18
+
+### Added
+- **Antigravity CLI (`agy`) Plugins & Extensions Hub (`PluginsModal.svelte`)**:
+  - Full native GUI management for Antigravity agent plugins and modular extension bundles.
+  - **Installed Plugins (`Manage`)**: Live queries installed plugins via `list_agy_plugins` (`agy plugin list --json`), displaying skill counts, MCP server attachments, and active rules, with live 1-click Enable / Disable switches (`toggle_agy_plugin`), Explorer folder access, and uninstallation.
+  - **Explore Catalog**: Curated directory of official and partner plugins (`android-cli-plugin`, `chrome-devtools-plugin`, `firebase`, `science`, `google-antigravity-sdk`) with 1-click installation and custom target install (`install_agy_plugin`).
+  - **Custom Plugin Studio (`+ Create Custom`)**: Interactive scaffolding wizard to generate and activate custom plugin bundles in `%USERPROFILE%\.gemini\config\plugins\<name>\` (`create_custom_plugin`), pre-configuring `plugin.json`, `README.md`, skills, MCP tools, agent rules (`rules/AGENTS.md`), and specialist subagents.
+  - **Dual-Engine Awareness**: Seamlessly displays an educational banner when `gemini` CLI is active, informing users that plugins are an `agy` agentic feature without disruptive conversion prompts.
+- **Backend Rust Plugin IPC Commands**:
+  - Implemented `list_agy_plugins`, `toggle_agy_plugin`, `install_agy_plugin`, `uninstall_agy_plugin`, `create_custom_plugin`, and `open_plugin_directory` in `src-tauri/src/commands/plugins.rs` with full unit test coverage.
+
+### Changed & Refactored
+- **Sidebar UX Architecture Redesign (Pinned Chat Hero + Bottom Settings Hub)**:
+  - Eliminated the 9-button vertical stack in `Sidebar.svelte` that pushed recent conversations below the fold on standard and laptop screens.
+  - Assigned primary vertical height (`flex-1 min-h-0 overflow-y-auto`) to **Recent Chats**, keeping 10–15+ conversations immediately visible without scrolling.
+  - Placed compact high-frequency chat actions (`+ New Chat` and `Search History`) directly beneath the Workspace Selector.
+  - Reorganized secondary tools into a compact bottom toolbar:
+    - Side-by-side Developer Drawer toggles: `Terminal` (`Ctrl+\``) and `Workspace Explorer` (`Ctrl+Alt+L`).
+    - Unified **Tools & Settings** launcher opening a sleek upward-floating popover for `Prompt Library`, `MCP Servers`, `Plugins & Extensions`, `CLI & Auth Setup`, `CLI Settings`, and `Theme & Colors`.
+
+---
+
 ## [0.7.2] - 2026-11-17
 
 ### Added

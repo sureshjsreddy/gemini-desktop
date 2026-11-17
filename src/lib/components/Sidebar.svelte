@@ -12,6 +12,7 @@
     Settings,
     Sparkles,
     ChevronDown,
+    ChevronUp,
     Palette,
     Server,
     Terminal,
@@ -21,6 +22,7 @@
     RefreshCw,
     Cpu,
     Sliders,
+    Package,
   } from "lucide-svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { APP_VERSION_FALLBACK } from "$lib/version";
@@ -52,6 +54,7 @@
     isCheckingUpdate = false,
     onOpenCliSetup,
     onOpenCliSettings,
+    onOpenPluginsModal,
   }: {
     isOpen?: boolean;
     workspaces: Workspace[];
@@ -79,9 +82,11 @@
     isCheckingUpdate?: boolean;
     onOpenCliSetup?: () => void;
     onOpenCliSettings?: () => void;
+    onOpenPluginsModal?: () => void;
   } = $props();
 
   let showWorkspaceMenu = $state(false);
+  let showToolsMenu = $state(false);
 </script>
 
 {#if !isOpen}
@@ -176,6 +181,20 @@
             aria-label="MCP servers"
           >
             <Server size={15} />
+          </button>
+        </Tooltip>
+      {/if}
+
+      <!-- Plugins & Extensions Hub -->
+      {#if onOpenPluginsModal}
+        <Tooltip text="Plugins & Extensions" position="right">
+          <button
+            type="button"
+            onclick={onOpenPluginsModal}
+            class="w-8 h-8 rounded-lg flex items-center justify-center text-secondary-theme hover:text-purple-400 hover:bg-surface transition-colors cursor-pointer"
+            aria-label="Plugins and extensions"
+          >
+            <Package size={15} />
           </button>
         </Tooltip>
       {/if}
@@ -383,8 +402,8 @@
     </div>
   </div>
 
-  <!-- Quick Action Navigation -->
-  <div class="p-3 space-y-1 border-b border-subtle">
+  <!-- Primary Quick Action Navigation (New Chat & Search) -->
+  <div class="p-2.5 space-y-1.5 border-b border-subtle">
     <Tooltip
       class="w-full block"
       text="New Conversation"
@@ -393,6 +412,7 @@
       position="right"
     >
       <button
+        type="button"
         onclick={onNewSession}
         class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg bg-surface hover:bg-surface-hover text-primary-theme hover:border-accent-theme/50 border border-theme-default text-xs font-medium transition-all shadow-2xs group cursor-pointer"
       >
@@ -410,151 +430,31 @@
       position="right"
     >
       <button
+        type="button"
         onclick={onOpenSearch}
-        class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-surface-hover text-secondary-theme hover:text-primary-theme text-xs transition-colors cursor-pointer"
+        class="w-full flex items-center gap-2.5 px-3 py-1.5 rounded-lg hover:bg-surface-hover text-secondary-theme hover:text-primary-theme text-xs transition-colors cursor-pointer"
       >
-        <Search size={14} class="text-muted-theme" />
-        <span>Search History</span>
+        <Search size={14} class="text-muted-theme shrink-0" />
+        <span class="truncate">Search History</span>
         <span class="ml-auto text-[10px] text-muted-theme font-mono">Ctrl+K</span>
       </button>
     </Tooltip>
-
-    <Tooltip
-      class="w-full block"
-      text="Prompt Library"
-      subtext="Browse, manage, and quickly insert pre-built prompt templates for coding, refactoring, and review"
-      position="right"
-    >
-      <button
-        onclick={onOpenTemplates}
-        class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-surface-hover text-secondary-theme hover:text-primary-theme text-xs transition-colors cursor-pointer"
-      >
-        <BookOpen size={14} class="text-muted-theme" />
-        <span>Prompt Library</span>
-      </button>
-    </Tooltip>
-
-    <Tooltip
-      class="w-full block"
-      text="Theme & Colors"
-      subtext="Customize UI palette with Midnight Dark, Cyberpunk, Obsidian, or custom colors"
-      position="right"
-    >
-      <button
-        onclick={onOpenThemeModal}
-        class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-surface-hover text-secondary-theme hover:text-primary-theme text-xs transition-colors cursor-pointer"
-      >
-        <Palette size={14} class="text-accent-theme" />
-        <span>Theme & Colors</span>
-        <span class="ml-auto text-[10px] capitalize text-muted-theme font-medium">{themeManager.current.replace('-', ' ')}</span>
-      </button>
-    </Tooltip>
-
-    <Tooltip
-      class="w-full block"
-      text="Model Context Protocol (MCP)"
-      subtext="Connect external tools, databases, and services (Azure DevOps, GitHub, SQLite) into Gemini CLI"
-      shortcut="Ctrl+M"
-      position="right"
-    >
-      <button
-        onclick={onOpenMcpModal}
-        class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-surface-hover text-secondary-theme hover:text-primary-theme text-xs transition-colors cursor-pointer"
-      >
-        <Server size={14} class="text-accent-theme" />
-        <span>MCP Servers</span>
-        <span class="ml-auto text-[10px] text-muted-theme font-mono">Ctrl+M</span>
-      </button>
-    </Tooltip>
-
-    <!-- CLI & Auth Setup -->
-    {#if onOpenCliSetup}
-      <Tooltip
-        class="w-full block"
-        text="CLI & Auth Setup"
-        subtext="Install Gemini CLI, configure Google AI Studio key or Corporate Vertex AI Project"
-        position="right"
-      >
-        <button
-          onclick={onOpenCliSetup}
-          class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-surface-hover text-secondary-theme hover:text-primary-theme text-xs transition-colors cursor-pointer"
-        >
-          <Cpu size={14} class="text-accent-theme" />
-          <span>CLI & Auth Setup</span>
-          <span class="ml-auto flex items-center gap-1">
-            <span class="inline-block w-1.5 h-1.5 rounded-full {envStatus?.installed ? 'bg-emerald-400' : 'bg-amber-400'}"></span>
-          </span>
-        </button>
-      </Tooltip>
-    {/if}
-
-    <!-- CLI Global Settings -->
-    {#if onOpenCliSettings}
-      <Tooltip
-        class="w-full block"
-        text="Gemini CLI Settings"
-        subtext="Configure context compression, turn limits, and token retention in ~/.gemini/settings.json"
-        position="right"
-      >
-        <button
-          onclick={onOpenCliSettings}
-          class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-surface-hover text-secondary-theme hover:text-primary-theme text-xs transition-colors cursor-pointer"
-        >
-          <Sliders size={14} class="text-accent-theme" />
-          <span>CLI Settings</span>
-        </button>
-      </Tooltip>
-    {/if}
-
-    {#if onToggleTerminal}
-      <Tooltip
-        class="w-full block"
-        text="Terminal Console"
-        subtext="Open embedded PowerShell drawer in workspace directory to inspect git, run tests, and reload .env"
-        shortcut="Ctrl+`"
-        position="right"
-      >
-        <button
-          onclick={onToggleTerminal}
-          class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-surface-hover text-secondary-theme hover:text-primary-theme text-xs transition-colors cursor-pointer"
-        >
-          <Terminal size={14} class="text-accent-theme" />
-          <span>Terminal Console</span>
-          <span class="ml-auto text-[10px] text-muted-theme font-mono">Ctrl+`</span>
-        </button>
-      </Tooltip>
-    {/if}
-
-    {#if onToggleExplorer}
-      <Tooltip
-        class="w-full block"
-        text="Workspace Explorer"
-        subtext="Toggle workspace file and folder tree"
-        shortcut="Ctrl+Alt+L"
-        position="right"
-      >
-        <button
-          type="button"
-          onclick={onToggleExplorer}
-          class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-surface-hover text-secondary-theme hover:text-primary-theme text-xs transition-colors cursor-pointer"
-        >
-          <FolderTree size={14} class="text-[#a855f7]" />
-          <span>Workspace Explorer</span>
-          <span class="ml-auto text-[10px] text-muted-theme font-mono">Ctrl+Alt+L</span>
-        </button>
-      </Tooltip>
-    {/if}
   </div>
 
-  <!-- Chat History Sessions List -->
-  <div class="flex-1 overflow-y-auto p-2 space-y-0.5">
-    <div class="px-2 py-1.5 text-[11px] font-semibold uppercase text-muted-theme tracking-wider">
-      Recent Chats
+  <!-- Chat History Sessions List (Flexible Primary Real Estate) -->
+  <div class="flex-1 min-h-0 overflow-y-auto p-2 space-y-0.5">
+    <div class="px-2 py-1.5 text-[11px] font-semibold uppercase text-muted-theme tracking-wider flex items-center justify-between">
+      <span>Recent Chats</span>
+      {#if sessions.length > 0}
+        <span class="text-[10px] text-muted-theme font-mono font-normal">{sessions.length}</span>
+      {/if}
     </div>
 
     {#if sessions.length === 0}
-      <div class="px-3 py-6 text-center text-xs text-muted-theme">
-        No conversations yet in this workspace.
+      <div class="px-3 py-8 text-center text-xs text-muted-theme flex flex-col items-center justify-center gap-1.5">
+        <MessageSquare size={18} class="text-muted-theme/50 mb-1" />
+        <span>No conversations yet</span>
+        <span class="text-[11px] text-muted-theme/70">Click New Chat to begin</span>
       </div>
     {:else}
       {#each sessions as session (session.id)}
@@ -615,6 +515,196 @@
         </div>
       {/each}
     {/if}
+  </div>
+
+  <!-- Bottom Tools & Panes Strip -->
+  <div class="p-2 border-t border-subtle bg-surface/30 space-y-1.5 relative">
+    <!-- Developer Panes: Terminal & Workspace Explorer -->
+    <div class="grid grid-cols-2 gap-1.5">
+      {#if onToggleTerminal}
+        <Tooltip text="Terminal Console" subtext="Open embedded PowerShell drawer" shortcut="Ctrl+`" position="top">
+          <button
+            type="button"
+            onclick={onToggleTerminal}
+            class="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg bg-surface hover:bg-surface-hover border border-subtle hover:border-accent-theme/40 text-xs text-secondary-theme hover:text-primary-theme transition-colors cursor-pointer"
+            aria-label="Toggle terminal console"
+          >
+            <Terminal size={13} class="text-accent-theme shrink-0" />
+            <span class="truncate font-medium text-[11px]">Terminal</span>
+          </button>
+        </Tooltip>
+      {/if}
+
+      {#if onToggleExplorer}
+        <Tooltip text="Workspace Explorer" subtext="Toggle workspace file tree" shortcut="Ctrl+Alt+L" position="top">
+          <button
+            type="button"
+            onclick={onToggleExplorer}
+            class="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg bg-surface hover:bg-surface-hover border border-subtle hover:border-[#a855f7]/40 text-xs text-secondary-theme hover:text-primary-theme transition-colors cursor-pointer"
+            aria-label="Toggle workspace explorer"
+          >
+            <FolderTree size={13} class="text-[#a855f7] shrink-0" />
+            <span class="truncate font-medium text-[11px]">Explorer</span>
+          </button>
+        </Tooltip>
+      {/if}
+    </div>
+
+    <!-- Tools & Settings Popover Launcher -->
+    <div class="relative">
+      <button
+        type="button"
+        onclick={() => (showToolsMenu = !showToolsMenu)}
+        class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-surface hover:bg-surface-hover border border-subtle hover:border-theme-default text-xs text-secondary-theme hover:text-primary-theme transition-colors cursor-pointer"
+        aria-label="Open tools and settings menu"
+      >
+        <div class="flex items-center gap-2 truncate">
+          <Sliders size={13} class="text-accent-theme shrink-0" />
+          <span class="font-medium truncate text-[11px]">Tools & Settings</span>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0 text-muted-theme">
+          <span class="inline-block w-1.5 h-1.5 rounded-full {envStatus?.installed ? 'bg-emerald-400' : 'bg-amber-400'}"></span>
+          <ChevronUp size={13} class="transition-transform duration-200 {showToolsMenu ? 'rotate-180' : ''}" />
+        </div>
+      </button>
+
+      {#if showToolsMenu}
+        <div
+          class="fixed inset-0 z-40"
+          onclick={() => (showToolsMenu = false)}
+          role="presentation"
+        ></div>
+        <div
+          class="absolute bottom-full left-0 right-0 mb-1.5 bg-surface-elevated border border-subtle rounded-xl shadow-2xl py-1 z-50 text-xs"
+        >
+          <div class="px-3 py-1.5 text-[10px] font-semibold uppercase text-muted-theme tracking-wider border-b border-subtle flex items-center justify-between">
+            <span>Tools & Settings</span>
+            <span class="font-mono text-[9px] lowercase text-accent-theme">{activeEngine}</span>
+          </div>
+
+          <!-- Prompt Library -->
+          <button
+            type="button"
+            onclick={() => {
+              showToolsMenu = false;
+              onOpenTemplates();
+            }}
+            class="w-full px-3 py-2 text-left flex items-center gap-2.5 hover:bg-surface-hover text-secondary-theme hover:text-primary-theme transition-colors cursor-pointer"
+          >
+            <BookOpen size={14} class="text-muted-theme shrink-0" />
+            <div class="truncate flex-1">
+              <div class="font-medium text-primary-theme">Prompt Library</div>
+              <div class="text-[10px] text-muted-theme">Pre-built prompt templates</div>
+            </div>
+          </button>
+
+          <!-- MCP Servers -->
+          {#if onOpenMcpModal}
+            <button
+              type="button"
+              onclick={() => {
+                showToolsMenu = false;
+                onOpenMcpModal();
+              }}
+              class="w-full px-3 py-2 text-left flex items-center gap-2.5 hover:bg-surface-hover text-secondary-theme hover:text-primary-theme transition-colors cursor-pointer"
+            >
+              <Server size={14} class="text-accent-theme shrink-0" />
+              <div class="truncate flex-1">
+                <div class="font-medium text-primary-theme flex items-center justify-between">
+                  <span>MCP Servers</span>
+                  <span class="text-[10px] font-mono text-muted-theme">Ctrl+M</span>
+                </div>
+                <div class="text-[10px] text-muted-theme">External tools & context</div>
+              </div>
+            </button>
+          {/if}
+
+          <!-- Plugins & Extensions -->
+          {#if onOpenPluginsModal}
+            <button
+              type="button"
+              onclick={() => {
+                showToolsMenu = false;
+                onOpenPluginsModal();
+              }}
+              class="w-full px-3 py-2 text-left flex items-center gap-2.5 hover:bg-surface-hover text-secondary-theme hover:text-primary-theme transition-colors cursor-pointer"
+            >
+              <Package size={14} class="text-purple-400 shrink-0" />
+              <div class="truncate flex-1">
+                <div class="font-medium text-primary-theme flex items-center justify-between">
+                  <span>Plugins & Extensions</span>
+                  <span class="text-[9px] font-mono px-1.5 py-0.2 rounded bg-purple-500/15 text-purple-400 border border-purple-500/30">agy</span>
+                </div>
+                <div class="text-[10px] text-muted-theme">Bundles, skills & custom tools</div>
+              </div>
+            </button>
+          {/if}
+
+          <!-- CLI & Auth Setup -->
+          {#if onOpenCliSetup}
+            <button
+              type="button"
+              onclick={() => {
+                showToolsMenu = false;
+                onOpenCliSetup();
+              }}
+              class="w-full px-3 py-2 text-left flex items-center gap-2.5 hover:bg-surface-hover text-secondary-theme hover:text-primary-theme transition-colors cursor-pointer"
+            >
+              <Cpu size={14} class="text-accent-theme shrink-0" />
+              <div class="truncate flex-1">
+                <div class="font-medium text-primary-theme flex items-center justify-between">
+                  <span>CLI & Auth Setup</span>
+                  <span class="flex items-center gap-1 text-[10px] font-mono {envStatus?.installed ? 'text-emerald-400' : 'text-amber-400'}">
+                    <span class="inline-block w-1.5 h-1.5 rounded-full {envStatus?.installed ? 'bg-emerald-400' : 'bg-amber-400'}"></span>
+                    {envStatus?.installed ? 'Ready' : 'Setup'}
+                  </span>
+                </div>
+                <div class="text-[10px] text-muted-theme">API keys & Vertex project</div>
+              </div>
+            </button>
+          {/if}
+
+          <!-- CLI Global Settings -->
+          {#if onOpenCliSettings}
+            <button
+              type="button"
+              onclick={() => {
+                showToolsMenu = false;
+                onOpenCliSettings();
+              }}
+              class="w-full px-3 py-2 text-left flex items-center gap-2.5 hover:bg-surface-hover text-secondary-theme hover:text-primary-theme transition-colors cursor-pointer"
+            >
+              <Sliders size={14} class="text-accent-theme shrink-0" />
+              <div class="truncate flex-1">
+                <div class="font-medium text-primary-theme">CLI Settings</div>
+                <div class="text-[10px] text-muted-theme">Tokens, turns & compression</div>
+              </div>
+            </button>
+          {/if}
+
+          <div class="border-t border-subtle my-1"></div>
+
+          <!-- Theme & Colors -->
+          <button
+            type="button"
+            onclick={() => {
+              showToolsMenu = false;
+              onOpenThemeModal();
+            }}
+            class="w-full px-3 py-2 text-left flex items-center gap-2.5 hover:bg-surface-hover text-secondary-theme hover:text-primary-theme transition-colors cursor-pointer"
+          >
+            <Palette size={14} class="text-accent-theme shrink-0" />
+            <div class="truncate flex-1">
+              <div class="font-medium text-primary-theme flex items-center justify-between">
+                <span>Theme & Colors</span>
+                <span class="text-[10px] font-mono text-muted-theme capitalize">{themeManager.current.replace('-', ' ')}</span>
+              </div>
+              <div class="text-[10px] text-muted-theme">Palette, eye comfort & fonts</div>
+            </div>
+          </button>
+        </div>
+      {/if}
+    </div>
   </div>
 
   <!-- Bottom App & Workspace Info -->

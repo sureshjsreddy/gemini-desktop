@@ -25,6 +25,18 @@ A modern, blazing-fast native desktop application for interacting with the **Gem
   - **Gemini 2.5 Series**: `gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite`.
   - **Manual / Custom Entry**: Enter any custom model identifier, fine-tuned endpoint, or preview string.
 
+- **🧩 Antigravity CLI (`agy`) Plugins & Extensions Hub**
+  - Native desktop manager for Antigravity agent plugins and extension bundles.
+  - **Installed View**: Live management of active plugins with capability badges (skills, MCP tools, and rules), 1-click enable/disable switches, and Explorer folder access.
+  - **Explore Catalog**: Curated directory of official and community extensions (`android-cli-plugin`, `chrome-devtools-plugin`, `firebase`, `science`, `google-antigravity-sdk`) plus custom ID/GitHub target installation.
+  - **Custom Plugin Studio**: Scaffolding wizard to generate new custom plugins in `%USERPROFILE%\.gemini\config\plugins\<name>\` complete with skills, MCP configs, and rules.
+  - **Dual-Engine Graceful Guidance**: Informative banner when `gemini` CLI is active explaining plugin requirements without unwanted prompts.
+
+- **📐 Ergonomic Pinned Chat Sidebar Architecture**
+  - Re-architected left sidebar layout prioritizing conversation history: assigns primary vertical height (`flex-1 min-h-0`) to **Recent Chats**, keeping 10–15+ chats instantly accessible.
+  - Clean top action bar for `+ New Chat` and `Search History` (`Ctrl+K`).
+  - Integrated bottom toolbar featuring side-by-side Developer Panes (`Terminal` `Ctrl+\`` and `Workspace Explorer` `Ctrl+Alt+L`) alongside a unified **Tools & Settings** launcher.
+
 - **🧰 Dynamic `/` Tools & Slash Commands Autocomplete**
   - Instant tool discovery palette triggered by typing `/` in the prompt composer.
   - Dynamically filters available tools and actions based on the active CLI engine:

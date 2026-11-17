@@ -113,7 +113,13 @@ pub fn run() {
             git_pull,
             git_push,
             git_get_file_diff,
-            git_generate_commit_message
+            git_generate_commit_message,
+            list_agy_plugins,
+            toggle_agy_plugin,
+            install_agy_plugin,
+            uninstall_agy_plugin,
+            create_custom_plugin,
+            open_plugin_directory
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

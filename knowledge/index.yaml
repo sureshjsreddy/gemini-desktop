@@ -1,8 +1,8 @@
 # Gemini Desktop Master Knowledge Graph & Index
 system_name: GeminiDesktop
 repository_root: "c:/AIFiles/gemini-desktop"
-knowledge_units_count: 28
-last_updated: "2026-11-17"
+knowledge_units_count: 29
+last_updated: "2026-11-18"
 
 knowledge_units:
   architecture:
@@ -82,6 +82,9 @@ knowledge_units:
     - id: PROD-COMPACT-001
       file: "knowledge/product/PROD-COMPACT-001.yaml"
       title: "Session Context Compaction & 1M Ceiling Continuation Recovery Standard"
+    - id: PROD-PLUGIN-001
+      file: "knowledge/product/PROD-PLUGIN-001.yaml"
+      title: "Antigravity CLI (agy) Plugins & Extensions Management Standard"
 
   decisions:
     - id: ADR-001

@@ -10,6 +10,7 @@ pub mod notification;
 pub mod session_diff;
 pub mod settings;
 pub mod git;
+pub mod plugins;
 
 pub use db::*;
 pub use session::*;
@@ -23,6 +24,7 @@ pub use notification::*;
 pub use session_diff::*;
 pub use settings::*;
 pub use git::*;
+pub use plugins::*;
 
 use crate::acp_client::AcpSession;
 use crate::database::DbManager;

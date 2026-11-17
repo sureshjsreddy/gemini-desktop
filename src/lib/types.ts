@@ -360,6 +360,37 @@ export interface PathAddResult {
   alreadyInPath: boolean;
 }
 
+export interface AgyPluginInfo {
+  name: string;
+  enabled: boolean;
+  version?: string;
+  displayName?: string;
+  description?: string;
+  source?: string;
+  path?: string;
+  skills?: string[];
+  rules?: string[];
+  mcpServers?: string[];
+  logo?: string;
+}
+
+export interface AgyPluginOpResult {
+  success: boolean;
+  message: string;
+}
+
+export interface CreateCustomPluginRequest {
+  name: string;
+  displayName?: string;
+  description?: string;
+  includeSkill: boolean;
+  skillName?: string;
+  includeMcp: boolean;
+  includeRules: boolean;
+  includeAgent: boolean;
+  agentName?: string;
+}
+
 
 
 
