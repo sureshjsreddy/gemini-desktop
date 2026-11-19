@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - 📝 **Feature Plan**: *"/plan Create an implementation plan for my next feature or refactoring task"*
 - **Header Bar Streamlining (`ChatView.svelte`)**:
   - Integrated "Compress Context" into the **Export & Actions** dropdown menu with its `/compress` shortcut, decluttering the top header bar and keeping it focused on chat title, active model, and session diff badges.
+- **Hierarchical Tool Execution Tree & Progress Stack (`ToolCallGroup.svelte`)**:
+  - Replaced the flat vertical stack of individual tool cards with a collapsible hierarchical tree component inspired by modern agentic IDEs.
+  - While an agent is working, completed steps are tucked into a compact accordion header (`[▶] Executing tasks (N/M completed)...`) while displaying only the single active running step underneath with a live spinner.
+  - When execution finishes, all steps collapse into a single clean summary (`[▶] N steps completed (X.Xs)`), leaving the assistant's final Markdown response clean and fully readable without terminal card clutter.
+  - Interactive "View tree" / "Hide tree" toggle allows users to expand the tree hierarchy with tree-branch connectors, status checkmarks, and duration badges at any time.
+- **Semantic Human-Friendly Task Summaries (`resolve_human_friendly_tool_title`)**:
+  - Eliminated robotic machine identifiers (`call_0`, `call_1`, `tool`) from tool cards.
+  - Dynamically extracts semantic user intent from `parameters` (`toolSummary`, `CommandLine`, `Path`, `query`), formatting natural action titles like `Run cargo test --lib`, `Read knowledge/index.yaml`, and `Edited src/acp_client.rs`.
 
 ---
 

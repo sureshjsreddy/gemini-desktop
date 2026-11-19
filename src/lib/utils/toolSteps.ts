@@ -1,6 +1,107 @@
 import type { Message, ToolExecutionStep } from "$lib/types";
 
 /**
+ * Resolves a human-friendly title for a tool execution step.
+ * Prevents machine identifiers like "call_0" or "tool" from being displayed to users.
+ */
+export function resolveHumanFriendlyTitle(step: ToolExecutionStep): string {
+  const toolName = (step.tool_name || "").toLowerCase();
+  const rawTitle = (step.title || "").trim();
+  const isMachineId =
+    !rawTitle ||
+    rawTitle === "tool" ||
+    rawTitle.startsWith("call_") ||
+    rawTitle.startsWith("tool-") ||
+    /^[0-9_\-]+$/.test(rawTitle);
+
+  const p = step.parameters;
+  if (p && typeof p === "object") {
+    if (typeof p.toolSummary === "string" && p.toolSummary.trim()) {
+      return p.toolSummary.trim();
+    }
+    if (typeof p.summary === "string" && p.summary.trim()) {
+      return p.summary.trim();
+    }
+    if (typeof p.description === "string" && p.description.trim()) {
+      return p.description.trim();
+    }
+
+    // Command tools
+    if (
+      toolName.includes("terminal") ||
+      toolName.includes("command") ||
+      toolName.includes("bash") ||
+      toolName.includes("shell") ||
+      toolName.includes("exec")
+    ) {
+      const cmd =
+        typeof p.CommandLine === "string"
+          ? p.CommandLine
+          : typeof p.command === "string"
+          ? p.command
+          : typeof p.cmd === "string"
+          ? p.cmd
+          : "";
+      if (cmd.trim()) {
+        const line = cmd.trim().split("\n")[0].trim();
+        return line.length > 55 ? line.slice(0, 52) + "..." : line;
+      }
+    }
+
+    // File tools
+    if (
+      toolName.includes("read") ||
+      toolName.includes("write") ||
+      toolName.includes("edit") ||
+      toolName.includes("patch") ||
+      toolName.includes("view") ||
+      toolName.includes("file")
+    ) {
+      const path =
+        typeof p.Path === "string"
+          ? p.Path
+          : typeof p.path === "string"
+          ? p.path
+          : typeof p.file_path === "string"
+          ? p.file_path
+          : "";
+      if (path.trim()) {
+        const norm = path.replace(/\\/g, "/").trim();
+        const srcIdx = norm.indexOf("/src");
+        if (srcIdx >= 0) return norm.slice(srcIdx + 1);
+        const knIdx = norm.indexOf("/knowledge");
+        if (knIdx >= 0) return norm.slice(knIdx + 1);
+        const parts = norm.split("/").filter(Boolean);
+        return parts.length > 2 ? `${parts[parts.length - 2]}/${parts[parts.length - 1]}` : norm;
+      }
+    }
+
+    // Search tools
+    if (toolName.includes("search") || toolName.includes("grep") || toolName.includes("find")) {
+      const q =
+        typeof p.query === "string"
+          ? p.query
+          : typeof p.Pattern === "string"
+          ? p.Pattern
+          : typeof p.pattern === "string"
+          ? p.pattern
+          : "";
+      if (q.trim()) {
+        return q.length > 45 ? `"${q.slice(0, 42)}..."` : `"${q}"`;
+      }
+    }
+  }
+
+  if (!isMachineId) return rawTitle;
+
+  if (toolName.includes("terminal") || toolName.includes("command")) return "Terminal Command";
+  if (toolName.includes("read") || toolName.includes("view")) return "Read File";
+  if (toolName.includes("edit") || toolName.includes("write")) return "Edit File";
+  if (toolName.includes("search") || toolName.includes("grep")) return "Search Files";
+  return step.tool_name ? step.tool_name.replace(/_/g, " ") : "Task Step";
+}
+
+/**
  * Extracts structured tool execution steps from an assistant message.
  * Supports modern structured tool_calls_json as well as legacy inline markdown logs.
  */
@@ -9,7 +110,10 @@ export function parseToolSteps(msg: Message): ToolExecutionStep[] {
     try {
       const parsed = JSON.parse(msg.tool_calls_json);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
+        return parsed.map((s) => ({
+          ...s,
+          title: resolveHumanFriendlyTitle(s),
+        }));
       }
     } catch (e) {
       console.warn("Failed to parse tool_calls_json:", e);

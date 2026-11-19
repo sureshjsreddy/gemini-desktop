@@ -785,6 +785,140 @@ pub fn prune_terminal_output(raw: &str, max_bytes: usize) -> (String, bool) {
     (pruned, true)
 }
 
+/// Extracts a semantic, human-friendly title from a tool execution event.
+/// If `title` is a machine identifier like "call_0" or "tool", inspects `parameters`
+/// (e.g. `toolSummary`, `CommandLine`, `Path`, `query`) to infer a clear description.
+pub fn resolve_human_friendly_tool_title(
+    tool_name: &str,
+    raw_title: &str,
+    params: Option<&Value>,
+) -> String {
+    let t_name_lower = tool_name.to_lowercase();
+    let title_trimmed = raw_title.trim();
+
+    // Check if raw_title is meaningful and not a machine-generated ID
+    let is_machine_id = title_trimmed.is_empty()
+        || title_trimmed == "tool"
+        || title_trimmed.starts_with("call_")
+        || title_trimmed.starts_with("tool-")
+        || title_trimmed.chars().all(|c| c.is_ascii_digit() || c == '-' || c == '_');
+
+    // 1. If params provides a human-written toolSummary, summary, or description, use it!
+    if let Some(p) = params {
+        if let Some(summary) = p.get("toolSummary")
+            .or_else(|| p.get("summary"))
+            .or_else(|| p.get("description"))
+            .and_then(|s| s.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            return summary.to_string();
+        }
+
+        // 2. Command tools: extract CommandLine or command
+        if t_name_lower.contains("terminal")
+            || t_name_lower.contains("command")
+            || t_name_lower.contains("bash")
+            || t_name_lower.contains("shell")
+            || t_name_lower.contains("exec")
+        {
+            if let Some(cmd) = p.get("CommandLine")
+                .or_else(|| p.get("command"))
+                .or_else(|| p.get("cmd"))
+                .and_then(|s| s.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                let first_line = cmd.lines().next().unwrap_or(cmd).trim();
+                if first_line.len() > 60 {
+                    return format!("{}...", &first_line[..57]);
+                }
+                return first_line.to_string();
+            }
+        }
+
+        // 3. File read / write / edit tools: extract Path
+        if t_name_lower.contains("read")
+            || t_name_lower.contains("write")
+            || t_name_lower.contains("edit")
+            || t_name_lower.contains("patch")
+            || t_name_lower.contains("view")
+            || t_name_lower.contains("file")
+        {
+            if let Some(path) = p.get("Path")
+                .or_else(|| p.get("path"))
+                .or_else(|| p.get("file_path"))
+                .or_else(|| p.get("filePath"))
+                .and_then(|s| s.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                let normalized = path.replace('\\', "/");
+                let display_path = if let Some(idx) = normalized.find("/src") {
+                    &normalized[idx + 1..]
+                } else if let Some(idx) = normalized.find("/knowledge") {
+                    &normalized[idx + 1..]
+                } else {
+                    let parts: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
+                    if parts.len() > 2 {
+                        let joined = format!("{}/{}", parts[parts.len() - 2], parts[parts.len() - 1]);
+                        return joined;
+                    } else {
+                        &normalized
+                    }
+                };
+                return display_path.to_string();
+            }
+        }
+
+        // 4. Search / Grep tools: extract query or pattern
+        if t_name_lower.contains("search")
+            || t_name_lower.contains("grep")
+            || t_name_lower.contains("find")
+        {
+            if let Some(q) = p.get("query")
+                .or_else(|| p.get("Pattern"))
+                .or_else(|| p.get("pattern"))
+                .and_then(|s| s.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                if q.len() > 50 {
+                    return format!("\"{}...\"", &q[..47]);
+                }
+                return format!("\"{}\"", q);
+            }
+        }
+
+        // 5. MCP tools: extract ToolName
+        if t_name_lower.contains("mcp") {
+            if let Some(tool) = p.get("ToolName").or_else(|| p.get("tool_name")).and_then(|s| s.as_str()) {
+                return format!("MCP: {}", tool);
+            }
+        }
+    }
+
+    // If raw_title is not a machine ID, use it!
+    if !is_machine_id {
+        return title_trimmed.to_string();
+    }
+
+    // Fallback: format clean readable tool name
+    match t_name_lower.as_str() {
+        "run_command" | "run_shell_command" | "terminal" | "exec" => "Terminal Command".to_string(),
+        "read_file" | "view_file" | "fs/read_text_file" => "Read File".to_string(),
+        "edit_file" | "write_file" | "fs/write_text_file" => "Edit File".to_string(),
+        "search_files" | "grep_search" | "find_by_name" => "Search Files".to_string(),
+        _ => {
+            if !tool_name.is_empty() && tool_name != "tool" {
+                tool_name.replace('_', " ")
+            } else {
+                "Task Step".to_string()
+            }
+        }
+    }
+}
+
 /// Generates a clean, 1-line human-readable summary for tool execution telemetry.
 pub fn generate_concise_tool_summary(
     tool_name: &str,
@@ -946,19 +1080,19 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                                 .or_else(|| val.pointer("/params/update/id"))
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("tool");
-                            let title = val.pointer("/params/update/title")
-                                .or_else(|| val.pointer("/params/update/toolCallId"))
+                            let raw_title = val.pointer("/params/update/title")
                                 .and_then(|t| t.as_str())
-                                .unwrap_or("tool");
+                                .unwrap_or("");
                             let tool_name = val.pointer("/params/update/name")
                                 .or_else(|| val.pointer("/params/update/tool"))
                                 .and_then(|t| t.as_str())
-                                .unwrap_or(title);
+                                .unwrap_or("tool");
                             let status = val.pointer("/params/update/status").and_then(|s| s.as_str()).unwrap_or("in_progress");
                             let params = val.pointer("/params/update/parameters")
                                 .or_else(|| val.pointer("/params/update/input"))
                                 .cloned();
-                            let summary = generate_concise_tool_summary(tool_name, title, status, None, None);
+                            let title = resolve_human_friendly_tool_title(tool_name, raw_title, params.as_ref());
+                            let summary = generate_concise_tool_summary(tool_name, &title, status, None, None);
 
                             // Snapshot file before modification if tracking is enabled for this workspace
                             if acp_session.is_track_file_changes_enabled() {
@@ -991,15 +1125,17 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                                 .or_else(|| val.pointer("/params/update/id"))
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("tool");
-                            let title = val.pointer("/params/update/title")
-                                .or_else(|| val.pointer("/params/update/toolCallId"))
+                            let raw_title = val.pointer("/params/update/title")
                                 .and_then(|t| t.as_str())
-                                .unwrap_or("tool");
+                                .unwrap_or("");
                             let tool_name = val.pointer("/params/update/name")
                                 .or_else(|| val.pointer("/params/update/tool"))
                                 .and_then(|t| t.as_str())
-                                .unwrap_or(title);
+                                .unwrap_or("tool");
                             let status = val.pointer("/params/update/status").and_then(|s| s.as_str()).unwrap_or("completed");
+                            let update_params = val.pointer("/params/update/parameters")
+                                .or_else(|| val.pointer("/params/update/input"));
+                            let title = resolve_human_friendly_tool_title(tool_name, raw_title, update_params);
                             let err_msg = val.pointer("/params/update/content/0/content/text")
                                 .or_else(|| val.pointer("/params/update/content/text"))
                                 .and_then(|t| t.as_str())
@@ -1020,7 +1156,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                             }
                             let summary = generate_concise_tool_summary(
                                 tool_name,
-                                title,
+                                &title,
                                 status,
                                 err_msg.as_deref(),
                                 pruned_out.as_deref(),
@@ -2031,6 +2167,43 @@ mod tests {
 
         let summary_running = generate_concise_tool_summary("search", "src/", "in_progress", None, None);
         assert_eq!(summary_running, "⚙️ Running: src/");
+    }
+
+    #[test]
+    fn test_resolve_human_friendly_tool_title() {
+        // 1. ToolSummary priority
+        let p_summary = serde_json::json!({
+            "CommandLine": "cargo test --lib",
+            "toolSummary": "Run unit test suite"
+        });
+        assert_eq!(
+            resolve_human_friendly_tool_title("run_command", "call_0", Some(&p_summary)),
+            "Run unit test suite"
+        );
+
+        // 2. Command extraction from machine ID
+        let p_cmd = serde_json::json!({
+            "CommandLine": "git status --porcelain"
+        });
+        assert_eq!(
+            resolve_human_friendly_tool_title("run_command", "call_123", Some(&p_cmd)),
+            "git status --porcelain"
+        );
+
+        // 3. File path extraction
+        let p_path = serde_json::json!({
+            "Path": "C:\\AIFiles\\gemini-desktop\\src\\lib\\types.ts"
+        });
+        assert_eq!(
+            resolve_human_friendly_tool_title("read_file", "call_9", Some(&p_path)),
+            "src/lib/types.ts"
+        );
+
+        // 4. Non-machine title preserved
+        assert_eq!(
+            resolve_human_friendly_tool_title("read_file", "README.md", None),
+            "README.md"
+        );
     }
 }
 

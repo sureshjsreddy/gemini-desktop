@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ToolExecutionStep } from "$lib/types";
+  import { resolveHumanFriendlyTitle } from "$lib/utils/toolSteps";
   import {
     ChevronRight,
     CheckCircle2,
@@ -43,6 +44,24 @@
   }
 
   let ToolIcon = $derived(getToolIcon(step.tool_name, step.title));
+
+  let displayTitle = $derived.by(() => {
+    const summary = (step.summary || "").trim();
+    if (summary && !summary.includes("call_") && !summary.includes("tool-") && !summary.endsWith(": tool")) {
+      return summary;
+    }
+    const cleanTitle = resolveHumanFriendlyTitle(step);
+    if (step.status === "completed") {
+      return `✅ ${cleanTitle}`;
+    }
+    if (step.status === "in_progress" || step.status === "pending") {
+      return `⚙️ ${cleanTitle}`;
+    }
+    if (step.status === "failed") {
+      return `❌ ${cleanTitle}`;
+    }
+    return cleanTitle;
+  });
 
   async function copyText(text: string, sectionId: string) {
     try {
@@ -97,7 +116,7 @@
       <div class="flex items-center gap-1.5 truncate min-w-0">
         <ToolIcon size={13} class="text-secondary-theme shrink-0" />
         <span class="font-mono font-medium text-primary-theme truncate">
-          {step.summary || step.title || step.tool_name || "Task Step"}
+          {displayTitle}
         </span>
       </div>
     </div>

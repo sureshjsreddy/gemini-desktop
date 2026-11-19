@@ -17,6 +17,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import SessionChangesModal from "$lib/components/SessionChangesModal.svelte";
   import ToolCallNode from "$lib/components/ToolCallNode.svelte";
+  import ToolCallGroup from "$lib/components/ToolCallGroup.svelte";
   import { parseToolSteps, cleanMessageContent } from "$lib/utils/toolSteps";
   import ToolPermissionCard from "$lib/components/ToolPermissionCard.svelte";
   import DebugDoctorBanner from "$lib/components/DebugDoctorBanner.svelte";
@@ -753,10 +754,8 @@
             {@const cleanContent = cleanMessageContent(msg.content, toolSteps.length > 0)}
 
             {#if toolSteps.length > 0}
-              <div class="mb-3 space-y-1">
-                {#each toolSteps as step (step.id)}
-                  <ToolCallNode {step} />
-                {/each}
+              <div class="mb-3">
+                <ToolCallGroup steps={toolSteps} isStreaming={false} />
               </div>
             {/if}
 
@@ -850,10 +849,8 @@
           {/if}
 
           {#if streamingToolCalls && streamingToolCalls.length > 0}
-            <div class="mb-3 space-y-1">
-              {#each streamingToolCalls as step (step.id)}
-                <ToolCallNode {step} />
-              {/each}
+            <div class="mb-3">
+              <ToolCallGroup steps={streamingToolCalls} isStreaming={true} />
             </div>
           {/if}
 
