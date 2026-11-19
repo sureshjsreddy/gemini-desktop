@@ -1263,7 +1263,7 @@ dependencies = [
 
 [[package]]
 name = "gemini-desktop"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "chrono",
  "open",

@@ -14,7 +14,6 @@
   import { modalManager } from "$lib/modal.svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { dialogManager } from "$lib/dialog.svelte";
-  import { getModeConfig } from "$lib/utils/approvalModes";
   import {
     Compass,
     Send,
@@ -355,11 +354,6 @@
     return results;
   });
 
-  let effectiveApprovalMode = $derived(
-    workspace?.approval_mode || approvalMode || "default"
-  );
-  let currentModeConfig = $derived(getModeConfig(effectiveApprovalMode));
-  let ModeIcon = $derived(currentModeConfig.icon);
 
   let folderBasename = $derived(
     workspace?.path
@@ -925,53 +919,38 @@
                 <Plus size={14} class="text-muted-theme" />
                 <span>Custom Path / Ref...</span>
               </button>
+
+              {#if onTriggerDebugDoctor}
+                <div class="my-1 border-t border-subtle"></div>
+                <button
+                  type="button"
+                  onclick={() => {
+                    showAttachMenu = false;
+                    onTriggerDebugDoctor();
+                  }}
+                  class="w-full px-3 py-1.5 text-left hover:bg-surface-hover text-rose-400 hover:text-rose-300 flex items-center gap-2 cursor-pointer"
+                >
+                  <Bug size={14} class="text-rose-400" />
+                  <span>Instant Debug Doctor</span>
+                  <span class="text-[10px] text-muted-theme font-mono ml-auto">Ctrl+Alt+D</span>
+                </button>
+              {/if}
             </div>
           {/if}
         </div>
 
-        {#if onTriggerDebugDoctor}
-          <Tooltip
-            text="Instant Debug Doctor"
-            subtext="Scan clipboard for Visual Studio / runtime exceptions & load local source"
-            shortcut="Ctrl+Alt+D"
-            position="top"
-          >
-            <button
-              type="button"
-              onclick={onTriggerDebugDoctor}
-              class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-surface hover:bg-rose-500/10 text-rose-400 hover:text-rose-300 transition-colors border border-rose-500/30 cursor-pointer text-xs shrink-0"
-            >
-              <Bug size={13} class="text-rose-400 shrink-0" />
-              <span class="font-medium hidden md:inline">Debug Doctor</span>
-            </button>
-          </Tooltip>
-        {/if}
-
         <Tooltip
           text={`Working Dir: ${workspace?.path || "C:\\"}`}
-          subtext="Gemini CLI commands, MCP tools, and file paths execute relative to this root folder."
+          subtext="Commands, MCP tools, and file paths execute relative to this root folder."
           position="top"
           class="min-w-0 inline-flex items-center"
         >
           <div
             title={`Working Dir: ${workspace?.path || "C:\\"}`}
-            class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-surface/80 border border-subtle/80 text-secondary-theme cursor-help min-w-0 max-w-[120px] sm:max-w-[200px]"
+            class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-surface/80 border border-subtle/80 text-secondary-theme cursor-help min-w-0 max-w-[160px] sm:max-w-[280px]"
           >
             <Folder size={12} class="text-sky-400 shrink-0" />
             <span class="font-mono text-[11px] truncate">{folderBasename}</span>
-          </div>
-        </Tooltip>
-
-        <span class="text-muted-theme/40 select-none shrink-0 hidden xs:inline">&bull;</span>
-
-        <Tooltip
-          text={`Policy Approval Mode: ${currentModeConfig.label}`}
-          subtext={`${currentModeConfig.description} (Change in Workspace Settings)`}
-          position="top"
-        >
-          <div class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[11px] font-semibold cursor-default select-none shrink-0 {currentModeConfig.badgeClass}">
-            <ModeIcon size={11} class={currentModeConfig.iconClass} />
-            <span class="hidden sm:inline">{currentModeConfig.shortLabel}</span>
           </div>
         </Tooltip>
       </div>

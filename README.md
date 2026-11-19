@@ -13,10 +13,16 @@ A modern, blazing-fast native desktop application for interacting with the **Gem
 
 ## ✨ Features
 
-- **⚡ Native Agent Client Protocol (ACP)**
+- **⚡ Native Agent Client Protocol (ACP) & Resilient Engine Runtime**
   - Full bidirectional JSON-RPC streaming directly over the child CLI process `stdin`/`stdout`.
-  - Real-time token streaming with cancelable requests.
+  - Resilient JSON-RPC ID parsing and `stopReason: "end_turn"` completion handling across Gemini CLI and Antigravity CLI (`agy`), eliminating hanging "working" states.
+  - Non-blocking real-time model steering mid-flight with mode-aware steering prompts.
   - Interactive **Tool Execution Permission Intercepts** — review and approve tool/command execution before changes occur on your machine.
+
+- **💬 Streamlined Typing Experience & Interactive Starter Cards**
+  - Decluttered prompt composer toolbar with dedicated context attachment (`@`), working directory tracking, and clean submit controls.
+  - Interactive onboarding empty-state cards for one-click repository architecture exploration, uncommitted git diff review, and step-by-step feature planning.
+  - Integrated "Compress Context" action inside the Export & Actions menu to keep the top header focused on conversation context.
 
 - **🎯 Official Gemini Model Selection**
   - **Auto (Gemini 3)**: Dynamically balances between Pro and Flash models based on task complexity.

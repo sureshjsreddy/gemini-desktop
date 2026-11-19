@@ -3,7 +3,7 @@ type: architecture_standard
 title: Agent Client Protocol (ACP) JSON-RPC Streaming & Tool Intercepts
 domain: architecture
 status: approved
-version: 1.13.0
+version: 1.14.0
 authority:
   level: official
   confidence: high
@@ -52,6 +52,9 @@ do:
   - "Support real-time Model Steering mid-flight via `send_steering` and `steer_prompt`, transmitting JSON-RPC `session/steer` notifications and emitting `acp-steer` events so users can course-correct autonomous runs without terminating turns."
   - "Provide stateful conversation and file rewind via `rewind_turn` and `delete_messages_from`, pruning rolled-back turns from SQLite FTS5 index and optionally restoring working tree files via Git checkout/restore."
   - "Provide a fallback mock/offline mode if the Gemini CLI executable is absent on PATH."
+  - "Parse JSON-RPC response IDs flexibly across both numeric integers (`as_u64()`) and string integers (`as_str()`), ensuring Antigravity CLI (`agy`) prompt turn completions are accurately recognized and matched with their originating session."
+  - "Inspect `val.pointer(\"/result/stopReason\")` in the ACP fallback result detector and fall back to `get_active_local_session()` if `take_prompt_session(id)` misses, guaranteeing that `agy` turn completions (which return only `stopReason: \"end_turn\"` and usage without redundant content fields) always emit `is_done: true` and never leave the frontend hanging in 'working' status."
+  - "Condition ACP steering cancellation on `has_pending_prompt_for_session`, preventing spurious cancellations of idle CLI engines, and differentiate conversational steering prompts from Plan Mode task classifications to prevent steering prompt poisoning."
 
 dont:
   - "Do not execute file snapshots, disk copying, manifest updates, or emit `session-files-updated` events in any ACP handler when `track_file_changes` is disabled for the workspace profile."

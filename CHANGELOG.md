@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.4] - 2026-11-20
+
+### Fixed & Optimized
+- **Antigravity CLI (`agy`) ACP Turn Completion & Hanging Fix**:
+  - Resolved an issue where ACP turns with `agy-cli` occasionally remained stuck showing "working" after completion.
+  - Added resilient JSON-RPC ID parsing supporting both numeric and string integer IDs (`as_u64()` and string parsing).
+  - Enhanced the ACP fallback result detector in `acp_client.rs` to explicitly match `val.pointer("/result/stopReason")` and fall back to `get_active_local_session()` if `take_prompt_session(id)` misses, guaranteeing that `agy` turn completions (which send `stopReason: "end_turn"` without redundant content fields) always emit `is_done: true`.
+  - Added `has_pending_prompt_for_session` to accurately track in-flight prompt turns and avoid spurious session cancellations on idle engines.
+- **Steering Response Completion & Clean Guiding**:
+  - Fixed a frontend race condition in `+page.svelte` where genuine steering response completions were trapped and swallowed as prompt cancellations, causing an infinite "is work completed?" cycle.
+  - Conditioned user steering prompt generation in `session.rs` so plan task classifications (`ADD_TASK`, `MODIFY_TASK`, `CANCEL_TASK`) are only applied in Plan Mode, eliminating steering prompt poisoning during standard chat/code turns.
+
+### Changed & Refactored
+- **Prompt Composer Toolbar Decluttering (`ChatPromptComposer.svelte`)**:
+  - Removed duplicate Policy Approval Mode badge from the input bar (already displayed prominently in the top header and configured in workspace settings), eliminating horizontal wrapping on narrower windows.
+  - Moved standalone *Debug Doctor* button into the **Attach** quick menu (keeping `Ctrl+Alt+D`, `/doctor`, and automatic clipboard paste detection fully functional), giving the working directory chip and send controls a clean, uncluttered layout.
+- **Empty State Interactive Onboarding (`ChatView.svelte`)**:
+  - Replaced static text with dynamic CLI engine identification (`Antigravity CLI (agy)` vs `Gemini CLI`).
+  - Added 3 one-click interactive starter prompt cards:
+    - 🔍 **Architecture**: *"Explain the architecture, folder structure, and tech stack of this workspace"*
+    - ⚡ **Git Changes**: *"Inspect git status, summarize uncommitted changes, and identify what needs attention"*
+    - 📝 **Feature Plan**: *"/plan Create an implementation plan for my next feature or refactoring task"*
+- **Header Bar Streamlining (`ChatView.svelte`)**:
+  - Integrated "Compress Context" into the **Export & Actions** dropdown menu with its `/compress` shortcut, decluttering the top header bar and keeping it focused on chat title, active model, and session diff badges.
+
+---
+
 ## [0.7.3] - 2026-11-18
 
 ### Added

@@ -552,12 +552,19 @@ pub struct RewindResult {
 
 pub const USER_STEERING_INSTRUCTION: &str = "Internal instruction: Re-evaluate the active plan using this user steering update. Classify it as ADD_TASK, MODIFY_TASK, CANCEL_TASK, or EXTRA_CONTEXT. Apply minimal-diff changes only to affected tasks and keep unaffected tasks active. Do not cancel/skip tasks unless the user explicitly cancels them. Acknowledge the steering briefly and state the course correction.";
 
-pub fn build_user_steering_prompt(hint: &str) -> String {
-    format!(
-        "User steering update:\n{}\n\n{}",
-        hint.trim(),
-        USER_STEERING_INSTRUCTION
-    )
+pub fn build_user_steering_prompt(hint: &str, is_plan_mode: bool) -> String {
+    if is_plan_mode {
+        format!(
+            "User steering update:\n{}\n\n{}",
+            hint.trim(),
+            USER_STEERING_INSTRUCTION
+        )
+    } else {
+        format!(
+            "User steering update:\n{}\n\nPlease adapt your execution according to this user guidance.",
+            hint.trim()
+        )
+    }
 }
 
 #[tauri::command]
@@ -572,14 +579,18 @@ pub async fn steer_prompt(
         return Err("Steering hint cannot be empty".to_string());
     }
 
-    // 1. Cancel in-flight generation in Gemini CLI so it aborts current turn
-    let _ = state.acp_session.send_cancel(Some(&session_id), None).await;
+    let current_mode = state.acp_session.get_session_mode(&session_id);
+    let is_plan_mode = current_mode == "plan";
 
-    // Small delay to allow cancellation to propagate through ACP
-    tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+    // 1. Cancel in-flight generation in CLI if a prompt is currently active so it aborts cleanly
+    if state.acp_session.has_pending_prompt_for_session(&session_id) {
+        let _ = state.acp_session.send_cancel(Some(&session_id), None).await;
+        // Delay to allow cancellation to propagate through ACP
+        tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+    }
 
-    // 2. Format official Gemini CLI steering prompt instruction
-    let steering_prompt = build_user_steering_prompt(trimmed);
+    // 2. Format steering prompt instruction (adapting for plan mode vs general mode)
+    let steering_prompt = build_user_steering_prompt(trimmed, is_plan_mode);
 
     // 3. Obtain current ACP session ID
     let acp_sid = match state.acp_session.get_acp_session_id(&session_id) {
@@ -1109,6 +1120,18 @@ mod tests {
         assert_eq!(sanitize_model_for_engine("gemini", "gemini-3.5-flash"), "gemini-3.5-flash");
         assert_eq!(sanitize_model_for_engine("gemini", "gemini-3.8-flash"), "gemini-3.8-flash");
         assert_eq!(sanitize_model_for_engine("gemini", "auto"), "auto");
+    }
+
+    #[test]
+    fn test_build_user_steering_prompt() {
+        let plan_prompt = build_user_steering_prompt("focus on frontend", true);
+        assert!(plan_prompt.contains("focus on frontend"));
+        assert!(plan_prompt.contains("Re-evaluate the active plan"));
+
+        let general_prompt = build_user_steering_prompt("stop counting", false);
+        assert!(general_prompt.contains("stop counting"));
+        assert!(!general_prompt.contains("Re-evaluate the active plan"));
+        assert!(general_prompt.contains("Please adapt your execution"));
     }
 
     #[test]

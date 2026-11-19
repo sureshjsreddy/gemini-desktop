@@ -563,30 +563,11 @@
         </Tooltip>
       {/if}
 
-      <!-- Compress Context Button -->
-      {#if messages.length >= 2}
-        <Tooltip
-          text="Compress Context"
-          subtext="Distill conversation history using Gemini CLI native compaction to free up tokens"
-          position="bottom"
-        >
-          <button
-            onclick={() => onSendPrompt("/compress")}
-            disabled={isStreaming}
-            class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-secondary-theme hover:text-accent-theme rounded-lg bg-surface hover:bg-surface-hover transition-colors border border-theme-default cursor-pointer disabled:opacity-50"
-            aria-label="Compress context"
-          >
-            <Minimize2 size={13} class="text-accent-theme" />
-            <span>Compress</span>
-          </button>
-        </Tooltip>
-      {/if}
-
       <!-- Export Menu -->
       <div class="relative">
         <Tooltip
-          text="Export Conversation"
-          subtext="Save this conversation thread as Markdown (.md), Plaintext (.txt), or JSON"
+          text="Export Conversation & Actions"
+          subtext="Save this conversation thread or compress context"
           position="bottom"
         >
           <button
@@ -605,7 +586,7 @@
           onclick={() => (showExportMenu = false)}
           role="presentation"
         ></div>
-        <div class="absolute right-0 mt-1.5 w-40 bg-surface-elevated border border-subtle rounded-lg shadow-xl py-1 z-40 text-xs">
+        <div class="absolute right-0 mt-1.5 w-48 bg-surface-elevated border border-subtle rounded-lg shadow-xl py-1 z-40 text-xs">
           <button
             onclick={() => {
               showExportMenu = false;
@@ -636,6 +617,24 @@
             <FileText size={14} class="text-emerald-400" />
             <span>Raw JSON</span>
           </button>
+
+          {#if messages.length >= 2}
+            <div class="border-t border-subtle my-1"></div>
+            <button
+              onclick={() => {
+                showExportMenu = false;
+                onSendPrompt("/compress");
+              }}
+              disabled={isStreaming}
+              class="w-full px-3 py-1.5 text-left hover:bg-surface-hover text-secondary-theme hover:text-accent-theme flex items-center justify-between cursor-pointer disabled:opacity-50"
+            >
+              <div class="flex items-center gap-2">
+                <Minimize2 size={14} class="text-accent-theme" />
+                <span>Compress Context</span>
+              </div>
+              <span class="text-[10px] text-muted-theme font-mono">/compress</span>
+            </button>
+          {/if}
         </div>
       {/if}
       </div>
@@ -645,14 +644,56 @@
   <!-- Messages Viewport -->
   <div bind:this={chatViewport} onscroll={handleScroll} class="flex-1 overflow-y-auto p-6 space-y-6 relative z-0">
     {#if messages.length === 0 && !isStreaming}
-      <div class="h-full flex flex-col items-center justify-center text-center max-w-md mx-auto py-20 text-muted-theme">
+      <div class="h-full flex flex-col items-center justify-center text-center max-w-lg mx-auto py-16 text-muted-theme">
         <div class="w-12 h-12 rounded-2xl bg-accent-subtle border border-accent-subtle flex items-center justify-center text-accent-theme mb-4 shadow-inner">
           <Sparkles size={24} />
         </div>
         <h3 class="text-base font-semibold text-primary-theme mb-1">What would you like to build?</h3>
         <p class="text-xs text-secondary-theme leading-relaxed mb-6">
-          Start a conversation in the <span class="text-accent-theme font-medium">{workspace?.name}</span> workspace. Gemini CLI will automatically use this directory's files and context.
+          Start a conversation in the <span class="text-accent-theme font-medium">{workspace?.name || "active"}</span> workspace. {activeEngine === 'agy' ? 'Antigravity CLI (agy)' : 'Gemini CLI'} will automatically use this directory's files and context.
         </p>
+
+        <!-- Quick Starter Action Cards -->
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 w-full text-left">
+          <button
+            type="button"
+            onclick={() => onSendPrompt("Explain the architecture, folder structure, and tech stack of this workspace")}
+            class="p-3 rounded-xl bg-surface hover:bg-surface-hover border border-subtle hover:border-accent-theme/40 transition-all text-xs text-primary-theme group cursor-pointer shadow-xs"
+          >
+            <div class="font-semibold text-accent-theme mb-1 flex items-center gap-1.5">
+              <span>🔍 Architecture</span>
+            </div>
+            <div class="text-[11px] text-muted-theme group-hover:text-secondary-theme leading-snug">
+              Explain workspace structure & stack
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onclick={() => onSendPrompt("Inspect git status, summarize uncommitted changes, and identify what needs attention")}
+            class="p-3 rounded-xl bg-surface hover:bg-surface-hover border border-subtle hover:border-amber-400/40 transition-all text-xs text-primary-theme group cursor-pointer shadow-xs"
+          >
+            <div class="font-semibold text-amber-400 mb-1 flex items-center gap-1.5">
+              <span>⚡ Git Changes</span>
+            </div>
+            <div class="text-[11px] text-muted-theme group-hover:text-secondary-theme leading-snug">
+              Inspect git status & uncommitted diffs
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onclick={() => onSendPrompt("/plan Create an implementation plan for my next feature or refactoring task")}
+            class="p-3 rounded-xl bg-surface hover:bg-surface-hover border border-subtle hover:border-sky-400/40 transition-all text-xs text-primary-theme group cursor-pointer shadow-xs"
+          >
+            <div class="font-semibold text-sky-400 mb-1 flex items-center gap-1.5">
+              <span>📝 Feature Plan</span>
+            </div>
+            <div class="text-[11px] text-muted-theme group-hover:text-secondary-theme leading-snug">
+              Generate an interactive step-by-step plan
+            </div>
+          </button>
+        </div>
       </div>
     {/if}
 

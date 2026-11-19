@@ -231,11 +231,16 @@
           };
         }
 
-        // When a turn is canceled due to mid-flight steering, ignore the cancellation completion event
+        // When a turn is canceled due to mid-flight steering, ignore ONLY the cancellation completion event
         if (streamStates[session_id].isSteering && is_done) {
+          const isCancellation = (delta || "").includes("*(Prompt cancelled)*") || (streamStates[session_id]?.streamingText || "").includes("*(Prompt cancelled)*");
+          if (isCancellation) {
+            streamStates[session_id].isSteering = false;
+            streamStates[session_id].isStreaming = true;
+            return;
+          }
+          // Genuine completion of the steering turn
           streamStates[session_id].isSteering = false;
-          streamStates[session_id].isStreaming = true;
-          return;
         }
 
         let cleanDelta = delta || "";

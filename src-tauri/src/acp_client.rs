@@ -196,6 +196,15 @@ impl AcpSession {
         self.pending_prompt_sessions.lock().ok()?.remove(&request_id)
     }
 
+    #[allow(dead_code)]
+    pub fn has_pending_prompt(&self) -> bool {
+        self.pending_prompt_sessions.lock().map(|m| !m.is_empty()).unwrap_or(false)
+    }
+
+    pub fn has_pending_prompt_for_session(&self, session_id: &str) -> bool {
+        self.pending_prompt_sessions.lock().map(|m| m.values().any(|s| s == session_id)).unwrap_or(false)
+    }
+
     pub fn take_pending_request(&self, id: u64) -> Option<oneshot::Sender<Result<Value, JsonRpcError>>> {
         self.pending_requests.lock().ok()?.remove(&id)
     }
@@ -829,8 +838,19 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
 
     // Try parsing as JSON-RPC object
     if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
+        // Parse ID flexibly as u64 whether serialized as a JSON number or string
+        let req_id_num = val.get("id").and_then(|i| {
+            if let Some(u) = i.as_u64() {
+                Some(u)
+            } else if let Some(s) = i.as_str() {
+                s.parse::<u64>().ok()
+            } else {
+                None
+            }
+        });
+
         // 1. Resolve pending request if this response corresponds to one (e.g. initialize, session/new)
-        if let Some(id) = val.get("id").and_then(|i| i.as_u64()) {
+        if let Some(id) = req_id_num {
             if let Some(tx) = acp_session.take_pending_request(id) {
                 if let Some(err_val) = val.get("error") {
                     let err: JsonRpcError = serde_json::from_value(err_val.clone()).unwrap_or_else(|_| JsonRpcError {
@@ -847,7 +867,16 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
             }
 
             // 1b. Check if this is the completion response for a session/prompt request
-            if let Some(target_session) = acp_session.take_prompt_session(id) {
+            let target_session_opt = acp_session.take_prompt_session(id)
+                .or_else(|| {
+                    if val.pointer("/result/stopReason").is_some() || (val.get("error").is_some() && val.get("result").is_none()) {
+                        acp_session.get_active_local_session()
+                    } else {
+                        None
+                    }
+                });
+
+            if let Some(target_session) = target_session_opt {
                 if let Some(err_val) = val.get("error") {
                     let code = err_val.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
                     let message = err_val.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");
@@ -1481,6 +1510,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
             || val.pointer("/result/text").and_then(|v| if v.is_null() { None } else { Some(v) }).is_some()
             || val.pointer("/result/output").and_then(|v| if v.is_null() { None } else { Some(v) }).is_some()
             || val.pointer("/result/sessionId").and_then(|v| if v.is_null() { None } else { Some(v) }).is_some()
+            || val.pointer("/result/stopReason").and_then(|v| if v.is_null() { None } else { Some(v) }).is_some()
         {
             let matched_session_id = val.pointer("/result/sessionId")
                 .and_then(|s| s.as_str())
@@ -1584,14 +1614,23 @@ mod tests {
     #[test]
     fn test_prompt_session_tracking() {
         let session = AcpSession::new();
+        assert!(!session.has_pending_prompt());
+        assert!(!session.has_pending_prompt_for_session("session-alpha"));
+
         session.register_prompt_request(42, "session-alpha");
         session.register_prompt_request(43, "session-beta");
+
+        assert!(session.has_pending_prompt());
+        assert!(session.has_pending_prompt_for_session("session-alpha"));
+        assert!(session.has_pending_prompt_for_session("session-beta"));
+        assert!(!session.has_pending_prompt_for_session("session-gamma"));
 
         assert_eq!(session.take_prompt_session(42), Some("session-alpha".to_string()));
         // Once taken, request id is consumed
         assert_eq!(session.take_prompt_session(42), None);
         // Other sessions remain intact
         assert_eq!(session.take_prompt_session(43), Some("session-beta".to_string()));
+        assert!(!session.has_pending_prompt());
     }
 
     #[test]

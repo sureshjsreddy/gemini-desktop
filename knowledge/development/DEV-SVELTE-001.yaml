@@ -3,7 +3,7 @@ type: development_standard
 title: Svelte 5 Runes State Management & Tailwind CSS v4 Component Standard
 domain: development
 status: approved
-version: 1.7.0
+version: 1.8.0
 authority:
   level: official
   confidence: high
@@ -35,6 +35,9 @@ do:
   - "Design collateral navigation panels (Sidebar, SolutionExplorer) with dual-state layouts: full-width drawer when open, and a compact vertical icon strip (`w-12` on left, `w-7` on right) when collapsed to maximize chat and code viewing space while retaining 1-click access to core actions."
   - "Structure primary navigation with Pinned Chat Hero + Bottom Settings Hub layout (`Sidebar.svelte`): place high-frequency actions (`New Chat`, `Search History`) at the top, assign primary remaining height (`flex-1 min-h-0 overflow-y-auto`) exclusively to `Recent Chats` so conversations are never pushed below the fold, and consolidate developer drawer toggles (`Terminal`, `Workspace Explorer`) and low-frequency configuration tools (`Plugins`, `MCP`, `Settings`, `Setup`, `Theme`) into a compact bottom toolbar with an upward-floating popover menu."
   - "Maintain a single source of truth for active entities across views: track `activeSessionId = $state<string | null>(null)` and derive `activeSession = $derived(sessions.find((s) => s.id === activeSessionId) ?? null)`, updating `sessions` immutably via `.map()` synchronously before awaiting IPC calls so the left Sidebar and top ChatView header never desynchronize when switching chats during streaming."
+  - "Streamline prompt composer toolbars (`ChatPromptComposer.svelte`) to eliminate visual clutter and toolbar wrapping: maintain only essential context controls (`Attach`, `Working Directory`) on the left and primary submission controls (`Send`/`Steer`/`Stop`) on the right; avoid duplicating status indicators (like Policy Approval Mode) that already exist in the header bar, and integrate specialized actions into the Attach menu and slash commands."
+  - "Provide actionable empty chat states (`ChatView.svelte`) with dynamic engine identification (`activeEngine === 'agy' ? 'Antigravity CLI (agy)' : 'Gemini CLI'`) and interactive one-click starter prompt cards (Architecture, Git Changes, Feature Plan) to guide new conversations without blank-screen friction."
+  - "Consolidate secondary conversation utilities (such as 'Compress Context' via `/compress`) into the Export & Actions dropdown menu, keeping the main chat header focused on session title, model telemetry, and active diff/plan workbench controls."
 
 dont:
   - "Do not use legacy Svelte 3/4 `export let` syntax or stores (`writable`) when modern runes are available."
