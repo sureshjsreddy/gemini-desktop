@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ToolExecutionStep } from "$lib/types";
-  import { resolveHumanFriendlyTitle } from "$lib/utils/toolSteps";
+  import { resolveHumanFriendlyTitle, formatDuration } from "$lib/utils/toolSteps";
   import {
     ChevronRight,
     CheckCircle2,
@@ -126,7 +126,7 @@
       {#if step.status === "in_progress" || step.status === "pending"}
         <span class="text-accent-theme animate-pulse font-sans font-medium text-[11px]">Running...</span>
       {:else if step.duration_ms && step.duration_ms > 0}
-        <span>{(step.duration_ms / 1000).toFixed(1)}s</span>
+        <span>{formatDuration(step.duration_ms)}</span>
       {/if}
       <span
         class="text-[10px] uppercase font-semibold tracking-wider px-1.5 py-0.5 rounded border {step.status === 'completed'

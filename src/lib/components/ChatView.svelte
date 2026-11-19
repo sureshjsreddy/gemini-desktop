@@ -16,9 +16,8 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import SessionChangesModal from "$lib/components/SessionChangesModal.svelte";
-  import ToolCallNode from "$lib/components/ToolCallNode.svelte";
   import ToolCallGroup from "$lib/components/ToolCallGroup.svelte";
-  import { parseToolSteps, cleanMessageContent } from "$lib/utils/toolSteps";
+  import { parseToolSteps, cleanMessageContent, formatDuration } from "$lib/utils/toolSteps";
   import ToolPermissionCard from "$lib/components/ToolPermissionCard.svelte";
   import DebugDoctorBanner from "$lib/components/DebugDoctorBanner.svelte";
   import ChatPromptComposer from "$lib/components/ChatPromptComposer.svelte";
@@ -58,6 +57,7 @@
     streamingText = "",
     streamingToolCalls = [],
     streamingSteeringHints = [],
+    streamingStartedAt = undefined,
     toolPermission = null,
     showSidebar = false,
     onToggleSidebar,
@@ -89,6 +89,7 @@
     streamingText: string;
     streamingToolCalls?: ToolExecutionStep[];
     streamingSteeringHints?: string[];
+    streamingStartedAt?: number;
     toolPermission: ToolPermissionPayload | null;
     showSidebar?: boolean;
     onToggleSidebar?: () => void;
@@ -441,6 +442,22 @@
     }
   }
 
+  function getTurnDurationMs(msgIndex: number, currentMsg: Message): number | undefined {
+    if (currentMsg.role !== "assistant" || !currentMsg.created_at) return undefined;
+    for (let j = msgIndex - 1; j >= 0; j--) {
+      const prev = messages[j];
+      if (prev.role === "user" && prev.created_at) {
+        const start = new Date(prev.created_at).getTime();
+        const end = new Date(currentMsg.created_at).getTime();
+        if (!isNaN(start) && !isNaN(end) && end >= start) {
+          return end - start;
+        }
+        break;
+      }
+    }
+    return undefined;
+  }
+
   async function handleCopyMessage(id: string, content: string) {
     try {
       await navigator.clipboard.writeText(content);
@@ -752,10 +769,11 @@
           {:else}
             {@const toolSteps = parseToolSteps(msg)}
             {@const cleanContent = cleanMessageContent(msg.content, toolSteps.length > 0)}
+            {@const turnDurationMs = getTurnDurationMs(i, msg)}
 
             {#if toolSteps.length > 0}
               <div class="mb-3">
-                <ToolCallGroup steps={toolSteps} isStreaming={false} />
+                <ToolCallGroup steps={toolSteps} isStreaming={false} {turnDurationMs} />
               </div>
             {/if}
 
@@ -769,6 +787,9 @@
               <div class="flex items-center gap-2">
                 {#if msg.created_at}
                   <span>{formatTime(msg.created_at)}</span>
+                {/if}
+                {#if turnDurationMs && turnDurationMs > 0}
+                  <span>&bull; {formatDuration(turnDurationMs)}</span>
                 {/if}
                 {#if msg.token_count > 0}
                   <span>&bull; ~{msg.token_count} tokens</span>
@@ -850,7 +871,7 @@
 
           {#if streamingToolCalls && streamingToolCalls.length > 0}
             <div class="mb-3">
-              <ToolCallGroup steps={streamingToolCalls} isStreaming={true} />
+              <ToolCallGroup steps={streamingToolCalls} isStreaming={true} {streamingStartedAt} />
             </div>
           {/if}
 

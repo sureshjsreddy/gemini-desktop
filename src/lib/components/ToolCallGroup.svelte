@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ToolExecutionStep } from "$lib/types";
   import ToolCallNode from "$lib/components/ToolCallNode.svelte";
+  import { formatDuration } from "$lib/utils/toolSteps";
   import {
     ChevronRight,
     CheckCircle2,
@@ -11,13 +12,29 @@
   let {
     steps = [],
     isStreaming = false,
+    turnDurationMs,
+    streamingStartedAt,
   }: {
     steps: ToolExecutionStep[];
     isStreaming?: boolean;
+    turnDurationMs?: number;
+    streamingStartedAt?: number;
   } = $props();
 
   // User manual override: null = auto (collapsed by default), true/false = explicit toggle
   let userExpanded = $state<boolean | null>(null);
+
+  let liveNow = $state(Date.now());
+
+  $effect(() => {
+    if (isStreaming && streamingStartedAt) {
+      liveNow = Date.now();
+      const interval = setInterval(() => {
+        liveNow = Date.now();
+      }, 1000);
+      return () => clearInterval(interval);
+    }
+  });
 
   let completedSteps = $derived(
     steps.filter((s) => s.status === "completed" || s.status === "failed")
@@ -27,9 +44,31 @@
   );
   let failedCount = $derived(steps.filter((s) => s.status === "failed").length);
 
-  let totalDurationMs = $derived(
-    steps.reduce((acc, s) => acc + (s.duration_ms || 0), 0)
-  );
+  let totalDurationMs = $derived.by(() => {
+    if (isStreaming && streamingStartedAt) {
+      return Math.max(0, liveNow - streamingStartedAt);
+    }
+    if (turnDurationMs && turnDurationMs > 0) {
+      return turnDurationMs;
+    }
+    // Try wall-clock from steps timestamps if available
+    let minStart = Infinity;
+    let maxEnd = -Infinity;
+    for (const s of steps) {
+      if (s.created_at) {
+        const t = new Date(s.created_at).getTime();
+        if (!isNaN(t)) {
+          if (t < minStart) minStart = t;
+          const dur = s.duration_ms || 0;
+          if (t + dur > maxEnd) maxEnd = t + dur;
+        }
+      }
+    }
+    if (minStart !== Infinity && maxEnd !== -Infinity && maxEnd > minStart) {
+      return maxEnd - minStart;
+    }
+    return steps.reduce((acc, s) => acc + (s.duration_ms || 0), 0);
+  });
 
   let isExpanded = $derived(
     userExpanded !== null ? userExpanded : false
@@ -79,7 +118,9 @@
 
       <div class="flex items-center gap-2 shrink-0 text-[11px] text-muted-theme font-mono">
         {#if totalDurationMs > 0}
-          <span>{(totalDurationMs / 1000).toFixed(1)}s</span>
+          <span class={isStreaming ? "text-accent-theme font-medium animate-pulse" : ""}>
+            {formatDuration(totalDurationMs)}
+          </span>
         {/if}
         <span class="text-[10px] text-accent-theme font-sans group-hover:underline">
           {isExpanded ? "Hide tree" : "View tree"}

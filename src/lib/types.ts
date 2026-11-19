@@ -113,6 +113,7 @@ export interface SessionStreamState {
   toolCalls?: ToolExecutionStep[];
   steeringHints?: string[];
   isSteering?: boolean;
+  started_at?: number;
 }
 
 export interface GeminiEnvStatus {

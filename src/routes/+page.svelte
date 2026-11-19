@@ -991,6 +991,7 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
       streamingText: "",
       isStreaming: true,
       toolPermission: null,
+      started_at: Date.now(),
     };
 
     if (summaryToPersist) {
@@ -1217,6 +1218,7 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
       {isStreaming}
       {streamingText}
       {streamingToolCalls}
+      streamingStartedAt={activeStreamState?.started_at}
       streamingSteeringHints={activeStreamState.steeringHints || []}
       {toolPermission}
       {showSidebar}

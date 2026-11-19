@@ -197,3 +197,32 @@ export function cleanMessageContent(content: string, hasExtractedSteps: boolean)
     .replace(/>\s*❌\s*\*\*Tool failed:\*\*.*?(?:\r?\n|$)/gi, "")
     .trim();
 }
+
+/**
+ * Formats a duration in milliseconds into a human-friendly string.
+ * Examples:
+ * - 450 ms -> "0.5s"
+ * - 4,800 ms -> "4.8s"
+ * - 24,000 ms -> "24s"
+ * - 75,000 ms -> "1m 15s"
+ * - 3,600,000 ms -> "1h 0m"
+ * - 3,750,000 ms -> "1h 2m"
+ */
+export function formatDuration(ms: number | undefined | null): string {
+  if (ms === undefined || ms === null || isNaN(ms) || ms <= 0) return "";
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 10) {
+    return `${(ms / 1000).toFixed(1)}s`;
+  }
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) {
+    return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return `${hours}h ${remMinutes}m`;
+}
