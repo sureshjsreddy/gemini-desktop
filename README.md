@@ -19,6 +19,13 @@ A modern, blazing-fast native desktop application for interacting with the **Gem
   - Non-blocking real-time model steering mid-flight with mode-aware steering prompts.
   - Interactive **Tool Execution Permission Intercepts** — review and approve tool/command execution before changes occur on your machine.
 
+- **🌲 Hierarchical Tool Execution Progress Tree & Wall-Clock Telemetry**
+  - Tucks multi-step agent tool executions into an expandable accordion tree (`ToolCallGroup.svelte`) displaying only the single active running task with a live spinner during execution.
+  - Automatically collapses completed steps into a single compact header (`[▶] N steps completed • 2m 15s`) with a one-click toggleable tree view, keeping the assistant's final response clean and readable.
+  - Semantic human-friendly task titles (`resolveHumanFriendlyTitle`) extracted dynamically from task parameters (`Run cargo test`, `Read src/lib.rs`, `Search files`).
+  - True wall-clock turn duration tracking ($\Delta t = t_{\text{assistant}} - t_{\text{user}}$) with live elapsed seconds/minutes during streaming and human-readable formatting (`formatDuration`: `0.4s`, `24s`, `2m 15s`, `1h 12m`).
+  - Comprehensive turn metadata in the message footer (`3:45 PM • 2m 15s • ~1,450 tokens`).
+
 - **💬 Streamlined Typing Experience & Interactive Starter Cards**
   - Decluttered prompt composer toolbar with dedicated context attachment (`@`), working directory tracking, and clean submit controls.
   - Interactive onboarding empty-state cards for one-click repository architecture exploration, uncommitted git diff review, and step-by-step feature planning.

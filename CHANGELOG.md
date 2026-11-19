@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.5] - 2026-11-20
+
+### Added
+- **True Wall-Clock Turn Duration & Human-Friendly Telemetry**:
+  - Replaced isolated tool subprocess runtime summation with accurate wall-clock turn duration ($\Delta t = t_{\text{assistant}} - t_{\text{user}}$) for conversation history, accurately reflecting total thinking, searching, and synthesis time.
+  - Added live elapsed timer (`started_at`) that increments reactively every second during active streaming with a pulse indicator (`Executing tasks (2/4 completed)... 1m 15s`).
+  - Added `formatDuration(ms)` helper in `toolSteps.ts` formatting durations concisely across thresholds: `< 10s` (e.g. `0.4s`, `4.8s`), `10s - 59s` (e.g. `24s`, `58s`), `60s+` (e.g. `2m 15s`, `3m`), and `60m+` (e.g. `1h 12m`).
+  - Integrated turn duration metrics directly into the assistant message footer alongside token usage (`3:45 PM • 2m 15s • ~1,450 tokens`).
+- **Antigravity-Inspired Hierarchical Tool Execution Progress Tree (`ToolCallGroup.svelte`)**:
+  - Multi-step tool runs are now dynamically grouped into an expandable progress tree component inspired by modern agentic IDEs.
+  - While an agent is working, completed steps are tucked away into an accordion header (`[▶] Executing tasks (N/M completed)...`) displaying only the currently active working step underneath to eliminate visual clutter.
+  - When all tasks finish, steps collapse into a single compact header (`[▶] N steps completed • 2m 15s`) with a one-click toggleable tree view (`View tree` / `Hide tree`).
+  - Individual tool cards in `ToolCallNode.svelte` now display human-readable duration badges (`formatDuration(step.duration_ms)`).
+
+---
+
 ## [0.7.4] - 2026-11-20
 
 ### Fixed & Optimized

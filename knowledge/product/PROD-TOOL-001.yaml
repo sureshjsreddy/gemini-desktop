@@ -3,7 +3,7 @@ type: product_standard
 title: Interactive Tool Permission Approval & Safe System Execution
 domain: product
 status: approved
-version: 1.7.0
+version: 1.8.0
 authority:
   level: official
   confidence: high
@@ -23,7 +23,8 @@ do:
   - "Enforce that approval modes can only be changed intentionally through the Workspace Settings modal (`WorkspaceModal.svelte`), keeping UI header and prompt composer mode indicators strictly static."
   - "Render an interactive Plan Mode Workbench (`PlanWorkbench.svelte`) parsing markdown step checklists (`- [ ]`, `- [x]`, `Step N:`), providing live completion percentages, checklist toggling, and 1-click `Approve & Execute (Auto-Edit)` or `Approve & Execute (Ask)` CTAs."
   - "Provide a dedicated Rewind dialog (`RewindModal.svelte`) accessible via message action buttons or `Esc Esc` double-escape hotkey to view previous prompt turns, with optional Git working tree file restoration."
-  - "Provide real-time inline tool execution cards in the chat stream during autonomous execution: tool steps remain active and expanded while `in_progress`, automatically collapsing into single-line summary headers with duration and status pills upon completion, keeping the assistant's final response clean and fully uncollapsed while retaining full 1-click drill-down auditability."
+  - "Provide real-time inline tool execution cards in the chat stream during autonomous execution: tool steps are organized into an expandable hierarchical accordion tree (`ToolCallGroup.svelte`) that displays only the single active running step underneath with live elapsed duration while tucking away completed steps, automatically collapsing the entire sequence into a single clean summary header (`[▶] N steps completed • Xm Ys`) with human-friendly action titles (`resolveHumanFriendlyTitle`) upon turn completion, keeping the assistant's final response clean and fully uncollapsed while retaining full 1-click drill-down auditability."
+  - "Calculate and display true wall-clock turn duration (assistant response timestamp minus preceding user prompt timestamp) formatted human-readably via `formatDuration` (e.g. `0.4s`, `24s`, `2m 15s`, `1h 12m`), avoiding the undercounting caused by merely summing microsecond isolated subprocess execution times."
   - "Default to Ask (`default`) mode across all newly created workspaces and sessions to guarantee maximum user safety, control, and explicit confirmation before file modifications or terminal command execution."
   - "Configure approval mode per workspace in Workspace Settings (`ask`, `auto_edit`, `yolo`, `plan`), mapping cleanly to ACP mode IDs (`default`, `autoEdit`, `yolo`, `plan`)."
   - "Synchronize mode dynamically at runtime via `session/set_mode` on each prompt, and display active mode badge in the bottom chat prompt bar."
