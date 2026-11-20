@@ -660,9 +660,9 @@
   </header>
 
   <!-- Messages Viewport -->
-  <div bind:this={chatViewport} onscroll={handleScroll} class="flex-1 overflow-y-auto p-6 space-y-6 relative z-0">
+  <div bind:this={chatViewport} onscroll={handleScroll} class="flex-1 overflow-y-auto p-4 sm:p-6 relative z-0">
     {#if messages.length === 0 && !isStreaming}
-      <div class="h-full flex flex-col items-center justify-center text-center max-w-lg mx-auto py-16 text-muted-theme">
+      <div class="h-full flex flex-col items-center justify-center text-center max-w-xl lg:max-w-2xl xl:max-w-3xl mx-auto py-16 text-muted-theme">
         <div class="w-12 h-12 rounded-2xl bg-accent-subtle border border-accent-subtle flex items-center justify-center text-accent-theme mb-4 shadow-inner">
           <Sparkles size={24} />
         </div>
@@ -713,17 +713,17 @@
           </button>
         </div>
       </div>
-    {/if}
+    {:else}
+      <div class="w-full max-w-4xl lg:max-w-5xl xl:max-w-6xl 2xl:max-w-7xl mx-auto space-y-6">
+        {#each messages as msg, i (msg.id)}
+          <div class="flex gap-3.5 {msg.role === 'user' ? 'justify-end' : 'justify-start'}">
+            {#if msg.role !== 'user'}
+              <div class="w-7 h-7 rounded-lg bg-accent-subtle text-accent-theme border border-accent-subtle flex items-center justify-center shrink-0 mt-1">
+                <Sparkles size={14} />
+              </div>
+            {/if}
 
-    {#each messages as msg, i (msg.id)}
-      <div class="flex gap-3.5 {msg.role === 'user' ? 'justify-end' : 'justify-start'}">
-        {#if msg.role !== 'user'}
-          <div class="w-7 h-7 rounded-lg bg-accent-subtle text-accent-theme border border-accent-subtle flex items-center justify-center shrink-0 mt-1">
-            <Sparkles size={14} />
-          </div>
-        {/if}
-
-        <div class="max-w-3xl group {msg.role === 'user' ? 'bg-bubble-user border border-bubble-user text-primary-theme rounded-2xl rounded-tr-sm px-4 py-2.5 text-xs shadow-xs' : 'bg-bubble-assistant border border-bubble-assistant rounded-2xl rounded-tl-sm px-5 py-4 text-xs text-primary-theme shadow-xs w-full'}">
+            <div class="group {msg.role === 'user' ? 'max-w-xl sm:max-w-2xl lg:max-w-3xl bg-bubble-user border border-bubble-user text-primary-theme rounded-2xl rounded-tr-sm px-4 py-2.5 text-xs shadow-xs' : 'bg-bubble-assistant border border-bubble-assistant rounded-2xl rounded-tl-sm px-5 py-4 text-xs text-primary-theme shadow-xs w-full min-w-0'}">
           {#if msg.role === 'user'}
             <div class="whitespace-pre-wrap leading-relaxed select-text">{msg.content}</div>
             <div class="mt-1.5 flex items-center justify-end gap-1.5 text-[10px] text-muted-theme select-none opacity-0 group-hover:opacity-100 transition-opacity">
@@ -856,7 +856,7 @@
         <div class="w-7 h-7 rounded-lg bg-accent-subtle text-accent-theme border border-accent-subtle flex items-center justify-center shrink-0 mt-1 animate-pulse">
           <Sparkles size={14} />
         </div>
-        <div class="max-w-3xl bg-bubble-assistant border border-bubble-assistant rounded-2xl rounded-tl-sm px-5 py-4 text-xs text-primary-theme shadow-xs w-full">
+        <div class="w-full min-w-0 bg-bubble-assistant border border-bubble-assistant rounded-2xl rounded-tl-sm px-5 py-4 text-xs text-primary-theme shadow-xs">
           {#if streamingSteeringHints && streamingSteeringHints.length > 0}
             <div class="mb-3 space-y-1.5">
               {#each streamingSteeringHints as hint}
@@ -888,6 +888,8 @@
         </div>
       </div>
     {/if}
+    </div>
+    {/if}
 
     <!-- Floating Scroll to Bottom Button -->
     {#if isUserScrolledUp}
@@ -909,12 +911,14 @@
 
   <!-- Tool Permission Confirmation Banner (ACP) -->
   {#if toolPermission}
-    <ToolPermissionCard {toolPermission} onRespond={onToolResponse} />
+    <div class="px-4 sm:px-6">
+      <ToolPermissionCard {toolPermission} onRespond={onToolResponse} />
+    </div>
   {/if}
 
   <!-- Instant Debug Doctor Diagnostic Banner -->
   {#if activeDebugError}
-    <div class="px-4 pt-2">
+    <div class="px-4 sm:px-6 pt-2">
       <DebugDoctorBanner
         debugError={activeDebugError}
         fileSnippet={activeFileSnippet}

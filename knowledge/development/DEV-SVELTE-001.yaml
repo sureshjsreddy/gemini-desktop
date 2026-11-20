@@ -3,7 +3,7 @@ type: development_standard
 title: Svelte 5 Runes State Management & Tailwind CSS v4 Component Standard
 domain: development
 status: approved
-version: 1.9.0
+version: 1.10.0
 authority:
   level: official
   confidence: high
@@ -38,6 +38,7 @@ do:
   - "Streamline prompt composer toolbars (`ChatPromptComposer.svelte`) to eliminate visual clutter and toolbar wrapping: maintain only essential context controls (`Attach`, `Working Directory`) on the left and primary submission controls (`Send`/`Steer`/`Stop`) on the right; avoid duplicating status indicators (like Policy Approval Mode) that already exist in the header bar, and integrate specialized actions into the Attach menu and slash commands."
   - "Provide actionable empty chat states (`ChatView.svelte`) with dynamic engine identification (`activeEngine === 'agy' ? 'Antigravity CLI (agy)' : 'Gemini CLI'`) and interactive one-click starter prompt cards (Architecture, Git Changes, Feature Plan) to guide new conversations without blank-screen friction."
   - "Consolidate secondary conversation utilities (such as 'Compress Context' via `/compress`) into the Export & Actions dropdown menu, keeping the main chat header focused on session title, model telemetry, and active diff/plan workbench controls."
+  - "Structure conversation viewports (`ChatView.svelte`, `ChatPromptComposer.svelte`, `PlanWorkbench.svelte`, `ToolPermissionCard.svelte`) with a fluid responsive container (`w-full max-w-4xl lg:max-w-5xl xl:max-w-6xl 2xl:max-w-7xl mx-auto`): allow assistant responses (`w-full min-w-0`), code snippets, diffs, and tool trees to seamlessly adapt and fill the available visible area when collateral side menus (Sidebar, SolutionExplorer) collapse or on wide displays, while keeping user message bubbles comfortably sized and right-aligned (`max-w-xl sm:max-w-2xl lg:max-w-3xl`)."
 
 dont:
   - "Do not use legacy Svelte 3/4 `export let` syntax or stores (`writable`) when modern runes are available."

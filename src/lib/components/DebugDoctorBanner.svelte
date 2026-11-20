@@ -45,7 +45,7 @@
   }
 </script>
 
-<div class="mx-auto max-w-4xl mb-3 rounded-xl border border-rose-500/30 bg-rose-950/20 backdrop-blur-md shadow-lg overflow-hidden transition-all animate-in fade-in slide-in-from-top-2 duration-200">
+<div class="mx-auto w-full max-w-4xl lg:max-w-5xl xl:max-w-6xl 2xl:max-w-7xl mb-3 rounded-xl border border-rose-500/30 bg-rose-950/20 backdrop-blur-md shadow-lg overflow-hidden transition-all animate-in fade-in slide-in-from-top-2 duration-200">
   <!-- Header Bar -->
   <div class="px-3.5 py-2.5 bg-rose-950/40 border-b border-rose-500/20 flex items-center justify-between gap-3">
     <div class="flex items-center gap-2 min-w-0">

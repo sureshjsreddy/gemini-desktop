@@ -67,9 +67,10 @@
 </script>
 
 {#if isOpen}
-  <div
-    class="mb-3 mx-4 rounded-xl border border-sky-500/30 bg-surface-elevated/95 backdrop-blur-xs shadow-xl overflow-hidden transition-all text-xs"
-  >
+  <div class="px-4 sm:px-6 mb-3">
+    <div
+      class="w-full max-w-4xl lg:max-w-5xl xl:max-w-6xl 2xl:max-w-7xl mx-auto rounded-xl border border-sky-500/30 bg-surface-elevated/95 backdrop-blur-xs shadow-xl overflow-hidden transition-all text-xs"
+    >
     <!-- Header -->
     <div
       class="px-4 py-2 bg-sky-500/10 border-b border-sky-500/20 flex items-center justify-between"
@@ -239,5 +240,6 @@
         </div>
       </div>
     {/if}
+    </div>
   </div>
 {/if}

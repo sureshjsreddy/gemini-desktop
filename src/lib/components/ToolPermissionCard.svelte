@@ -18,7 +18,7 @@
   } = $props();
 </script>
 
-<div class="mx-6 mb-3 p-4 bg-surface-elevated border-2 border-amber-500/50 rounded-xl shadow-xl transition-all duration-200">
+<div class="w-full max-w-4xl lg:max-w-5xl xl:max-w-6xl 2xl:max-w-7xl mx-auto mb-3 p-4 bg-surface-elevated border-2 border-amber-500/50 rounded-xl shadow-xl transition-all duration-200">
   <div class="flex items-start justify-between gap-3">
     <div class="flex items-start gap-3">
       <div class="p-2 rounded-lg bg-amber-500/15 text-amber-500 border border-amber-500/30 mt-0.5 shrink-0">

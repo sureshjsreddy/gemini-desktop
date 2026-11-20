@@ -747,8 +747,8 @@
 </script>
 
 <!-- Prompt Input Bar -->
-<div class="p-4 bg-surface border-t border-subtle relative z-20">
-  <div class="max-w-4xl mx-auto relative rounded-xl border border-theme-default bg-app/80 focus-within:border-accent-theme transition-colors shadow-inner">
+<div class="p-4 sm:px-6 bg-surface border-t border-subtle relative z-20">
+  <div class="w-full max-w-4xl lg:max-w-5xl xl:max-w-6xl 2xl:max-w-7xl mx-auto relative rounded-xl border border-theme-default bg-app/80 focus-within:border-accent-theme transition-colors shadow-inner">
     
     <!-- Inline @ Mention Autocomplete Floating Popover -->
     <ChatMentionPopover

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.6] - 2026-11-21
+
+### Added & Enhanced
+- **Adaptive Fluid Width & Visible Area Scaling (`ChatView.svelte`, `ChatPromptComposer.svelte`)**:
+  - Replaced the fixed `max-w-3xl` (768px) message constraint with a fluid, responsive container (`w-full max-w-4xl lg:max-w-5xl xl:max-w-6xl 2xl:max-w-7xl mx-auto`).
+  - Conversation blocks, code blocks, diffs, tables, and tool progress trees now seamlessly expand to utilize the full visible canvas on larger screens and when collateral navigation panels (Left Sidebar and Right Solution Explorer) are collapsed.
+  - Automatically re-adjusts between reading comfort (`896px` / `1024px`) when sidebars are open and expanded width (`1152px` / `1280px`) when panels are collapsed.
+  - Sized user prompt bubbles proportionally (`max-w-xl sm:max-w-2xl lg:max-w-3xl`) right-aligned to maintain balanced typography, while assistant messages utilize `w-full min-w-0` across the conversation column.
+  - Synchronized width scaling across the entire chat surface:
+    - **Prompt Composer** (`ChatPromptComposer.svelte`): Scaled to `max-w-4xl lg:max-w-5xl xl:max-w-6xl 2xl:max-w-7xl mx-auto`.
+    - **Plan Mode Workbench** (`PlanWorkbench.svelte`): Wrapped in coordinated responsive width container.
+    - **ACP Tool Permission Intercept Card** (`ToolPermissionCard.svelte`): Centered and aligned to fluid container.
+    - **Instant Debug Doctor Diagnostic Banner** (`DebugDoctorBanner.svelte`): Expanded to match conversation width.
+    - **Empty State Starter Cards** (`ChatView.svelte`): Increased grid width to `max-w-xl lg:max-w-2xl xl:max-w-3xl` for improved card proportions.
+
+---
+
 ## [0.7.5] - 2026-11-20
 
 ### Added

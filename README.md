@@ -26,6 +26,12 @@ A modern, blazing-fast native desktop application for interacting with the **Gem
   - True wall-clock turn duration tracking ($\Delta t = t_{\text{assistant}} - t_{\text{user}}$) with live elapsed seconds/minutes during streaming and human-readable formatting (`formatDuration`: `0.4s`, `24s`, `2m 15s`, `1h 12m`).
   - Comprehensive turn metadata in the message footer (`3:45 PM • 2m 15s • ~1,450 tokens`).
 
+- **📐 Fluid Responsive Chat Canvas & Dynamic Visible Area Sizing**
+  - Conversation viewport dynamically adapts its width based on visible screen estate and panel states.
+  - Smoothly expands up to `1280px` (`max-w-7xl`) when collateral navigation drawers (Left Sidebar and Right Solution Explorer) are collapsed or on high-resolution/ultrawide displays, giving complex code snippets, diffs, tables, and tool logs maximum breathing room.
+  - Automatically contracts to an ergonomic reading width (`896px` / `1024px`) when sidebars are opened, maintaining optimal typography line lengths.
+  - Harmoniously synchronizes width across Assistant responses, User prompts, Plan Mode Workbench, ACP Permission Cards, and the bottom Prompt Composer.
+
 - **💬 Streamlined Typing Experience & Interactive Starter Cards**
   - Decluttered prompt composer toolbar with dedicated context attachment (`@`), working directory tracking, and clean submit controls.
   - Interactive onboarding empty-state cards for one-click repository architecture exploration, uncommitted git diff review, and step-by-step feature planning.
