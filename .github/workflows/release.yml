@@ -41,7 +41,37 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "Gemini Desktop v__VERSION__"
-          releaseBody: "Automated release build of Gemini Desktop.\n\n- **Gemini.Desktop_0.2.31_x64_en-US.msi**: Official Windows WiX Installer (installs to Program Files).\n- **Setup (`.exe` / `.msi`)**: Standard Windows setup installers."
+          releaseBody: "Automated release build of Gemini Desktop.\n\n- **GeminiDesktop-Portable.exe**: Standalone portable executable (no installation required).\n- **Gemini Desktop MSI Installer**: Official Windows WiX Installer (installs to Program Files).\n- **Setup Installer (`-setup.exe`)**: Standard Windows NSIS setup installer."
           releaseDraft: false
           prerelease: false
+
+      - name: Upload Standalone Portable Executable to Release
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          Copy-Item "src-tauri/target/release/gemini-desktop.exe" "GeminiDesktop-Portable.exe"
+          $tag = "${{ steps.tauri_build.outputs.releaseTag }}"
+          if (-not $tag) {
+            $tag = "${{ github.ref_name }}"
+          }
+          if (-not $tag -or $tag -eq "main") {
+            $json = Get-Content "src-tauri/tauri.conf.json" | ConvertFrom-Json
+            $tag = "v$($json.version)"
+          }
+          Write-Host "Uploading GeminiDesktop-Portable.exe to release $tag..."
+          $retries = 5
+          for ($i = 1; $i -le $retries; $i++) {
+            gh release upload $tag "GeminiDesktop-Portable.exe" --clobber
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "Successfully uploaded GeminiDesktop-Portable.exe to release $tag."
+              break
+            }
+            Write-Host "Retry $i/$retries failed. Waiting 3 seconds..."
+            Start-Sleep -Seconds 3
+          }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to upload GeminiDesktop-Portable.exe to release $tag."
+            exit 1
+          }
 

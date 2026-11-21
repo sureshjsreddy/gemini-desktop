@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.7] - 2026-11-21
+
+### Added & Enhanced
+- **Standalone Portable Executable Distribution (`.github/workflows/release.yml`, `README.md`)**:
+  - Re-introduced automated publishing of `GeminiDesktop-Portable.exe` in the GitHub Actions release workflow.
+  - Generates and attaches the zero-install standalone Windows executable (`GeminiDesktop-Portable.exe`) alongside official WiX MSI (`.msi`) and NSIS (`-setup.exe`) installers.
+  - Implemented resilient release asset upload step with automatic retries in CI/CD pipeline.
+  - Updated download and installation instructions in `README.md`.
+
+---
+
 ## [0.7.6] - 2026-11-21
 
 ### Added & Enhanced

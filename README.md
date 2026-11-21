@@ -144,7 +144,7 @@ Pre-built Windows binaries are automatically generated on every release:
 2. Download either:
    - **`GeminiDesktop-Setup.exe`**: Standard Windows installer (NSIS).
    - **`Gemini Desktop_x64_en-US.msi`**: Windows MSI installer.
-   - **`GeminiDesktop.exe`**: Portable standalone executable.
+   - **`GeminiDesktop-Portable.exe`**: Portable standalone executable (no installation required).
 3. Run the installer or portable binary.
 
 ### Prerequisites
@@ -213,7 +213,7 @@ Compiled binaries and installers will be output to `src-tauri/target/release/bun
 Automated builds and releases are managed via **GitHub Actions** (`.github/workflows/release.yml`):
 - Pushing any tag matching `v*` (e.g. `v0.1.0`) triggers a build on `windows-latest`.
 - Compiles the SvelteKit frontend and Rust release binary with LTO optimizations.
-- Automatically publishes the release and attaches `.exe` and `.msi` installers to GitHub Releases.
+- Automatically publishes the release and attaches `.exe` installers, `.msi` packages, and standalone portable executables (`GeminiDesktop-Portable.exe`) to GitHub Releases.
 - Manual triggers are also supported via `workflow_dispatch` in the GitHub Actions tab.
 
 ---
