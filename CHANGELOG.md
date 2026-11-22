@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.0] - 2026-11-22
+
+### Added & Enhanced
+- **Unified Command Palette (`Ctrl+P` / `Ctrl+Shift+P`, `CommandPaletteModal.svelte`)**:
+  - Global hotkeys `Ctrl+P` and `Ctrl+Shift+P` plus a dedicated search button in `Sidebar.svelte` for fast keyboard-driven navigation.
+  - Interactive fuzzy search across slash tools (`/plan`, `/diff`, `/terminal`, `/mcp`, `/compact`, `/setup`, `/settings`, `/doctor`), active conversation switching, and instant theme selection (`Dark`, `Light`, `System`).
+  - Integrated with `modalManager` (`src/lib/modal.svelte.ts`) with keyboard arrow navigation, active item selection, and backdrop dismissal.
+
+- **Conversation Forking & Branching from Any Turn (`fork_session`)**:
+  - Fork any conversation from any assistant response in `ChatView.svelte` into a new independent session without altering or losing the original discussion history.
+  - Added `fork_session` in `database.rs` and exposed Tauri command `fork_session` in `commands/db.rs` copying messages up to the chosen turn with new UUIDs and custom branch titles (`Original Session (Fork)`).
+  - Added comprehensive backend unit tests (`test_fork_session`, `test_fork_session_entire_history_and_custom_title`).
+
+- **Direct File & Screenshot Drag-and-Drop Attachment (`ChatView.svelte`, `ChatPromptComposer.svelte`)**:
+  - Interactive HTML5 drag-and-drop zone with animated glassmorphism dashed overlay.
+  - Automatically processes dropped image files (`.png`, `.jpg`, `.webp`, `.gif`, `.svg`) via `save_clipboard_image` into `.gemini/attachments/` and generates preview thumbnail chips.
+  - Resolves dropped workspace source code files and documents relative to the active workspace into standard `@path` references.
+
+- **Tool Execution Tree Multi-Toggle & Error Filtering (`ToolCallGroup.svelte`, `ToolCallNode.svelte`)**:
+  - Added filter pills: **"All (N)"** vs **"Errors Only (M)"** to isolate failed tool calls immediately.
+  - Added **"Expand All / Collapse All"** button (`ChevronsUpDown` / `ChevronsDownUp`) to expand or collapse all step parameters, raw stdout, and error traces simultaneously.
+  - Propagated `forceExpanded` property to `ToolCallNode.svelte` while preserving manual per-card click toggling.
+
+- **Session Context Token & Ceiling Meter**:
+  - Live token consumption meter in the chat header tracking active tokens against the 1M ceiling.
+  - Visual warning badge and compact suggestion when approaching 750,000+ tokens.
+
+- **Clipboard Image & Screenshot Pasting**:
+  - Paste screenshots directly (`Win+Shift+S` or image copy via `Ctrl+V`) into composer.
+  - Backend `save_clipboard_image` command saves images into `.gemini/attachments/` and renders preview thumbnail chips.
+
+- **Prompt History Navigation**:
+  - `↑` and `↓` arrow navigation in `ChatPromptComposer.svelte` cycling through past sent prompts while preserving active in-progress drafts.
+
+- **Markdown Sanitization & Safe Code Block Copy**:
+  - Integrated `DOMPurify` to sanitize rendered HTML and prevent XSS.
+  - Replaced inline `onclick` string handlers on code block copy buttons with safe delegated event listeners in `ChatView.svelte`.
+
+---
+
 ## [0.7.7] - 2026-11-21
 
 ### Added & Enhanced

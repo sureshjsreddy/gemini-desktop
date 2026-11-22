@@ -145,6 +145,7 @@ export interface AttachmentItem {
   name: string;
   path: string;
   kind: "file" | "directory" | "git" | "external";
+  previewUrl?: string;
 }
 
 export interface MentionOption {

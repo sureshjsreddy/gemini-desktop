@@ -35,6 +35,7 @@
   import CliSetupModal from "$lib/components/CliSetupModal.svelte";
   import CliSettingsModal from "$lib/components/CliSettingsModal.svelte";
   import RewindModal from "$lib/components/RewindModal.svelte";
+  import CommandPaletteModal from "$lib/components/CommandPaletteModal.svelte";
   import UpdateNotificationBanner from "$lib/components/UpdateNotificationBanner.svelte";
   import { themeManager } from "$lib/theme.svelte";
   import { dialogManager } from "$lib/dialog.svelte";
@@ -696,7 +697,10 @@
   });
 
   function handleGlobalShortcuts(e: KeyboardEvent) {
-    if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+    if ((e.ctrlKey || e.metaKey) && (e.key === "p" || e.key === "P")) {
+      e.preventDefault();
+      modalManager.toggle("palette");
+    } else if ((e.ctrlKey || e.metaKey) && e.key === "n") {
       e.preventDefault();
       handleNewSession();
     } else if ((e.ctrlKey || e.metaKey) && e.key === "k") {
@@ -878,6 +882,28 @@
       `Rewound ${rewoundCount} message(s)${restoredFiles.length > 0 ? ` and restored ${restoredFiles.length} file(s) in workspace.` : "."}`,
       "Turn Rewound"
     );
+  }
+
+  async function handleForkSession(messageId: string) {
+    if (!activeSessionId) return;
+    try {
+      const forkedSession = await invoke<Session>("fork_session", {
+        sessionId: activeSessionId,
+        upToMessageId: messageId,
+      });
+      sessions = [forkedSession, ...sessions];
+      await selectSession(forkedSession);
+      await invoke("show_toast_notification", {
+        title: "Session Forked",
+        body: `Created branch "${forkedSession.title}".`,
+      }).catch(() => {});
+    } catch (e: any) {
+      console.error("Failed to fork session:", e);
+      await dialogManager.alert(
+        `Failed to fork session: ${typeof e === "string" ? e : e?.message || "Unknown error"}`,
+        "Fork Session"
+      );
+    }
   }
 
   async function handleExecutePlan(targetMode: "auto_edit" | "default", tasks?: PlanTaskItem[]) {
@@ -1190,6 +1216,7 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
     onRenameSession={handleRenameSession}
     onDeleteSession={handleDeleteSession}
     onOpenSearch={() => modalManager.open("search")}
+    onOpenPalette={() => modalManager.open("palette")}
     onOpenTemplates={() => modalManager.open("templates")}
     onOpenWorkspaceModal={() => modalManager.open("workspace")}
     onOpenThemeModal={() => modalManager.open("theme")}
@@ -1244,6 +1271,7 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
         rewindTargetMessageId = targetId ?? null;
         modalManager.open("rewind");
       }}
+      onForkSession={handleForkSession}
     />
     <RewindModal
     workspace={activeWorkspace}
@@ -1355,5 +1383,42 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
       modalManager.close();
       refreshActiveEngine();
     }}
+  />
+
+  <CommandPaletteModal
+    isOpen={modalManager.isOpen("palette")}
+    {workspaces}
+    {activeWorkspace}
+    {sessions}
+    {activeSessionId}
+    {activeEngine}
+    onClose={() => modalManager.close()}
+    onSelectWorkspace={selectWorkspace}
+    onSelectSession={selectSession}
+    onNewSession={handleNewSession}
+    onSwitchEngine={async (eng) => {
+      try {
+        await invoke("set_active_cli_engine", { engine: eng });
+        activeEngine = eng;
+        if (typeof window !== "undefined") {
+          localStorage.setItem(ACTIVE_ENGINE_STORAGE_KEY, eng);
+        }
+      } catch (err) {
+        console.error("Failed to switch engine:", err);
+      }
+    }}
+    onOpenTerminal={() => (showTerminalDrawer = true)}
+    onOpenGitChanges={() => {
+      showSolutionExplorer = true;
+      setTimeout(() => solutionExplorerRef?.switchTab("git"), 50);
+    }}
+    onOpenDebugDoctor={() => checkClipboardForDebugError(true)}
+    onOpenMcp={() => modalManager.open("mcp")}
+    onOpenPlugins={() => modalManager.open("plugins")}
+    onOpenCliSettings={() => modalManager.open("cli-settings")}
+    onOpenCliSetup={() => modalManager.open("cli-setup")}
+    onOpenTheme={() => modalManager.open("theme")}
+    onTriggerCompress={() => handleSendPrompt("/compact")}
+    onTriggerPlan={() => handleSendPrompt("/plan Create an implementation plan")}
   />
 </div>

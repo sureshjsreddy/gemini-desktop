@@ -33,6 +33,16 @@ pub fn rename_session(state: State<AppState>, session_id: String, title: String)
 }
 
 #[tauri::command]
+pub fn fork_session(
+    state: State<AppState>,
+    session_id: String,
+    up_to_message_id: Option<String>,
+    custom_title: Option<String>,
+) -> Result<Session, String> {
+    state.db.fork_session(&session_id, up_to_message_id.as_deref(), custom_title.as_deref())
+}
+
+#[tauri::command]
 pub fn delete_session(state: State<AppState>, session_id: String) -> Result<(), String> {
     state.acp_session.remove_session(&session_id);
     let _ = crate::commands::session_diff::clear_session_snapshots(session_id.clone());

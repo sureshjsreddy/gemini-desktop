@@ -14,11 +14,23 @@
     Check,
   } from "lucide-svelte";
 
-  let { step }: { step: ToolExecutionStep } = $props();
+  let {
+    step,
+    forceExpanded = null,
+  }: {
+    step: ToolExecutionStep;
+    forceExpanded?: boolean | null;
+  } = $props();
 
   // User manual override: null means "use default based on step.status", true/false means user explicitly toggled it
   let userExpanded = $state<boolean | null>(null);
   let copiedSection = $state<string | null>(null);
+
+  $effect(() => {
+    if (forceExpanded !== null && forceExpanded !== undefined) {
+      userExpanded = forceExpanded;
+    }
+  });
 
   // Derived: if user hasn't explicitly toggled, open while in_progress/pending; collapsed once completed
   let isOpen = $derived(

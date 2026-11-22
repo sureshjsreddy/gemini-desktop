@@ -45,6 +45,8 @@
     ListTodo,
     FileDiff,
     Minimize2,
+    GitFork,
+    Upload,
   } from "lucide-svelte";
   import { tick, onMount, onDestroy } from "svelte";
 
@@ -73,6 +75,7 @@
     onExport,
     onOpenMcpModal,
     onOpenRewindModal,
+    onForkSession,
     activeDebugError = null,
     activeFileSnippet = null,
     onDiagnoseDebugError,
@@ -105,6 +108,7 @@
     onExport: (format: string) => void;
     onOpenMcpModal?: () => void;
     onOpenRewindModal?: (targetId?: string) => void;
+    onForkSession?: (messageId: string) => void;
     activeDebugError?: ParsedDebugError | null;
     activeFileSnippet?: FileSnippetResult | null;
     onDiagnoseDebugError?: (prompt: string) => void;
@@ -139,6 +143,23 @@
   let totalAdditions = $derived(sessionChanges.reduce((acc, c) => acc + c.additions, 0));
   let totalDeletions = $derived(sessionChanges.reduce((acc, c) => acc + c.deletions, 0));
 
+  let totalSessionTokens = $derived(
+    messages.reduce((acc, m) => acc + (m.token_count || 0), 0)
+  );
+
+  function formatTokenCount(num: number): string {
+    if (num >= 1_000_000) {
+      return (num / 1_000_000).toFixed(1) + "M";
+    }
+    if (num >= 1_000) {
+      return (num / 1_000).toFixed(1) + "k";
+    }
+    return num.toString();
+  }
+
+  let contextUsageRatio = $derived(Math.min(1, totalSessionTokens / 1_000_000));
+  let isNearContextCeiling = $derived(totalSessionTokens >= 750_000);
+
   async function loadSessionChanges() {
     if (!workspace?.track_file_changes || !currentSessionId || !workspace?.path) {
       sessionChanges = [];
@@ -166,7 +187,12 @@
   });
 
   let unlistenFileUpdates: UnlistenFn | null = null;
+  function handleDocClick(e: MouseEvent) {
+    handleChatClick(e);
+  }
+
   onMount(async () => {
+    document.addEventListener("click", handleDocClick);
     try {
       unlistenFileUpdates = await listen<{ session_id: string }>("session-files-updated", (event: { payload: { session_id: string } }) => {
         if (workspace?.track_file_changes && (!event.payload?.session_id || event.payload.session_id === currentSessionId)) {
@@ -179,6 +205,7 @@
   });
 
   onDestroy(() => {
+    document.removeEventListener("click", handleDocClick);
     if (unlistenFileUpdates) {
       unlistenFileUpdates();
     }
@@ -476,6 +503,29 @@
     composerRef?.setPrompt(promptText);
   }
 
+  function handleChatClick(e: MouseEvent) {
+    const target = (e.target as HTMLElement)?.closest(".copy-code-btn");
+    if (!target) return;
+    e.preventDefault();
+    const rawCode = target.getAttribute("data-code");
+    if (rawCode) {
+      try {
+        const code = decodeURIComponent(rawCode);
+        navigator.clipboard.writeText(code).then(() => {
+          const orig = target.textContent;
+          target.textContent = "Copied!";
+          setTimeout(() => {
+            target.textContent = orig || "Copy";
+          }, 1500);
+        }).catch((err) => {
+          console.warn("Failed to copy code block:", err);
+        });
+      } catch (err) {
+        console.warn("Failed to decode code block:", err);
+      }
+    }
+  }
+
   function handleRegenerate() {
     if (isStreaming) return;
     const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
@@ -485,9 +535,66 @@
       onSendPrompt(lastUserMsg.content);
     }
   }
+  let isDraggingFiles = $state(false);
+  let dragCounter = 0;
+
+  function handleDragEnter(e: DragEvent) {
+    e.preventDefault();
+    dragCounter++;
+    if (e.dataTransfer?.types?.includes("Files")) {
+      isDraggingFiles = true;
+    }
+  }
+
+  function handleDragOver(e: DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = "copy";
+    }
+  }
+
+  function handleDragLeave(e: DragEvent) {
+    e.preventDefault();
+    dragCounter--;
+    if (dragCounter <= 0) {
+      dragCounter = 0;
+      isDraggingFiles = false;
+    }
+  }
+
+  async function handleDrop(e: DragEvent) {
+    e.preventDefault();
+    dragCounter = 0;
+    isDraggingFiles = false;
+    if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+      await composerRef?.handleDroppedFiles(e.dataTransfer.files);
+    }
+  }
 </script>
 
-<div class="flex-1 h-screen flex flex-col bg-app text-primary-theme overflow-hidden">
+<div
+  class="flex-1 h-screen flex flex-col bg-app text-primary-theme overflow-hidden relative"
+  ondragenter={handleDragEnter}
+  ondragover={handleDragOver}
+  ondragleave={handleDragLeave}
+  ondrop={handleDrop}
+  role="region"
+  aria-label="Chat and context drop zone"
+>
+  <!-- Drag-and-drop file attachment overlay -->
+  {#if isDraggingFiles}
+    <div class="absolute inset-0 z-50 bg-app/80 backdrop-blur-sm flex flex-col items-center justify-center p-8 pointer-events-none transition-all duration-200">
+      <div class="w-full max-w-lg p-10 rounded-2xl border-2 border-dashed border-accent-theme/80 bg-surface/95 shadow-2xl flex flex-col items-center justify-center text-center gap-3">
+        <div class="w-14 h-14 rounded-2xl bg-accent-subtle flex items-center justify-center text-accent-theme animate-bounce">
+          <Upload size={28} />
+        </div>
+        <h3 class="text-base font-semibold text-primary-theme">Drop files to attach to conversation</h3>
+        <p class="text-xs text-secondary-theme max-w-sm">
+          Drag and drop code files, documents, or screenshots to attach them as context.
+        </p>
+      </div>
+    </div>
+  {/if}
   <!-- Top Bar -->
   <header class="h-14 px-6 border-b border-subtle flex items-center justify-between gap-3 bg-surface/70 backdrop-blur-xs relative z-30">
     <div class="flex items-center gap-3 min-w-0">
@@ -578,6 +685,27 @@
               </span>
             {/if}
           </button>
+        </Tooltip>
+      {/if}
+
+      <!-- Context Window / Cumulative Token Meter Gauge -->
+      {#if totalSessionTokens > 0}
+        <Tooltip
+          text={`Session Context Usage: ${totalSessionTokens.toLocaleString()} tokens (~${(contextUsageRatio * 100).toFixed(1)}% of 1M limit)`}
+          subtext={isNearContextCeiling
+            ? "⚠️ Approaching 1M token ceiling. Consider clicking Export > Compress Context (/compact) to summarize."
+            : "Cumulative tokens consumed across active conversation turns."}
+          position="bottom"
+        >
+          <div
+            class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border font-mono font-medium shadow-xs select-none transition-colors {isNearContextCeiling ? 'bg-amber-500/15 border-amber-500/40 text-amber-300' : 'bg-surface hover:bg-surface-hover border-subtle text-secondary-theme'}"
+          >
+            <span class="inline-block w-2 h-2 rounded-full {isNearContextCeiling ? 'bg-amber-400 animate-pulse' : 'bg-accent-theme/70'}"></span>
+            <span class="text-[11px] {isNearContextCeiling ? 'text-amber-300 font-bold' : 'text-primary-theme'}">
+              {formatTokenCount(totalSessionTokens)}
+            </span>
+            <span class="text-[10px] text-muted-theme">/ 1M</span>
+          </div>
         </Tooltip>
       {/if}
 
@@ -807,6 +935,19 @@
                     <span>Rewind</span>
                   </button>
                 </Tooltip>
+                {#if onForkSession}
+                  <Tooltip text="Fork conversation into new session from this turn" position="top">
+                    <button
+                      type="button"
+                      onclick={() => onForkSession && onForkSession(msg.id)}
+                      class="p-1 rounded hover:bg-surface-hover text-secondary-theme hover:text-sky-400 transition-colors cursor-pointer flex items-center gap-1 text-[11px]"
+                      aria-label="Fork session from this turn"
+                    >
+                      <GitFork size={13} />
+                      <span>Fork</span>
+                    </button>
+                  </Tooltip>
+                {/if}
                 <Tooltip text={copiedMessageId === msg.id ? "Copied!" : "Copy response"} position="top">
                   <button
                     type="button"

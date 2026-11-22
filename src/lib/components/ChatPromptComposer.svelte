@@ -14,19 +14,21 @@
   import { modalManager } from "$lib/modal.svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { dialogManager } from "$lib/dialog.svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import {
     Compass,
     Send,
     Square,
     Paperclip,
     ChevronDown,
-    File,
+    File as FileIcon,
     Folder,
     GitBranch,
     Plus,
     X,
     FileCode,
     Bug,
+    Image,
   } from "lucide-svelte";
   import { parseDebugError } from "$lib/utils/debugParser";
   import type { ParsedDebugError } from "$lib/types";
@@ -69,8 +71,15 @@
   let inputPrompt = $state("");
   let textareaElem: HTMLTextAreaElement | null = $state(null);
 
+  // Prompt History Navigation (Up/Down arrow)
+  const PROMPT_HISTORY_STORAGE_KEY = "gemini_desktop_prompt_history";
+  let promptHistory = $state<string[]>([]);
+  let historyIndex = $state(-1);
+  let tempDraft = $state("");
+
   // File & Git Attachments State
   let attachments: AttachmentItem[] = $state([]);
+  let isSavingImage = $state(false);
   let showAttachMenu = $state(false);
   let showFilePickerModal = $state(false);
   let filePickerMode: "file" | "directory" = $state("file");
@@ -276,6 +285,20 @@
   });
 
   onMount(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem(PROMPT_HISTORY_STORAGE_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            promptHistory = parsed.slice(-50);
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to load prompt history:", e);
+      }
+    }
+
     function handlePrefill(e: Event) {
       const customEvent = e as CustomEvent<string>;
       if (customEvent.detail) {
@@ -681,6 +704,49 @@
       }
     }
 
+    // Prompt History Navigation: ArrowUp and ArrowDown
+    if (!showSlashPopover && !showMentionPopover) {
+      if (e.key === "ArrowUp") {
+        const cursor = textareaElem?.selectionStart ?? 0;
+        const isFirstLine = !inputPrompt.slice(0, cursor).includes("\n");
+        if (isFirstLine && promptHistory.length > 0) {
+          if (historyIndex === -1) {
+            tempDraft = inputPrompt;
+          }
+          if (historyIndex < promptHistory.length - 1) {
+            e.preventDefault();
+            historyIndex++;
+            inputPrompt = promptHistory[promptHistory.length - 1 - historyIndex];
+            tick().then(() => {
+              if (textareaElem) {
+                textareaElem.selectionStart = textareaElem.selectionEnd = textareaElem.value.length;
+              }
+            });
+            return;
+          }
+        }
+      } else if (e.key === "ArrowDown") {
+        const cursor = textareaElem?.selectionStart ?? 0;
+        const isLastLine = !inputPrompt.slice(cursor).includes("\n");
+        if (isLastLine && historyIndex >= 0) {
+          e.preventDefault();
+          if (historyIndex > 0) {
+            historyIndex--;
+            inputPrompt = promptHistory[promptHistory.length - 1 - historyIndex];
+          } else {
+            historyIndex = -1;
+            inputPrompt = tempDraft;
+          }
+          tick().then(() => {
+            if (textareaElem) {
+              textareaElem.selectionStart = textareaElem.selectionEnd = textareaElem.value.length;
+            }
+          });
+          return;
+        }
+      }
+    }
+
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (isStreaming) {
@@ -697,6 +763,17 @@
   function handleSubmit() {
     const trimmed = inputPrompt.trim();
     if ((!trimmed && attachments.length === 0) || isStreaming) return;
+
+    if (trimmed && (!promptHistory.length || promptHistory[promptHistory.length - 1] !== trimmed)) {
+      promptHistory = [...promptHistory, trimmed].slice(-50);
+      if (typeof window !== "undefined") {
+        try {
+          localStorage.setItem(PROMPT_HISTORY_STORAGE_KEY, JSON.stringify(promptHistory));
+        } catch {}
+      }
+    }
+    historyIndex = -1;
+    tempDraft = "";
 
     if (trimmed.startsWith("/")) {
       const parts = trimmed.split(/\s+/);
@@ -734,13 +811,107 @@
     showMentionPopover = false;
     onSendPrompt(finalPrompt);
   }
+  function handleImagePaste(file: File): Promise<void> {
+    if (isSavingImage) return Promise.resolve();
+    isSavingImage = true;
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const base64Data = reader.result as string;
+          const savedPath = await invoke<string>("save_clipboard_image", {
+            workspacePath: workspace?.path || null,
+            imageBase64: base64Data,
+            fileName: file.name && file.name !== "image.png" ? file.name : undefined,
+          });
+
+          const cleanName = savedPath.split(/[/\\]/).pop() || `screenshot_${Date.now()}.png`;
+          addAttachment({
+            id: "img-" + Date.now(),
+            name: cleanName,
+            path: savedPath,
+            kind: "file",
+            previewUrl: base64Data,
+          });
+        } catch (err) {
+          console.error("Failed to save clipboard image:", err);
+        } finally {
+          isSavingImage = false;
+          resolve();
+        }
+      };
+      reader.onerror = () => {
+        isSavingImage = false;
+        resolve();
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  export async function handleDroppedFiles(fileList: FileList | File[]) {
+    const files = Array.from(fileList);
+    for (const file of files) {
+      if (file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(file.name)) {
+        await handleImagePaste(file);
+      } else {
+        const filePath = (file as any).path as string | undefined;
+        let targetPath = file.name;
+        if (filePath) {
+          const normalized = filePath.replace(/\\/g, "/");
+          const wsPath = workspace?.path ? workspace.path.replace(/\\/g, "/") : "";
+          if (wsPath && normalized.toLowerCase().startsWith(wsPath.toLowerCase())) {
+            targetPath = normalized.substring(wsPath.length).replace(/^\/+/, "");
+          } else {
+            targetPath = normalized;
+          }
+        } else if (workspaceFiles && workspaceFiles.length > 0) {
+          const match = workspaceFiles.find((wf) => wf.name === file.name);
+          if (match) {
+            targetPath = match.relative_path.replace(/\\/g, "/");
+          }
+        }
+        addAttachment({
+          id: `drop-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          name: file.name,
+          path: targetPath,
+          kind: "file",
+        });
+      }
+    }
+    tick().then(() => {
+      if (textareaElem) {
+        textareaElem.focus();
+      }
+    });
+  }
+
   function handlePaste(e: ClipboardEvent) {
-    if (!e.clipboardData || !onDebugErrorDetected) return;
-    const pasted = e.clipboardData.getData("text");
-    if (pasted) {
-      const err = parseDebugError(pasted);
-      if (err) {
-        onDebugErrorDetected(err);
+    if (!e.clipboardData) return;
+
+    // 1. Check for clipboard image items (e.g. Snipping Tool Win+Shift+S or copy image)
+    const items = e.clipboardData.items;
+    if (items && items.length > 0) {
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (file) {
+            e.preventDefault();
+            handleImagePaste(file);
+            return;
+          }
+        }
+      }
+    }
+
+    // 2. Check for debug error/stack trace if plain text
+    if (onDebugErrorDetected) {
+      const pasted = e.clipboardData.getData("text");
+      if (pasted) {
+        const err = parseDebugError(pasted);
+        if (err) {
+          onDebugErrorDetected(err);
+        }
       }
     }
   }
@@ -784,6 +955,12 @@
               <GitBranch size={12} class="text-amber-400" />
             {:else if att.kind === "directory"}
               <Folder size={12} class="text-sky-400" />
+            {:else if att.previewUrl || att.name.match(/\.(png|jpe?g|gif|webp|bmp)$/i)}
+              {#if att.previewUrl}
+                <img src={att.previewUrl} alt={att.name} class="w-4 h-4 object-cover rounded shrink-0 border border-subtle" />
+              {:else}
+                <Image size={12} class="text-emerald-400" />
+              {/if}
             {:else}
               <FileCode size={12} class="text-accent-theme" />
             {/if}
@@ -812,7 +989,7 @@
       bind:this={textareaElem}
       bind:value={inputPrompt}
       onkeydown={handleKeyDown}
-      oninput={() => { checkMentionTrigger(); checkSlashTrigger(); }}
+      oninput={() => { historyIndex = -1; checkMentionTrigger(); checkSlashTrigger(); }}
       onpaste={handlePaste}
       placeholder={isStreaming
         ? "🎯 Steer active agent in real time (e.g. skip tests, focus on src/api)... Press Enter or click Steer"
@@ -859,7 +1036,7 @@
                 }}
                 class="w-full px-3 py-1.5 text-left hover:bg-surface-hover text-secondary-theme hover:text-primary-theme flex items-center gap-2 cursor-pointer"
               >
-                <File size={14} class="text-accent-theme" />
+                <FileIcon size={14} class="text-accent-theme" />
                 <span>Attach Workspace File...</span>
               </button>
 

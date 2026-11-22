@@ -29,6 +29,9 @@ do:
   - "Resolve Git context tokens in the Rust backend (`resolve_git_context`) into real markdown code blocks with repository diff/status before sending prompts across ACP."
   - "Run background Git subprocesses with `CREATE_NO_WINDOW` (0x08000000) inside the active workspace directory to avoid visible console window flashes on Windows."
   - "Render attached items as removable badge chips above the prompt textarea with individual and clear-all dismiss controls."
+  - "Support clipboard image pasting (`Win + Shift + S` or image copy via `Ctrl + V`): decode and write image payloads to `.gemini/attachments/screenshot_<timestamp>.png` (or AppData fallback) via backend command `save_clipboard_image`, rendering an attachment badge chip with thumbnail preview."
+  - "Support direct drag-and-drop of files, documents, and screenshots onto the chat view (`ChatView.svelte`): display an interactive dashed drop zone overlay during drag gestures, save dropped images via `save_clipboard_image`, and automatically resolve dropped workspace files into relative `@path` references in `ChatPromptComposer`."
+  - "Provide prompt history navigation in `ChatPromptComposer` using `ArrowUp` and `ArrowDown` when on the first line or empty input, preserving in-progress drafts and persisting history across sessions in local storage."
   - "Append unmentioned badge chips automatically to the outgoing prompt as `@path` references so Gemini CLI resolves them natively over ACP."
 
 dont:

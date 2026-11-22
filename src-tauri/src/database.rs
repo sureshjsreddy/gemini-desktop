@@ -332,6 +332,89 @@ impl DbManager {
         Ok(())
     }
 
+    pub fn fork_session(
+        &self,
+        session_id: &str,
+        up_to_message_id: Option<&str>,
+        custom_title: Option<&str>,
+    ) -> Result<Session, String> {
+        let conn = self.conn.lock().unwrap();
+
+        // 1. Get original session
+        let mut session_stmt = conn.prepare("SELECT workspace_id, title FROM sessions WHERE id = ?1")
+            .map_err(|e| e.to_string())?;
+        let orig: Option<(String, String)> = session_stmt.query_row(params![session_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        }).ok();
+
+        let (workspace_id, orig_title) = orig.ok_or_else(|| "Original session not found".to_string())?;
+
+        // 2. Load all messages for the session ordered by created_at
+        let mut msg_stmt = conn.prepare(
+            "SELECT id, role, content, tool_calls_json, token_count, created_at FROM messages WHERE session_id = ?1 ORDER BY created_at ASC"
+        ).map_err(|e| e.to_string())?;
+
+        let rows = msg_stmt.query_map(params![session_id], |row| {
+            Ok(Message {
+                id: row.get(0)?,
+                session_id: session_id.to_string(),
+                role: row.get(1)?,
+                content: row.get(2)?,
+                tool_calls_json: row.get(3)?,
+                token_count: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        }).map_err(|e| e.to_string())?;
+
+        let mut msgs_to_copy = Vec::new();
+        let mut found_target = false;
+        for r in rows {
+            let m = r.map_err(|e| e.to_string())?;
+            let is_target = up_to_message_id.map(|t| t == m.id).unwrap_or(false);
+            msgs_to_copy.push(m);
+            if is_target {
+                found_target = true;
+                break;
+            }
+        }
+
+        if let Some(target_id) = up_to_message_id {
+            if !found_target {
+                return Err(format!("Target message '{}' not found in session '{}'", target_id, session_id));
+            }
+        }
+
+        // 3. Create new forked session
+        let new_id = format!("sess-{}", Uuid::new_v4());
+        let new_title = custom_title
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| format!("{} (Fork)", orig_title));
+        let now = Utc::now().to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO sessions (id, workspace_id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![new_id, workspace_id, new_title, now, now],
+        ).map_err(|e| e.to_string())?;
+
+        // 4. Copy messages with new IDs
+        for m in msgs_to_copy {
+            let new_msg_id = format!("msg-{}", Uuid::new_v4());
+            conn.execute(
+                "INSERT INTO messages (id, session_id, role, content, tool_calls_json, token_count, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![new_msg_id, new_id, m.role, m.content, m.tool_calls_json, m.token_count, m.created_at],
+            ).map_err(|e| e.to_string())?;
+        }
+
+        Ok(Session {
+            id: new_id,
+            workspace_id,
+            title: new_title,
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
     pub fn get_messages_from(
         &self,
         session_id: &str,
@@ -848,5 +931,95 @@ mod tests {
         let sessions_after = db.list_sessions("ws-personal").unwrap();
         let after = sessions_after.into_iter().find(|s| s.id == session.id).expect("session not found");
         assert_eq!(after.title, "Build a reactive Svelte 5 dashbo...");
+    }
+
+    #[test]
+    fn test_fork_session() {
+        let db = DbManager::new_in_memory().expect("in-memory db initialization failed");
+        let session = db.create_session("ws-personal", "Original Session").expect("failed to create session");
+
+        let msg1 = Message {
+            id: "msg-1".to_string(),
+            session_id: session.id.clone(),
+            role: "user".to_string(),
+            content: "Hello from turn 1".to_string(),
+            tool_calls_json: None,
+            token_count: 5,
+            created_at: "2026-01-01T10:00:00Z".to_string(),
+        };
+        let msg2 = Message {
+            id: "msg-2".to_string(),
+            session_id: session.id.clone(),
+            role: "assistant".to_string(),
+            content: "Reply to turn 1".to_string(),
+            tool_calls_json: None,
+            token_count: 10,
+            created_at: "2026-01-01T10:00:05Z".to_string(),
+        };
+        let msg3 = Message {
+            id: "msg-3".to_string(),
+            session_id: session.id.clone(),
+            role: "user".to_string(),
+            content: "Hello from turn 2".to_string(),
+            tool_calls_json: None,
+            token_count: 5,
+            created_at: "2026-01-01T10:01:00Z".to_string(),
+        };
+        db.save_message(msg1).unwrap();
+        db.save_message(msg2).unwrap();
+        db.save_message(msg3).unwrap();
+
+        let forked = db.fork_session(&session.id, Some("msg-2"), None).expect("failed to fork session");
+        assert_eq!(forked.workspace_id, "ws-personal");
+        assert_eq!(forked.title, "Original Session (Fork)");
+        assert_ne!(forked.id, session.id);
+
+        let forked_msgs = db.list_messages(&forked.id).expect("failed to list forked messages");
+        assert_eq!(forked_msgs.len(), 2);
+        assert_eq!(forked_msgs[0].content, "Hello from turn 1");
+        assert_eq!(forked_msgs[1].content, "Reply to turn 1");
+        assert_ne!(forked_msgs[0].id, "msg-1");
+        assert_ne!(forked_msgs[1].id, "msg-2");
+    }
+
+    #[test]
+    fn test_fork_session_entire_history_and_custom_title() {
+        let db = DbManager::new_in_memory().expect("in-memory db initialization failed");
+        let session = db.create_session("ws-personal", "Full Conversation").expect("failed to create session");
+
+        let msg1 = Message {
+            id: "msg-a".to_string(),
+            session_id: session.id.clone(),
+            role: "user".to_string(),
+            content: "Question A".to_string(),
+            tool_calls_json: None,
+            token_count: 5,
+            created_at: "2026-01-01T10:00:00Z".to_string(),
+        };
+        let msg2 = Message {
+            id: "msg-b".to_string(),
+            session_id: session.id.clone(),
+            role: "assistant".to_string(),
+            content: "Answer B".to_string(),
+            tool_calls_json: None,
+            token_count: 8,
+            created_at: "2026-01-01T10:00:05Z".to_string(),
+        };
+        db.save_message(msg1).unwrap();
+        db.save_message(msg2).unwrap();
+
+        // Fork entire session with explicit custom title
+        let forked = db.fork_session(&session.id, None, Some("Branch Alpha")).expect("fork failed");
+        assert_eq!(forked.title, "Branch Alpha");
+        assert_ne!(forked.id, session.id);
+
+        let forked_msgs = db.list_messages(&forked.id).expect("failed to list forked messages");
+        assert_eq!(forked_msgs.len(), 2);
+        assert_eq!(forked_msgs[0].content, "Question A");
+        assert_eq!(forked_msgs[1].content, "Answer B");
+
+        // Forking with an unknown target message ID should return an error
+        let err_fork = db.fork_session(&session.id, Some("msg-unknown"), None);
+        assert!(err_fork.is_err());
     }
 }

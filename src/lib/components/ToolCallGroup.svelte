@@ -7,6 +7,8 @@
     CheckCircle2,
     AlertCircle,
     Loader2,
+    ChevronsUpDown,
+    ChevronsDownUp,
   } from "lucide-svelte";
 
   let {
@@ -74,8 +76,26 @@
     userExpanded !== null ? userExpanded : false
   );
 
+  let filterErrorsOnly = $state(false);
+  let batchExpandState = $state<boolean | null>(null);
+
+  let filteredSteps = $derived.by(() => {
+    if (filterErrorsOnly) {
+      return steps.filter((s) => s.status === "failed" || !!s.error);
+    }
+    return steps;
+  });
+
   function toggleExpand() {
     userExpanded = !isExpanded;
+  }
+
+  function toggleBatchExpand() {
+    if (batchExpandState === true) {
+      batchExpandState = false;
+    } else {
+      batchExpandState = true;
+    }
   }
 </script>
 
@@ -130,12 +150,56 @@
 
     <!-- Expanded Hierarchy View: Full Tree of Completed & Active Steps -->
     {#if isExpanded}
-      <div class="p-2.5 border-t border-subtle/70 bg-app/40 space-y-1.5">
-        <div class="border-l-2 border-subtle/80 ml-2.5 pl-3 space-y-1.5">
-          {#each steps as step, idx (step.id || idx)}
-            <ToolCallNode {step} />
-          {/each}
+      <div class="p-2.5 border-t border-subtle/70 bg-app/40 space-y-2">
+        <!-- Sub-toolbar: Filter & Batch Expand -->
+        <div class="flex items-center justify-between gap-2 px-1 text-[11px]">
+          <div class="flex items-center gap-1.5">
+            <button
+              type="button"
+              onclick={() => (filterErrorsOnly = false)}
+              class="px-2 py-0.5 rounded-md font-medium transition-colors cursor-pointer border {!filterErrorsOnly ? 'bg-surface-elevated text-primary-theme border-subtle font-semibold shadow-2xs' : 'text-muted-theme hover:text-secondary-theme border-transparent'}"
+            >
+              All ({steps.length})
+            </button>
+            {#if failedCount > 0}
+              <button
+                type="button"
+                onclick={() => (filterErrorsOnly = true)}
+                class="px-2 py-0.5 rounded-md font-medium transition-colors cursor-pointer border flex items-center gap-1 {filterErrorsOnly ? 'bg-rose-950/40 text-rose-300 border-rose-500/30 font-semibold shadow-2xs' : 'text-rose-400/80 hover:text-rose-300 border-transparent'}"
+              >
+                <AlertCircle size={11} class="text-rose-400" />
+                <span>Errors ({failedCount})</span>
+              </button>
+            {/if}
+          </div>
+
+          <button
+            type="button"
+            onclick={toggleBatchExpand}
+            class="flex items-center gap-1 px-2 py-0.5 rounded-md text-secondary-theme hover:text-primary-theme hover:bg-surface-elevated/70 transition-colors cursor-pointer border border-transparent hover:border-subtle"
+            title={batchExpandState === true ? "Collapse all steps" : "Expand all steps"}
+          >
+            {#if batchExpandState === true}
+              <ChevronsDownUp size={12} />
+              <span>Collapse All</span>
+            {:else}
+              <ChevronsUpDown size={12} />
+              <span>Expand All</span>
+            {/if}
+          </button>
         </div>
+
+        {#if filteredSteps.length > 0}
+          <div class="border-l-2 border-subtle/80 ml-2.5 pl-3 space-y-1.5">
+            {#each filteredSteps as step, idx (step.id || idx)}
+              <ToolCallNode {step} forceExpanded={batchExpandState} />
+            {/each}
+          </div>
+        {:else}
+          <div class="py-3 text-center text-muted-theme italic text-[11px]">
+            No errors encountered in these steps.
+          </div>
+        {/if}
       </div>
     {:else if activeStep}
       <!-- Collapsed View while actively running: Show ONLY the latest working step! -->

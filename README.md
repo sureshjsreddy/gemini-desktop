@@ -19,62 +19,38 @@ A modern, blazing-fast native desktop application for interacting with the **Gem
   - Non-blocking real-time model steering mid-flight with mode-aware steering prompts.
   - Interactive **Tool Execution Permission Intercepts** — review and approve tool/command execution before changes occur on your machine.
 
-- **🌲 Hierarchical Tool Execution Progress Tree & Wall-Clock Telemetry**
+- **🎛️ Unified Command Palette (`Ctrl+P` / `Ctrl+Shift+P`)**
+  - Instant fuzzy discovery and execution of navigation targets, tools, and actions across the workspace.
+  - Quick-switch between active conversations, trigger slash actions (`/plan`, `/diff`, `/terminal`, `/mcp`, `/compact`, `/setup`, `/settings`, `/doctor`), and toggle color themes (`Dark`, `Light`, `System`).
+  - Accessible via global hotkeys `Ctrl+P` / `Ctrl+Shift+P` and sidebar search button with full keyboard arrow navigation.
+
+- **🌿 Conversation Forking & Branching from Any Turn**
+  - Branch any active discussion from any assistant response into an independent session without modifying original conversation history.
+  - Dedicated `Fork` action button on each turn generates an atomic cloned session in SQLite with all preceding context and prompt history intact.
+
+- **🌲 Hierarchical Tool Execution Progress Tree, Multi-Toggle & Error Filtering**
   - Tucks multi-step agent tool executions into an expandable accordion tree (`ToolCallGroup.svelte`) displaying only the single active running task with a live spinner during execution.
   - Automatically collapses completed steps into a single compact header (`[▶] N steps completed • 2m 15s`) with a one-click toggleable tree view, keeping the assistant's final response clean and readable.
+  - **Error Filter Pill**: Toggle between "All Steps" and "Errors Only" to instantly isolate failed executions and stack traces.
+  - **Batch Multi-Toggle**: One-click "Expand All / Collapse All" to inspect parameters, raw stdout, and errors across all steps simultaneously.
   - Semantic human-friendly task titles (`resolveHumanFriendlyTitle`) extracted dynamically from task parameters (`Run cargo test`, `Read src/lib.rs`, `Search files`).
   - True wall-clock turn duration tracking ($\Delta t = t_{\text{assistant}} - t_{\text{user}}$) with live elapsed seconds/minutes during streaming and human-readable formatting (`formatDuration`: `0.4s`, `24s`, `2m 15s`, `1h 12m`).
   - Comprehensive turn metadata in the message footer (`3:45 PM • 2m 15s • ~1,450 tokens`).
 
-- **📐 Fluid Responsive Chat Canvas & Dynamic Visible Area Sizing**
-  - Conversation viewport dynamically adapts its width based on visible screen estate and panel states.
-  - Smoothly expands up to `1280px` (`max-w-7xl`) when collateral navigation drawers (Left Sidebar and Right Solution Explorer) are collapsed or on high-resolution/ultrawide displays, giving complex code snippets, diffs, tables, and tool logs maximum breathing room.
-  - Automatically contracts to an ergonomic reading width (`896px` / `1024px`) when sidebars are opened, maintaining optimal typography line lengths.
-  - Harmoniously synchronizes width across Assistant responses, User prompts, Plan Mode Workbench, ACP Permission Cards, and the bottom Prompt Composer.
-
-- **💬 Streamlined Typing Experience & Interactive Starter Cards**
-  - Decluttered prompt composer toolbar with dedicated context attachment (`@`), working directory tracking, and clean submit controls.
-  - Interactive onboarding empty-state cards for one-click repository architecture exploration, uncommitted git diff review, and step-by-step feature planning.
-  - Integrated "Compress Context" action inside the Export & Actions menu to keep the top header focused on conversation context.
-
-- **🎯 Official Gemini Model Selection**
-  - **Auto (Gemini 3)**: Dynamically balances between Pro and Flash models based on task complexity.
-  - **Auto (Gemini 2.5)**: Dynamic selection across Gemini 2.5 series.
-  - **Gemini 3 / 3.5 / 3.8 Series**: `gemini-3.8-flash` (latest preview — ultra-responsive next-gen Flash), `gemini-3.5-flash` (powerful default), `gemini-3.5-flash-lite` (lightweight), `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-pro-preview`, `gemini-3-flash-preview`.
-  - **Gemini 2.5 Series**: `gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite`.
-  - **Manual / Custom Entry**: Enter any custom model identifier, fine-tuned endpoint, or preview string.
-
-- **🧩 Antigravity CLI (`agy`) Plugins & Extensions Hub**
-  - Native desktop manager for Antigravity agent plugins and extension bundles.
-  - **Installed View**: Live management of active plugins with capability badges (skills, MCP tools, and rules), 1-click enable/disable switches, and Explorer folder access.
-  - **Explore Catalog**: Curated directory of official and community extensions (`android-cli-plugin`, `chrome-devtools-plugin`, `firebase`, `science`, `google-antigravity-sdk`) plus custom ID/GitHub target installation.
-  - **Custom Plugin Studio**: Scaffolding wizard to generate new custom plugins in `%USERPROFILE%\.gemini\config\plugins\<name>\` complete with skills, MCP configs, and rules.
-  - **Dual-Engine Graceful Guidance**: Informative banner when `gemini` CLI is active explaining plugin requirements without unwanted prompts.
-
-- **📐 Ergonomic Pinned Chat Sidebar Architecture**
-  - Re-architected left sidebar layout prioritizing conversation history: assigns primary vertical height (`flex-1 min-h-0`) to **Recent Chats**, keeping 10–15+ chats instantly accessible.
-  - Clean top action bar for `+ New Chat` and `Search History` (`Ctrl+K`).
-  - Integrated bottom toolbar featuring side-by-side Developer Panes (`Terminal` `Ctrl+\`` and `Workspace Explorer` `Ctrl+Alt+L`) alongside a unified **Tools & Settings** launcher.
-
-- **🧰 Dynamic `/` Tools & Slash Commands Autocomplete**
-  - Instant tool discovery palette triggered by typing `/` in the prompt composer.
-  - Dynamically filters available tools and actions based on the active CLI engine:
-    - **Antigravity CLI (`agy`)**: Access Antigravity plugins and extensions (`/plugins`).
-    - **Gemini CLI (`gemini`)**: Access prompt context compression (`/compress`).
-    - **Unified Desktop Actions**: Instant 1-click execution for Plan Workbench (`/plan`), Session Diff (`/diff`), Terminal Drawer (`/terminal`), MCP Manager (`/mcp`), Debug Doctor (`/doctor`), Context Compaction (`/compact`), Capabilities (`/tools`), Model Parameters (`/model`), Settings (`/settings`), Setup (`/setup`), Rewind (`/rewind`), and Clear (`/clear`).
-  - Full keyboard navigation (`↑`/`↓` selection, `Enter`/`Tab` execution, `Esc` dismiss).
-
-- **🔌 Model Context Protocol (MCP) Server Integration (`Ctrl+M`)**
-  - Native dual-scope configuration management: **Workspace-scoped** (`<workspace>/.gemini/settings.json`) or **Global** (`~/.gemini/settings.json`).
-  - 1-click popular presets: 🐙 **GitHub (Docker)**, 📁 **Local Filesystem**, 🐘 **PostgreSQL**, 🔍 **Brave Web Search**, and 🧠 **Knowledge Graph Memory**.
-  - Dual editing experience: guided visual form or monospaced raw JSON editor.
-  - Safe non-destructive persistence: strictly preserves all existing non-MCP keys and settings.
-
-- **📎 File, Folder & Git Context Attachments**
+- **📎 Drag-and-Drop, Screenshot Pasting & Context Attachments**
+  - **Drag-and-Drop Drop Zone**: Drag and drop code files, documents, or screenshots directly onto the chat canvas with an interactive dashed drop zone overlay.
+  - **Clipboard Screenshot Paste**: Paste screenshots directly (`Win+Shift+S` or `Ctrl+V`) into composer; saved automatically to `.gemini/attachments/` with thumbnail preview chips.
   - Inline `@` mention autocomplete popover with fuzzy search across workspace files and directories.
   - One-click Git context presets: `@git:diff` (working tree changes), `@git:staged` (index changes), and `@git:status`.
   - Removable badge chips row with individual and "Clear All" dismiss controls.
-  - Interactive file & folder search picker modal.
+
+- **📊 Context Window & Cumulative Token Meter Gauge**
+  - Live session token consumption meter in the chat header tracking active tokens against the 1M ceiling.
+  - Visual color indicator and warning notification when approaching 750,000+ tokens with one-click recommendation to compact context.
+
+- **💬 Prompt History Navigation & Sanitized Markdown**
+  - `↑` and `↓` arrow navigation in `ChatPromptComposer.svelte` cycling through past sent prompts while preserving active in-progress drafts.
+  - XSS-safe markdown rendering powered by `DOMPurify` with event-delegated code block copy buttons.
 
 - **🎨 Multi-Theme System & Syntax Highlighting**
   - 4 tailored themes: **Platinum Dark** (default), **Gemini Aurora**, **Cyber Emerald**, and **Platinum Light** (`platinum-white`).
@@ -126,10 +102,12 @@ A modern, blazing-fast native desktop application for interacting with the **Gem
 
 | Shortcut | Action | Scope |
 | :--- | :--- | :--- |
+| **`Ctrl + P`** / **`Ctrl + Shift + P`** | Open Unified Command Palette | Global |
 | **`Ctrl + ` `** / **`Ctrl + ~`** | Toggle Integrated Workspace Terminal Drawer | Global |
 | **`Ctrl + M`** | Toggle MCP Server Manager | Global |
 | **`Ctrl + K`** | Open Full-Text SQLite FTS5 Search | Global |
 | **`Ctrl + N`** | Start New Chat Session | Global |
+| **`↑` / `↓`** | Navigate Prompt History (on first/last line) | Prompt Textarea |
 | **`/`** | Trigger Tools & Slash Commands Autocomplete Palette | Prompt Textarea |
 | **`@`** | Trigger Context Mention Autocomplete (Files, Dirs, Git) | Prompt Textarea |
 | **`Enter`** | Send Prompt / Execute Terminal Command | Prompt / Terminal |

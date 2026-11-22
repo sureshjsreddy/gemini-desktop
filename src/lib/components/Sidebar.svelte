@@ -41,6 +41,7 @@
     onRenameSession,
     onDeleteSession,
     onOpenSearch,
+    onOpenPalette,
     onOpenTemplates,
     onOpenWorkspaceModal,
     onOpenThemeModal,
@@ -70,6 +71,7 @@
     onRenameSession: (s: Session) => void;
     onDeleteSession: (s: Session) => void;
     onOpenSearch: () => void;
+    onOpenPalette?: () => void;
     onOpenTemplates: () => void;
     onOpenWorkspaceModal: () => void;
     onOpenThemeModal: () => void;
@@ -144,6 +146,20 @@
           <Search size={15} />
         </button>
       </Tooltip>
+
+      <!-- Command Palette Button -->
+      {#if onOpenPalette}
+        <Tooltip text="Command Palette" shortcut="Ctrl+P" position="right">
+          <button
+            type="button"
+            onclick={onOpenPalette}
+            class="w-8 h-8 rounded-lg flex items-center justify-center text-secondary-theme hover:text-accent-theme hover:bg-surface transition-colors cursor-pointer"
+            aria-label="Command palette"
+          >
+            <Sparkles size={15} class="text-accent-theme" />
+          </button>
+        </Tooltip>
+      {/if}
 
       <!-- Prompt Templates Button -->
       <Tooltip text="Prompt Library" position="right">
@@ -439,6 +455,26 @@
         <span class="ml-auto text-[10px] text-muted-theme font-mono">Ctrl+K</span>
       </button>
     </Tooltip>
+
+    {#if onOpenPalette}
+      <Tooltip
+        class="w-full block"
+        text="Command Palette"
+        subtext="Quickly run commands, switch workspaces, jump to chats, or change themes"
+        shortcut="Ctrl+P"
+        position="right"
+      >
+        <button
+          type="button"
+          onclick={onOpenPalette}
+          class="w-full flex items-center gap-2.5 px-3 py-1.5 rounded-lg hover:bg-surface-hover text-secondary-theme hover:text-accent-theme text-xs transition-colors cursor-pointer"
+        >
+          <Sparkles size={14} class="text-accent-theme shrink-0" />
+          <span class="truncate">Command Palette</span>
+          <span class="ml-auto text-[10px] text-muted-theme font-mono">Ctrl+P</span>
+        </button>
+      </Tooltip>
+    {/if}
   </div>
 
   <!-- Chat History Sessions List (Flexible Primary Real Estate) -->

@@ -1,4 +1,5 @@
 use crate::commands::AppState;
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -500,6 +501,93 @@ fn walk_workspace_dir(
     }
 }
 
+#[tauri::command]
+pub async fn save_clipboard_image(
+    workspace_path: Option<String>,
+    image_base64: String,
+    file_name: Option<String>,
+) -> Result<String, String> {
+    save_clipboard_image_internal(workspace_path.as_deref(), &image_base64, file_name.as_deref())
+}
+
+pub fn save_clipboard_image_internal(
+    workspace_path: Option<&str>,
+    image_base64: &str,
+    file_name: Option<&str>,
+) -> Result<String, String> {
+    let raw_base64 = if let Some(idx) = image_base64.find(',') {
+        &image_base64[idx + 1..]
+    } else {
+        image_base64
+    };
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(raw_base64.trim())
+        .map_err(|e| format!("Failed to decode base64 image data: {}", e))?;
+
+    if bytes.is_empty() {
+        return Err("Decoded image data is empty".to_string());
+    }
+
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let clean_name = match file_name {
+        Some(f) if !f.trim().is_empty() => {
+            let sanitized: String = f.chars()
+                .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '_' || *c == '-')
+                .collect();
+            if sanitized.is_empty() {
+                format!("screenshot_{}.png", timestamp)
+            } else if !sanitized.contains('.') {
+                format!("{}.png", sanitized)
+            } else {
+                sanitized
+            }
+        }
+        _ => format!("screenshot_{}.png", timestamp),
+    };
+
+    let (target_file, return_path) = if let Some(ws) = workspace_path {
+        let ws_buf = PathBuf::from(ws);
+        if ws_buf.exists() && ws_buf.is_dir() {
+            let attach_dir = ws_buf.join(".gemini").join("attachments");
+            std::fs::create_dir_all(&attach_dir)
+                .map_err(|e| format!("Failed to create attachments directory: {}", e))?;
+            let file_path = attach_dir.join(&clean_name);
+            let rel_path = format!(".gemini/attachments/{}", clean_name);
+            (file_path, rel_path)
+        } else {
+            let fallback_dir = dirs_fallback_attachments()?;
+            std::fs::create_dir_all(&fallback_dir)
+                .map_err(|e| format!("Failed to create fallback attachments directory: {}", e))?;
+            let file_path = fallback_dir.join(&clean_name);
+            let ret = file_path.to_string_lossy().replace('\\', "/");
+            (file_path, ret)
+        }
+    } else {
+        let fallback_dir = dirs_fallback_attachments()?;
+        std::fs::create_dir_all(&fallback_dir)
+            .map_err(|e| format!("Failed to create fallback attachments directory: {}", e))?;
+        let file_path = fallback_dir.join(&clean_name);
+        let ret = file_path.to_string_lossy().replace('\\', "/");
+        (file_path, ret)
+    };
+
+    std::fs::write(&target_file, &bytes)
+        .map_err(|e| format!("Failed to write image file: {}", e))?;
+
+    Ok(return_path)
+}
+
+fn dirs_fallback_attachments() -> Result<PathBuf, String> {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        Ok(PathBuf::from(appdata).join("gemini_desktop").join("attachments"))
+    } else if let Ok(home) = std::env::var("USERPROFILE") {
+        Ok(PathBuf::from(home).join(".gemini").join("attachments"))
+    } else {
+        Ok(std::env::temp_dir().join("gemini_desktop_attachments"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,5 +800,33 @@ mod tests {
     fn test_get_default_workspace_dir() {
         let dir = get_default_workspace_dir().unwrap();
         assert!(!dir.is_empty());
+    }
+
+    #[test]
+    fn test_save_clipboard_image_internal() {
+        let temp_dir = std::env::temp_dir().join(format!("gemini_test_img_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // 1. Valid base64 with data URL prefix
+        let sample_bytes = b"fake-png-content";
+        let encoded = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(sample_bytes));
+
+        let res = save_clipboard_image_internal(Some(&temp_dir.to_string_lossy()), &encoded, Some("test_shot.png")).unwrap();
+        assert_eq!(res, ".gemini/attachments/test_shot.png");
+        assert!(temp_dir.join(".gemini").join("attachments").join("test_shot.png").is_file());
+
+        // 2. Empty data error
+        let empty_res = save_clipboard_image_internal(Some(&temp_dir.to_string_lossy()), "", None);
+        assert!(empty_res.is_err());
+
+        // 3. Fallback without workspace
+        let res_no_ws = save_clipboard_image_internal(None, &encoded, Some("fallback.png")).unwrap();
+        assert!(res_no_ws.ends_with("fallback.png"));
+
+        // 4. Invalid base64 payload returns error
+        let invalid_res = save_clipboard_image_internal(Some(&temp_dir.to_string_lossy()), "data:image/png;base64,!!!invalid-base64!!!", None);
+        assert!(invalid_res.is_err());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
