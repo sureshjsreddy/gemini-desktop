@@ -13,6 +13,14 @@ A modern, blazing-fast native desktop application for interacting with the **Gem
 
 ## ✨ Features
 
+- **🔗 Universal Code Location, Line Goto & Resource Link Navigation**
+  - **Interactive File Link Pills**: Click any code reference (e.g. `api/main.py:179`, `file.ts:42`, `PROJECT_ANALYSIS.md`) directly within the chat to immediately open it in your preferred editor.
+  - **Line & Column Goto**: Seamlessly parses `:line`, `:line:col`, `:line-line2`, and `#Lline`, launching VS Code (`code`), Cursor (`cursor`), or Windsurf (`windsurf`) via `-r -g` jumping directly to the targeted line without console flashing.
+  - **Fuzzy Workspace Search**: Automatically locates referenced files across subdirectories (e.g. `backend/api/main.py`) when relative paths omit parent folders.
+  - **Antigravity Brain Artifact Resolution**: Opens internal session reports and deliverables stored in `.gemini/antigravity/brain/...` without repository pollution.
+  - **DOMPurify Link Target Protection**: Protected `data-path` embedding guarantees clicks are never dropped due to HTML sanitizer URI filtering.
+  - **Interactive "Create & Open"**: Automatically offers to scaffold missing directories and files on demand when clicking references to uncreated files.
+
 - **⚡ Native Agent Client Protocol (ACP) & Resilient Engine Runtime**
   - Full bidirectional JSON-RPC streaming directly over the child CLI process `stdin`/`stdout`.
   - Resilient JSON-RPC ID parsing and `stopReason: "end_turn"` completion handling across Gemini CLI and Antigravity CLI (`agy`), eliminating hanging "working" states.

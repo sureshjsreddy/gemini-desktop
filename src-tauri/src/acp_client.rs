@@ -1003,7 +1003,11 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
             // 1b. Check if this is the completion response for a session/prompt request
             let target_session_opt = acp_session.take_prompt_session(id)
                 .or_else(|| {
-                    if val.pointer("/result/stopReason").is_some() || (val.get("error").is_some() && val.get("result").is_none()) {
+                    if val.pointer("/result/stopReason").is_some()
+                        || val.pointer("/result/content").is_some()
+                        || val.pointer("/result/sessionId").is_some()
+                        || (val.get("error").is_some() && val.get("result").is_none())
+                    {
                         acp_session.get_active_local_session()
                     } else {
                         None
@@ -1077,19 +1081,33 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     match update_type {
                         Some("tool_call") => {
                             let tool_call_id = val.pointer("/params/update/toolCallId")
+                                .or_else(|| val.pointer("/params/update/tool_call_id"))
+                                .or_else(|| val.pointer("/params/update/callId"))
                                 .or_else(|| val.pointer("/params/update/id"))
+                                .or_else(|| val.pointer("/params/toolCallId"))
+                                .or_else(|| val.pointer("/params/toolCall/toolCallId"))
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("tool");
                             let raw_title = val.pointer("/params/update/title")
+                                .or_else(|| val.pointer("/params/toolCall/title"))
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("");
                             let tool_name = val.pointer("/params/update/name")
                                 .or_else(|| val.pointer("/params/update/tool"))
+                                .or_else(|| val.pointer("/params/toolCall/name"))
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("tool");
-                            let status = val.pointer("/params/update/status").and_then(|s| s.as_str()).unwrap_or("in_progress");
+                            let raw_status = val.pointer("/params/update/status").and_then(|s| s.as_str()).unwrap_or("in_progress");
+                            let status = match raw_status {
+                                "success" | "done" | "finished" | "complete" | "completed" => "completed",
+                                "error" | "failed" => "failed",
+                                "running" | "in_progress" => "in_progress",
+                                other => other,
+                            };
                             let params = val.pointer("/params/update/parameters")
                                 .or_else(|| val.pointer("/params/update/input"))
+                                .or_else(|| val.pointer("/params/update/rawInput"))
+                                .or_else(|| val.pointer("/params/toolCall/rawInput"))
                                 .cloned();
                             let title = resolve_human_friendly_tool_title(tool_name, raw_title, params.as_ref());
                             let summary = generate_concise_tool_summary(tool_name, &title, status, None, None);
@@ -1120,28 +1138,44 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                                 "raw_output": None::<String>,
                             }));
                         }
-                        Some("tool_call_update") => {
+                        Some("tool_call_update") | Some("tool_update") | Some("tool_result") => {
                             let tool_call_id = val.pointer("/params/update/toolCallId")
+                                .or_else(|| val.pointer("/params/update/tool_call_id"))
+                                .or_else(|| val.pointer("/params/update/callId"))
                                 .or_else(|| val.pointer("/params/update/id"))
+                                .or_else(|| val.pointer("/params/toolCallId"))
+                                .or_else(|| val.pointer("/params/toolCall/toolCallId"))
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("tool");
                             let raw_title = val.pointer("/params/update/title")
+                                .or_else(|| val.pointer("/params/toolCall/title"))
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("");
                             let tool_name = val.pointer("/params/update/name")
                                 .or_else(|| val.pointer("/params/update/tool"))
+                                .or_else(|| val.pointer("/params/toolCall/name"))
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("tool");
-                            let status = val.pointer("/params/update/status").and_then(|s| s.as_str()).unwrap_or("completed");
+                            let raw_status = val.pointer("/params/update/status").and_then(|s| s.as_str()).unwrap_or("completed");
+                            let status = match raw_status {
+                                "success" | "done" | "finished" | "complete" | "completed" => "completed",
+                                "error" | "failed" => "failed",
+                                "running" | "in_progress" => "in_progress",
+                                other => other,
+                            };
                             let update_params = val.pointer("/params/update/parameters")
-                                .or_else(|| val.pointer("/params/update/input"));
+                                .or_else(|| val.pointer("/params/update/input"))
+                                .or_else(|| val.pointer("/params/update/rawInput"));
                             let title = resolve_human_friendly_tool_title(tool_name, raw_title, update_params);
                             let err_msg = val.pointer("/params/update/content/0/content/text")
                                 .or_else(|| val.pointer("/params/update/content/text"))
+                                .or_else(|| val.pointer("/params/update/error"))
                                 .and_then(|t| t.as_str())
                                 .map(|s| s.to_string());
                             let raw_out = val.pointer("/params/update/content")
                                 .or_else(|| val.pointer("/params/update/output"))
+                                .or_else(|| val.pointer("/params/update/rawOutput"))
+                                .or_else(|| val.pointer("/params/update/result"))
                                 .map(extract_acp_text)
                                 .filter(|s| !s.is_empty());
 
@@ -1227,7 +1261,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     // Tool execution updates must NEVER mark the turn as done.
                     let is_tool_update = matches!(
                         update_type,
-                        Some("tool_call") | Some("tool_call_update")
+                        Some("tool_call") | Some("tool_call_update") | Some("tool_update") | Some("tool_result")
                     );
 
                     let is_done = if is_tool_update {
@@ -1578,16 +1612,27 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                                     if let Some(dir) = cwd {
                                         command.current_dir(dir);
                                     }
+                                    #[cfg(target_os = "windows")]
+                                    {
+                                        use std::os::windows::process::CommandExt;
+                                        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+                                    }
 
-                                    let output = command.output();
-                                    let (stdout_str, stderr_str, exit_code) = match output {
-                                        Ok(out) => {
+                                    let output_res = timeout(
+                                        Duration::from_secs(60),
+                                        tokio::task::spawn_blocking(move || command.output()),
+                                    ).await;
+
+                                    let (stdout_str, stderr_str, exit_code) = match output_res {
+                                        Ok(Ok(Ok(out))) => {
                                             let out_str = String::from_utf8_lossy(&out.stdout).to_string();
                                             let err_str = String::from_utf8_lossy(&out.stderr).to_string();
                                             let code = out.status.code().unwrap_or(0);
                                             (out_str, err_str, code)
                                         }
-                                        Err(e) => (String::new(), e.to_string(), 1),
+                                        Ok(Ok(Err(e))) => (String::new(), e.to_string(), 1),
+                                        Ok(Err(join_err)) => (String::new(), format!("Task join error: {}", join_err), 1),
+                                        Err(_) => (String::new(), "Command execution timed out after 60 seconds".to_string(), 124),
                                     };
 
                                     let combined = if stderr_str.is_empty() {
@@ -1667,11 +1712,13 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
             }
 
             // Intermediate tool execution results (like { result: { output: ... } }) must NEVER terminate the turn stream!
-            // Only terminate turn streaming if an explicit valid stopReason is present in the result.
+            // Only terminate turn streaming if an explicit valid stopReason or prompt completion indicator (sessionId/content) is present in the result.
             let is_done = val.pointer("/result/stopReason")
                 .and_then(|s| s.as_str())
                 .map(|s| !s.is_empty() && s != "null")
-                .unwrap_or(false);
+                .unwrap_or(false)
+                || (val.pointer("/result/sessionId").is_some() && val.pointer("/result/output").is_none())
+                || (val.pointer("/result/content").is_some() && val.pointer("/result/output").is_none());
 
             if is_done {
                 let stop_reason = val.pointer("/result/stopReason").and_then(|s| s.as_str());

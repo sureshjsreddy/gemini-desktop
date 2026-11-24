@@ -3,7 +3,7 @@ type: product_standard
 title: Workspace Explorer Tree Navigation, Context Attachment & File Filtering
 domain: product
 status: approved
-version: 1.5.0
+version: 1.6.0
 authority:
   level: official
   confidence: high
@@ -33,6 +33,10 @@ do:
   - "Provide instant single-click inline attachment (`Paperclip` icon) and `@mention` insertion (`@` icon) on hover for any file or directory row."
   - "Render distinct Visual Studio 2022 color badges and icons based on file type and extension."
   - "Support context menu and double-click actions: open in system default app via native Rust command `open_workspace_file` (with automatic Windows Notepad fallback for unassociated file types, bypassing frontend plugin-opener ACL restrictions), reveal in Windows Explorer, and copy relative path."
+  - "Support universal code location & artifact opening via `normalize_open_target`: parse trailing colon line and column numbers (`:179`, `:179:15`, `:179-185`, `#L179`), preserve Windows drive colons (`C:\...`), resolve Antigravity brain artifacts (`.gemini/antigravity/brain/...`), and perform fuzzy subdirectory matching for relative paths."
+  - "Provide multi-tier editor launching in `open_workspace_file`: when line numbers are present, launch code editor CLIs (`code`, `cursor`, `windsurf`) via `cmd.exe /c <editor> -r -g \"<path>:<line>\"` with `CREATE_NO_WINDOW`, falling back to OS default application (`open::that_detached` / `start`) and Notepad."
+  - "Protect file links and pills against DOMPurify URI stripping by embedding `data-path=\"${cleanHref}\"` on all `<a>` tags and whitelisting `file:`, relative paths, and colons in DOMPurify `ALLOWED_URI_REGEXP`."
+  - "Prompt users with an interactive 'Create & Open' dialog when a referenced file does not exist on disk, creating missing parent folders and files on demand upon confirmation."
   - "Provide keyboard shortcuts: `Ctrl+Alt+L` to toggle Workspace Explorer and `Ctrl+;` to focus the file search bar."
 
 dont:

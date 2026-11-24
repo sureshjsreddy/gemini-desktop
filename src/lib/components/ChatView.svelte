@@ -27,6 +27,8 @@
   import TerminalDrawer from "$lib/components/TerminalDrawer.svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { renderMarkdown } from "$lib/markdown";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { dialogManager } from "$lib/dialog.svelte";
   import { getModeConfig } from "$lib/utils/approvalModes";
   import {
     Download,
@@ -503,25 +505,106 @@
     composerRef?.setPrompt(promptText);
   }
 
-  function handleChatClick(e: MouseEvent) {
-    const target = (e.target as HTMLElement)?.closest(".copy-code-btn");
+  async function handleOpenResource(rawTarget: string) {
+    if (!rawTarget) return;
+    let target = rawTarget.trim();
+    // Strip leading 📄 or trailing ↗ in case textContent was used as fallback
+    target = target.replace(/^📄\s*/, "").replace(/\s*↗$/, "").trim();
     if (!target) return;
-    e.preventDefault();
-    const rawCode = target.getAttribute("data-code");
-    if (rawCode) {
+
+    // 1. Web links: http://, https://, mailto:
+    if (target.startsWith("http://") || target.startsWith("https://") || target.startsWith("mailto:")) {
       try {
-        const code = decodeURIComponent(rawCode);
-        navigator.clipboard.writeText(code).then(() => {
-          const orig = target.textContent;
-          target.textContent = "Copied!";
-          setTimeout(() => {
-            target.textContent = orig || "Copy";
-          }, 1500);
-        }).catch((err) => {
-          console.warn("Failed to copy code block:", err);
-        });
-      } catch (err) {
-        console.warn("Failed to decode code block:", err);
+        await openUrl(target);
+      } catch {
+        // Fallback to backend open_workspace_file
+        try {
+          await invoke("open_workspace_file", { path: target, workspacePath: workspace?.path });
+        } catch (err) {
+          console.error("Failed to open URL:", err);
+        }
+      }
+      return;
+    }
+
+    // 2. Local file / file:/// URI / relative path / Antigravity brain artifact
+    try {
+      await invoke("open_workspace_file", {
+        path: target,
+        workspacePath: workspace?.path,
+      });
+    } catch (err: any) {
+      console.warn("Cannot open file directly:", err);
+      const errMsg = err instanceof Error ? err.message : String(err);
+
+      // If the file does not exist on disk, offer to create and open it
+      if (errMsg.toLowerCase().includes("does not exist") || errMsg.toLowerCase().includes("not found")) {
+        const shouldCreate = await dialogManager.confirm(
+          `The referenced file was not found in your workspace or on disk:\n\n${target}\n\nWould you like to create this file and open it in your editor?`,
+          {
+            title: "File Not Found",
+            confirmText: "Create & Open",
+          }
+        );
+        if (shouldCreate) {
+          try {
+            await invoke("open_workspace_file", {
+              path: target,
+              workspacePath: workspace?.path,
+              createIfMissing: true,
+            });
+          } catch (createErr: any) {
+            const cMsg = createErr instanceof Error ? createErr.message : String(createErr);
+            await dialogManager.alert(
+              `Failed to create or open file:\n\n${cMsg}`,
+              "Error"
+            );
+          }
+        }
+        return;
+      }
+
+      await dialogManager.alert(
+        `Unable to open file:\n\n${target}\n\n${errMsg}`,
+        "Cannot Open File"
+      );
+    }
+  }
+
+  function handleChatClick(e: MouseEvent) {
+    const copyTarget = (e.target as HTMLElement)?.closest(".copy-code-btn");
+    if (copyTarget) {
+      e.preventDefault();
+      const rawCode = copyTarget.getAttribute("data-code");
+      if (rawCode) {
+        try {
+          const code = decodeURIComponent(rawCode);
+          navigator.clipboard.writeText(code).then(() => {
+            const orig = copyTarget.textContent;
+            copyTarget.textContent = "Copied!";
+            setTimeout(() => {
+              copyTarget.textContent = orig || "Copy";
+            }, 1500);
+          }).catch((err) => {
+            console.warn("Failed to copy code block:", err);
+          });
+        } catch (err) {
+          console.warn("Failed to decode code block:", err);
+        }
+      }
+      return;
+    }
+
+    // Intercept markdown link clicks (web URLs, file://, relative files)
+    const linkTarget = (e.target as HTMLElement)?.closest("a");
+    if (linkTarget) {
+      const rawTarget = linkTarget.getAttribute("data-path")
+        || linkTarget.getAttribute("href")
+        || linkTarget.textContent?.trim();
+      if (rawTarget) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleOpenResource(rawTarget);
       }
     }
   }

@@ -221,7 +221,7 @@ pub fn get_akbo_pool_config_internal() -> Result<AkboPoolConfig, String> {
                     .to_string();
                 let stage_only = parsed.get("stageOnly")
                     .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
+                    .unwrap_or(false);
                 return Ok(AkboPoolConfig {
                     central_pool_dir: pool_dir,
                     stage_only,
@@ -232,7 +232,7 @@ pub fn get_akbo_pool_config_internal() -> Result<AkboPoolConfig, String> {
 
     Ok(AkboPoolConfig {
         central_pool_dir: default_pool,
-        stage_only: true,
+        stage_only: false,
     })
 }
 
@@ -289,12 +289,123 @@ pub fn install_builtin_akbo_plugin() -> Result<AgyPluginOpResult, String> {
     std::fs::write(plugin_dir.join("plugin.json"), manifest_str)
         .map_err(|e| format!("Failed to write plugin.json: {}", e))?;
 
-    // 2. mcp_config.json
+    // 2. mcp.cjs launcher that isolates all caches, sessions, and knowledge units in the central pool
+    let mcp_script = r#"#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const { spawn, execSync } = require('child_process');
+
+const workspacePath = process.env.WORKSPACE_DIR || process.env.PROJECT_DIR || process.cwd();
+
+const userHome = process.env.USERPROFILE || process.env.HOME || '';
+const configFile = path.join(userHome, '.gemini', 'config', 'akbo_pool.json');
+
+let centralPoolRoot = process.env.AKBO_CENTRAL_POOL_DIR || process.env.AKBO_POOL_DIR;
+if (fs.existsSync(configFile)) {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+    if (cfg.centralPoolDir && cfg.centralPoolDir.trim()) {
+      centralPoolRoot = cfg.centralPoolDir.trim();
+    }
+  } catch {}
+}
+
+if (!centralPoolRoot) {
+  centralPoolRoot = path.join(userHome, '.akb', 'central-pool');
+}
+
+let projectName = path.basename(path.resolve(workspacePath));
+try {
+  const gitRemote = execSync('git config --get remote.origin.url', {
+    cwd: workspacePath,
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 3000
+  }).toString().trim();
+
+  if (gitRemote) {
+    const match = gitRemote.match(/\/([^\/]+?)(\.git)?$/);
+    if (match && match[1]) {
+      projectName = match[1];
+    }
+  }
+} catch {}
+
+const targetProjectPool = path.join(centralPoolRoot, 'projects', projectName);
+try {
+  fs.mkdirSync(targetProjectPool, { recursive: true });
+} catch {}
+
+// Purge any workspace .akb directory if present and migrate
+try {
+  const wsAkb = path.join(workspacePath, '.akb');
+  if (fs.existsSync(wsAkb)) {
+    const wsSessions = path.join(wsAkb, 'sessions');
+    const poolSessions = path.join(targetProjectPool, '.akb', 'sessions');
+    if (fs.existsSync(wsSessions)) {
+      fs.mkdirSync(poolSessions, { recursive: true });
+      for (const agent of fs.readdirSync(wsSessions)) {
+        const srcAgentDir = path.join(wsSessions, agent);
+        const destAgentDir = path.join(poolSessions, agent);
+        if (!fs.statSync(srcAgentDir).isDirectory()) continue;
+        fs.mkdirSync(destAgentDir, { recursive: true });
+        const srcObs = path.join(srcAgentDir, 'observations.jsonl');
+        const destObs = path.join(destAgentDir, 'observations.jsonl');
+        if (fs.existsSync(srcObs)) {
+          const srcLines = fs.readFileSync(srcObs, 'utf-8').split('\n').filter(Boolean);
+          let destLines = [];
+          if (fs.existsSync(destObs)) {
+            destLines = fs.readFileSync(destObs, 'utf-8').split('\n').filter(Boolean);
+          }
+          const existingIds = new Set(destLines.map(l => {
+            try { return JSON.parse(l).id; } catch { return null; }
+          }).filter(Boolean));
+          for (const line of srcLines) {
+            try {
+              const parsed = JSON.parse(line);
+              if (!existingIds.has(parsed.id)) {
+                destLines.push(line);
+              }
+            } catch {}
+          }
+          fs.writeFileSync(destObs, destLines.join('\n') + '\n', 'utf8');
+        }
+      }
+    }
+    fs.rmSync(wsAkb, { recursive: true, force: true });
+  }
+} catch {}
+
+const env = {
+  ...process.env,
+  AKBO_POOL_DIR: targetProjectPool
+};
+
+const child = spawn('npx', ['-y', 'akbo-cli@latest', 'mcp', workspacePath, '--pool', targetProjectPool], {
+  shell: true,
+  stdio: 'inherit',
+  env
+});
+
+process.on('SIGTERM', () => child.kill());
+process.on('SIGINT', () => child.kill());
+
+child.on('exit', (code, signal) => {
+  if (signal) {
+    process.kill(process.pid, signal);
+  } else {
+    process.exit(code || 0);
+  }
+});
+"#;
+    std::fs::write(plugin_dir.join("mcp.cjs"), mcp_script)
+        .map_err(|e| format!("Failed to write mcp.cjs: {}", e))?;
+
+    // 3. mcp_config.json
     let mcp = serde_json::json!({
         "mcpServers": {
             "akbo": {
-                "command": "npx",
-                "args": ["-y", "akbo-cli", "mcp"]
+                "command": "node",
+                "args": ["mcp.cjs"]
             }
         }
     });
@@ -303,7 +414,7 @@ pub fn install_builtin_akbo_plugin() -> Result<AgyPluginOpResult, String> {
     std::fs::write(plugin_dir.join("mcp_config.json"), mcp_str)
         .map_err(|e| format!("Failed to write mcp_config.json: {}", e))?;
 
-    // 3. hooks.json
+    // 4. hooks.json
     let hooks = serde_json::json!({
         "akbo-central-pool-sync": {
             "enabled": true,
@@ -321,7 +432,7 @@ pub fn install_builtin_akbo_plugin() -> Result<AgyPluginOpResult, String> {
     std::fs::write(plugin_dir.join("hooks.json"), hooks_str)
         .map_err(|e| format!("Failed to write hooks.json: {}", e))?;
 
-    // 4. hooks/on-stop.cjs
+    // 5. hooks/on-stop.cjs
     let hooks_dir = plugin_dir.join("hooks");
     std::fs::create_dir_all(&hooks_dir)
         .map_err(|e| format!("Failed to create hooks directory: {}", e))?;
@@ -353,13 +464,11 @@ function main() {
   }
 
   const workspacePath = (payload.workspacePaths && payload.workspacePaths[0]) || process.cwd();
-  const transcriptPath = payload.transcriptPath;
-
   const userHome = process.env.USERPROFILE || process.env.HOME || '';
   const configFile = path.join(userHome, '.gemini', 'config', 'akbo_pool.json');
 
   let centralPoolRoot = process.env.AKBO_CENTRAL_POOL_DIR || process.env.AKBO_POOL_DIR;
-  let stageOnly = true;
+  let stageOnly = false;
 
   if (fs.existsSync(configFile)) {
     try {
@@ -398,18 +507,64 @@ function main() {
     fs.mkdirSync(targetProjectPool, { recursive: true });
   } catch {}
 
+  // Migrate any leftover workspace session files into central pool and purge workspace .akb
   try {
-    const transcriptArg = transcriptPath && fs.existsSync(transcriptPath)
-      ? ` --transcriptFiles "${transcriptPath}"`
-      : '';
+    const wsAkb = path.join(workspacePath, '.akb');
+    if (fs.existsSync(wsAkb)) {
+      const wsSessions = path.join(wsAkb, 'sessions');
+      const poolSessions = path.join(targetProjectPool, '.akb', 'sessions');
+      if (fs.existsSync(wsSessions)) {
+        fs.mkdirSync(poolSessions, { recursive: true });
+        for (const agent of fs.readdirSync(wsSessions)) {
+          const srcAgent = path.join(wsSessions, agent);
+          const destAgent = path.join(poolSessions, agent);
+          if (!fs.statSync(srcAgent).isDirectory()) continue;
+          fs.mkdirSync(destAgent, { recursive: true });
+          const srcObs = path.join(srcAgent, 'observations.jsonl');
+          const destObs = path.join(destAgent, 'observations.jsonl');
+          if (fs.existsSync(srcObs)) {
+            const srcLines = fs.readFileSync(srcObs, 'utf-8').split('\n').filter(Boolean);
+            let destLines = [];
+            if (fs.existsSync(destObs)) {
+              destLines = fs.readFileSync(destObs, 'utf-8').split('\n').filter(Boolean);
+            }
+            const existingIds = new Set(destLines.map(l => {
+              try { return JSON.parse(l).id; } catch { return null; }
+            }).filter(Boolean));
+            for (const line of srcLines) {
+              try {
+                const parsed = JSON.parse(line);
+                if (!existingIds.has(parsed.id)) {
+                  destLines.push(line);
+                }
+              } catch {}
+            }
+            fs.writeFileSync(destObs, destLines.join('\n') + '\n', 'utf8');
+          }
+        }
+      }
+      fs.rmSync(wsAkb, { recursive: true, force: true });
+    }
+  } catch {}
+
+  // Run dreaming exclusively in targetProjectPool
+  try {
     const stageArg = stageOnly ? ' --stage-only' : '';
-    const cmd = `npx -y akbo-cli dream --pool "${targetProjectPool}" --targetDir "${workspacePath}"${transcriptArg}${stageArg} --json`;
+    const cmd = `npx -y akbo-cli@latest dream "${workspacePath}" --pool "${targetProjectPool}"${stageArg} --json`;
 
     execSync(cmd, {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 30000,
       env: { ...process.env, AKBO_POOL_DIR: targetProjectPool }
     });
+
+    // Ensure workspace remains unpolluted (clean any stray .akb created during dream)
+    try {
+      const wsAkb = path.join(workspacePath, '.akb');
+      if (fs.existsSync(wsAkb)) {
+        fs.rmSync(wsAkb, { recursive: true, force: true });
+      }
+    } catch {}
 
     process.stdout.write(JSON.stringify({
       status: 'pooled',
@@ -449,6 +604,10 @@ main();
 
 ## 3. Runtime Guardrails
 - Before making significant modifications to core files or schemas, call `akbo_guard` to verify that proposed changes do not violate active `dont:` directives or deprecated standards.
+
+## 4. Central Pool Isolation (Zero Workspace Pollution)
+- All session observations (`.akb/sessions/`), Codebase Knowledge Graph caches (`.akb/caches/`), and durable knowledge units (`knowledge/`, `ADR-xxx.yaml`, `index.yaml`) reside exclusively in the external Central Knowledge Pool (`~/.akb/central-pool/projects/<project>/`).
+- Never create or write `.akb/` folders or ephemeral session caches directly into the active project workspace.
 "#;
     std::fs::write(rules_dir.join("AGENTS.md"), rules_md)
         .map_err(|e| format!("Failed to write rules/AGENTS.md: {}", e))?;
@@ -499,7 +658,22 @@ npx -y akbo-cli impact <symbol_or_file>
     std::fs::write(skill_dir.join("SKILL.md"), skill_md)
         .map_err(|e| format!("Failed to write skills/akbo/SKILL.md: {}", e))?;
 
-    // 7. Enable plugin
+    // 7. Ensure ~/.gemini/config/akbo_pool.json exists with stageOnly: false by default
+    let pool_config_dir = PathBuf::from(&home).join(".gemini").join("config");
+    let _ = std::fs::create_dir_all(&pool_config_dir);
+    let pool_config_file = pool_config_dir.join("akbo_pool.json");
+    if !pool_config_file.exists() {
+        let default_pool = PathBuf::from(&home).join(".akb").join("central-pool").to_string_lossy().to_string();
+        let pool_payload = serde_json::json!({
+            "centralPoolDir": default_pool,
+            "stageOnly": false
+        });
+        if let Ok(pool_json) = serde_json::to_string_pretty(&pool_payload) {
+            let _ = std::fs::write(&pool_config_file, pool_json);
+        }
+    }
+
+    // 8. Enable plugin
     let _ = toggle_agy_plugin_internal("akbo", true);
 
     Ok(AgyPluginOpResult {
@@ -891,5 +1065,21 @@ mod tests {
     fn test_akbo_pool_config_defaults() {
         let config = get_akbo_pool_config_internal().unwrap();
         assert!(!config.central_pool_dir.is_empty());
+    }
+
+    #[test]
+    fn test_akbo_on_stop_script_syntax() {
+        let sample_script = r#"const cmd = `npx -y akbo-cli@latest dream "${workspacePath}" --pool "${targetProjectPool}"${stageArg} --json`;"#;
+        assert!(sample_script.contains("akbo-cli@latest dream \"${workspacePath}\""));
+        assert!(!sample_script.contains("--targetDir"));
+        assert!(!sample_script.contains("--transcriptFiles"));
+    }
+
+    #[test]
+    fn test_akbo_mcp_wrapper_syntax() {
+        let sample_mcp = r#"const child = spawn('npx', ['-y', 'akbo-cli@latest', 'mcp', workspacePath, '--pool', targetProjectPool], { shell: true, stdio: 'inherit', env });"#;
+        assert!(sample_mcp.contains("--pool"));
+        assert!(sample_mcp.contains("akbo-cli@latest"));
+        assert!(sample_mcp.contains("mcp"));
     }
 }

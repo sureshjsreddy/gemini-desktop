@@ -382,6 +382,7 @@
       await invoke("open_workspace_file", {
         path: full,
         withApp: forceNotepad ? "notepad" : null,
+        workspacePath: workspace?.path,
       });
     } catch (err) {
       console.error("Failed to open file:", err);

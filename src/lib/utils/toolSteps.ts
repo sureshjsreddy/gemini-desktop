@@ -112,6 +112,8 @@ export function parseToolSteps(msg: Message): ToolExecutionStep[] {
       if (Array.isArray(parsed) && parsed.length > 0) {
         return parsed.map((s) => ({
           ...s,
+          // Historical saved messages represent completed turns: normalize dangling states
+          status: s.status === "in_progress" || s.status === "pending" ? ("completed" as const) : s.status,
           title: resolveHumanFriendlyTitle(s),
         }));
       }

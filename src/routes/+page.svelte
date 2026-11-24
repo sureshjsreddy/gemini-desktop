@@ -334,7 +334,11 @@
             name.includes("view") ||
             name.includes("list") ||
             name.includes("glob") ||
-            name.includes("find");
+            name.includes("find") ||
+            name.includes("inspect") ||
+            name.includes("diff") ||
+            name.includes("cat") ||
+            name.includes("show");
 
           if (isSafe) {
             try {
@@ -388,9 +392,18 @@
         }
 
         const list = streamStates[sessionId].toolCalls!;
-        const existingIdx = list.findIndex(
-          (t) => t.id === payload.tool_call_id || (payload.tool_call_id !== "tool" && t.id === payload.tool_call_id)
-        );
+        let existingIdx = -1;
+        if (payload.tool_call_id && payload.tool_call_id !== "tool") {
+          existingIdx = list.findIndex((t) => t.id === payload.tool_call_id);
+        }
+        // Fallback: If tool_call_id is generic or not found by exact ID,
+        // and this update is an outcome (completed or failed), match the most recent in-progress step!
+        if (existingIdx < 0 && (payload.status === "completed" || payload.status === "failed")) {
+          existingIdx = list.findLastIndex((t) => t.status === "in_progress" || t.status === "pending");
+        }
+        if (existingIdx < 0 && payload.tool_call_id === "tool") {
+          existingIdx = list.findIndex((t) => t.id === "tool");
+        }
 
         const now = Date.now();
         if (existingIdx >= 0) {
@@ -1052,7 +1065,19 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
     if (!stream) return;
 
     let finalText = stream.streamingText.trim();
-    const toolCalls = stream.toolCalls && stream.toolCalls.length > 0 ? stream.toolCalls : undefined;
+    // Auto-finalize any dangling tool calls: turns that have finished must never persist in_progress/pending states
+    const toolCalls = stream.toolCalls && stream.toolCalls.length > 0
+      ? stream.toolCalls.map((step) => {
+          if (step.status === "in_progress" || step.status === "pending") {
+            return {
+              ...step,
+              status: "completed" as const,
+              summary: step.summary || `✅ Completed: ${step.title || step.tool_name}`,
+            };
+          }
+          return step;
+        })
+      : undefined;
     stream.isStreaming = false;
     delete streamStates[sessionId];
     delete pendingUserMessages[sessionId];

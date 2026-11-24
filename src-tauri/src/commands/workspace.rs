@@ -1,7 +1,7 @@
 use crate::commands::AppState;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::State;
@@ -372,47 +372,443 @@ pub fn check_directory_exists(path: String) -> Result<bool, String> {
     Ok(p.exists() && p.is_dir())
 }
 
-#[tauri::command]
-pub fn open_workspace_file(path: String, with_app: Option<String>) -> Result<(), String> {
-    let p = PathBuf::from(&path);
-    if !p.exists() {
-        return Err(format!("File does not exist: {}", path));
+/// Percent-decodes a URI string (e.g. `%20` -> ` `).
+fn percent_decode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '%' {
+            let h1 = chars.next();
+            let h2 = chars.next();
+            if let (Some(c1), Some(c2)) = (h1, h2) {
+                if let Ok(byte) = u8::from_str_radix(&format!("{}{}", c1, c2), 16) {
+                    result.push(byte as char);
+                    continue;
+                }
+                result.push('%');
+                result.push(c1);
+                result.push(c2);
+                continue;
+            }
+        }
+        result.push(ch);
+    }
+    result
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NormalizedTarget {
+    pub path: PathBuf,
+    pub is_url: bool,
+    pub line: Option<usize>,
+    pub col: Option<usize>,
+}
+
+/// Extracts base target path, line number, and column number from strings like:
+/// - `api/main.py:179` -> ("api/main.py", Some(179), None)
+/// - `api/main.py:179:15` -> ("api/main.py", Some(179), Some(15))
+/// - `api/main.py:179-185` -> ("api/main.py", Some(179), None)
+/// - `api/main.py#L179` -> ("api/main.py", Some(179), None)
+/// - `api/main.py#L179-L185` -> ("api/main.py", Some(179), None)
+/// - `api/main.py(179)` -> ("api/main.py", Some(179), None)
+/// - `C:\path\api\main.py:179` -> ("C:\path\api\main.py", Some(179), None)
+pub fn parse_target_line_col(input: &str) -> (String, Option<usize>, Option<usize>) {
+    let mut s = input.trim();
+    let mut parsed_line = None;
+    let mut parsed_col = None;
+
+    // 1. Fragment #L10-L20, #L15, #line-15
+    if let Some(pos) = s.find('#') {
+        let frag = &s[pos + 1..];
+        s = &s[..pos];
+        let digits: String = frag.chars().skip_while(|c| !c.is_ascii_digit()).take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(l) = digits.parse::<usize>() {
+            parsed_line = Some(l);
+        }
     }
 
+    // 2. Query parameters (?...)
+    if let Some(pos) = s.find('?') {
+        s = &s[..pos];
+    }
+
+    // 3. Parentheses like (179) or (179:10) at end of string
+    if s.ends_with(')') {
+        if let Some(open_pos) = s.rfind('(') {
+            let inside = s[open_pos + 1..s.len() - 1].trim();
+            let parts: Vec<&str> = inside.split(':').collect();
+            if parts.len() == 1 {
+                if let Ok(l) = parts[0].trim().parse::<usize>() {
+                    parsed_line = Some(l);
+                    s = s[..open_pos].trim_end();
+                } else {
+                    let trimmed_before = s[..open_pos].trim_end();
+                    if trimmed_before.contains('.') {
+                        s = trimmed_before;
+                    }
+                }
+            } else if parts.len() == 2 {
+                if let (Ok(l), Ok(c)) = (parts[0].trim().parse::<usize>(), parts[1].trim().parse::<usize>()) {
+                    parsed_line = Some(l);
+                    parsed_col = Some(c);
+                    s = s[..open_pos].trim_end();
+                }
+            } else {
+                let trimmed_before = s[..open_pos].trim_end();
+                if trimmed_before.contains('.') {
+                    s = trimmed_before;
+                }
+            }
+        }
+    }
+
+    // 4. Colon suffixes: :179, :179:15, :179-185
+    if parsed_line.is_none() {
+        let chars: Vec<char> = s.chars().collect();
+        if let Some(last_colon) = s.rfind(':') {
+            // Guard against Windows drive colon (e.g. C:\... at index 1, or /C:\... at index 2)
+            let is_drive = (last_colon == 1 && chars.first().map_or(false, |c| c.is_ascii_alphabetic()))
+                || (last_colon == 2 && chars.first() == Some(&'/') && chars.get(1).map_or(false, |c| c.is_ascii_alphabetic()));
+
+            if !is_drive {
+                let tail = &s[last_colon + 1..];
+                if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) {
+                    let num = tail.parse::<usize>().unwrap();
+                    let prefix = &s[..last_colon];
+                    // Check if prefix also has a second line/col colon
+                    if let Some(sec_colon) = prefix.rfind(':') {
+                        let is_sec_drive = (sec_colon == 1 && chars.first().map_or(false, |c| c.is_ascii_alphabetic()))
+                            || (sec_colon == 2 && chars.first() == Some(&'/') && chars.get(1).map_or(false, |c| c.is_ascii_alphabetic()));
+                        if !is_sec_drive {
+                            let mid = &prefix[sec_colon + 1..];
+                            if !mid.is_empty() && mid.chars().all(|c| c.is_ascii_digit()) {
+                                if let Ok(line_num) = mid.parse::<usize>() {
+                                    parsed_line = Some(line_num);
+                                    parsed_col = Some(num);
+                                    s = &prefix[..sec_colon];
+                                }
+                            }
+                        }
+                    }
+                    if parsed_line.is_none() {
+                        parsed_line = Some(num);
+                        s = prefix;
+                    }
+                } else if tail.contains('-') {
+                    // Line range e.g. 179-185
+                    let parts: Vec<&str> = tail.split('-').collect();
+                    if parts.len() == 2 && parts[0].chars().all(|c| c.is_ascii_digit()) {
+                        if let Ok(l) = parts[0].parse::<usize>() {
+                            parsed_line = Some(l);
+                            s = &s[..last_colon];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (s.trim().to_string(), parsed_line, parsed_col)
+}
+
+/// Recursively searches for a file in the workspace by matching its relative path or filename.
+pub fn find_matching_file_in_workspace(ws: &Path, rel_path: &Path) -> Option<PathBuf> {
+    let target_name = rel_path.file_name()?.to_str()?;
+    let rel_normalized = rel_path.to_string_lossy().replace('\\', "/").to_lowercase();
+    let mut best_match: Option<PathBuf> = None;
+    let mut stack = vec![(ws.to_path_buf(), 0)];
+    let ignored = [".git", "node_modules", "target", "build", "dist", ".svelte-kit", "__pycache__", ".venv", "venv"];
+
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > 6 { continue; }
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let name = match entry.file_name().into_string() {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if ignored.iter().any(|&ign| ign.eq_ignore_ascii_case(&name)) {
+                continue;
+            }
+            if path.is_dir() {
+                stack.push((path, depth + 1));
+            } else if path.is_file() {
+                let path_norm = path.to_string_lossy().replace('\\', "/").to_lowercase();
+                // Exact relative suffix match: e.g. path ends with "/api/main.py"
+                if path_norm.ends_with(&format!("/{}", rel_normalized)) || path_norm.ends_with(&rel_normalized) {
+                    return Some(path);
+                }
+                // If filename matches, keep as fallback
+                if name.eq_ignore_ascii_case(target_name) && best_match.is_none() {
+                    best_match = Some(path);
+                }
+            }
+        }
+    }
+    best_match
+}
+
+/// Normalizes an incoming resource target string (which may be a `file:///` URI,
+/// an HTTP/HTTPS web link, a relative workspace path, or an Antigravity Brain artifact).
+pub fn normalize_open_target(target: &str, workspace_dir: Option<&Path>) -> Result<NormalizedTarget, String> {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return Err("Target path or URL is empty".to_string());
+    }
+
+    // 1. Web URLs: http, https, mailto
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") || trimmed.starts_with("mailto:") {
+        return Ok(NormalizedTarget {
+            path: PathBuf::from(trimmed),
+            is_url: true,
+            line: None,
+            col: None,
+        });
+    }
+
+    // 2. Strip file:/// or file:// scheme
+    let cleaned = if trimmed.starts_with("file:///") {
+        &trimmed["file:///".len()..]
+    } else if trimmed.starts_with("file://") {
+        &trimmed["file://".len()..]
+    } else {
+        trimmed
+    };
+
+    // 3. Extract line and column numbers before decoding percent or resolving
+    let (path_part, line, col) = parse_target_line_col(cleaned);
+
+    // 4. URL percent-decode (e.g. %20 -> space)
+    let mut decoded = percent_decode(&path_part);
+
+    // 5. On Windows, if path starts with `/C:` or `/c:`, strip the leading slash
+    #[cfg(target_os = "windows")]
+    if decoded.starts_with('/') && decoded.len() > 2 && decoded.chars().nth(2) == Some(':') {
+        decoded = decoded[1..].to_string();
+    }
+
+    let path = PathBuf::from(&decoded);
+
+    // 6. If path directly exists on disk (e.g. absolute path or direct artifact file)
+    if path.exists() {
+        return Ok(NormalizedTarget {
+            path,
+            is_url: false,
+            line,
+            col,
+        });
+    }
+
+    // 7. Expand ~/... or .gemini/... relative to USERPROFILE / HOME
+    if decoded.starts_with('~') || decoded.starts_with(".gemini") {
+        if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+            let home_path = PathBuf::from(home);
+            let sub = if decoded.starts_with("~/") || decoded.starts_with("~\\") {
+                &decoded[2..]
+            } else {
+                &decoded
+            };
+            let candidate = home_path.join(sub);
+            if candidate.exists() {
+                return Ok(NormalizedTarget {
+                    path: candidate,
+                    is_url: false,
+                    line,
+                    col,
+                });
+            }
+        }
+    }
+
+    // 8. If relative, try resolving against workspace directory
+    if path.is_relative() {
+        if let Some(ws) = workspace_dir {
+            let candidate = ws.join(&path);
+            if candidate.exists() {
+                return Ok(NormalizedTarget {
+                    path: candidate,
+                    is_url: false,
+                    line,
+                    col,
+                });
+            }
+
+            // 8b. Fallback: Search workspace for matching relative path or filename
+            if let Some(matched) = find_matching_file_in_workspace(ws, &path) {
+                return Ok(NormalizedTarget {
+                    path: matched,
+                    is_url: false,
+                    line,
+                    col,
+                });
+            }
+
+            return Ok(NormalizedTarget {
+                path: candidate,
+                is_url: false,
+                line,
+                col,
+            });
+        }
+    }
+
+    Ok(NormalizedTarget {
+        path,
+        is_url: false,
+        line,
+        col,
+    })
+}
+
+/// Tries to launch an external editor (code, cursor, windsurf) with `--goto <path:line:col>`.
+fn try_launch_editor_goto(editor: &str, goto_arg: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let mut cmd = std::process::Command::new("cmd.exe");
+        cmd.args(["/c", editor, "-r", "-g", goto_arg]);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        if let Ok(mut child) = cmd.spawn() {
+            if let Ok(status) = child.wait() {
+                if status.success() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(mut child) = std::process::Command::new(editor)
+            .arg("-r")
+            .arg("-g")
+            .arg(goto_arg)
+            .spawn()
+        {
+            if let Ok(status) = child.wait() {
+                if status.success() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+#[tauri::command]
+pub fn open_workspace_file(
+    path: String,
+    with_app: Option<String>,
+    workspace_path: Option<String>,
+    create_if_missing: Option<bool>,
+) -> Result<(), String> {
+    let ws_fallback = if workspace_path.is_none() {
+        get_default_workspace_dir().ok().map(PathBuf::from)
+    } else {
+        None
+    };
+    let effective_ws = workspace_path.as_deref().map(Path::new).or(ws_fallback.as_deref());
+    let target = normalize_open_target(&path, effective_ws)?;
+
+    // 1. Web URL handling: open with system browser
+    if target.is_url {
+        let url_str = target.path.to_string_lossy().to_string();
+        return open::that_detached(&url_str)
+            .map_err(|e| format!("Failed to open URL {}: {}", url_str, e));
+    }
+
+    // 2. Local File / Directory handling
+    if !target.path.exists() {
+        if create_if_missing == Some(true) {
+            if let Some(parent) = target.path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(e) = std::fs::write(&target.path, "") {
+                return Err(format!("Failed to create missing file: {}", e));
+            }
+        } else {
+            return Err(format!("File does not exist: {}", target.path.display()));
+        }
+    }
+
+    let path_str = target.path.to_string_lossy().to_string();
+
+    // Strategy A: Explicit with_app (e.g. notepad)
     if let Some(ref app) = with_app {
         if app.eq_ignore_ascii_case("notepad") {
             #[cfg(target_os = "windows")]
             {
                 std::process::Command::new("notepad.exe")
-                    .arg(&path)
+                    .arg(&path_str)
                     .spawn()
                     .map(|_| ())
                     .map_err(|e| format!("Failed to launch Notepad: {}", e))?;
                 return Ok(());
             }
         }
-        return open::with_detached(&path, app).map_err(|e| format!("Failed to open with {}: {}", app, e));
+        return open::with_detached(&path_str, app).map_err(|e| format!("Failed to open with {}: {}", app, e));
     }
 
-    // Try system default application first
-    let res = open::that_detached(&path);
-    if res.is_err() {
-        // Fallback to Notepad on Windows if no default application is associated with this file type
-        #[cfg(target_os = "windows")]
-        {
-            return std::process::Command::new("notepad.exe")
-                .arg(&path)
-                .spawn()
-                .map(|_| ())
-                .map_err(|e| format!("Failed to open file with default app and Notepad: {}", e));
+    // Strategy B: If line number is present, try code / cursor / windsurf with -g goto line
+    if let Some(line) = target.line {
+        let goto_arg = if let Some(col) = target.col {
+            format!("{}:{}:{}", path_str, line, col)
+        } else {
+            format!("{}:{}", path_str, line)
+        };
+
+        if try_launch_editor_goto("code", &goto_arg) {
+            return Ok(());
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-            return res.map_err(|e| e.to_string());
+        if try_launch_editor_goto("cursor", &goto_arg) {
+            return Ok(());
+        }
+        if try_launch_editor_goto("windsurf", &goto_arg) {
+            return Ok(());
         }
     }
 
-    Ok(())
+    // Strategy C: Try system default application (file association)
+    let res = open::that_detached(&path_str);
+    if res.is_ok() {
+        return Ok(());
+    }
+
+    // On Windows: try cmd.exe /c start "" "<path_str>"
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let mut cmd = std::process::Command::new("cmd.exe");
+        cmd.args(["/c", "start", "", &path_str]);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        if let Ok(mut child) = cmd.spawn() {
+            if let Ok(status) = child.wait() {
+                if status.success() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // Strategy D: Fallback to Notepad on Windows
+    #[cfg(target_os = "windows")]
+    {
+        return std::process::Command::new("notepad.exe")
+            .arg(&path_str)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to open file with default app and Notepad: {}", e));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        return res.map_err(|e| e.to_string());
+    }
 }
 
 #[tauri::command]
@@ -686,9 +1082,122 @@ mod tests {
     #[test]
     fn test_open_workspace_file_not_found() {
         let non_existent = "C:/path/to/definitely/non_existent_file.xyz";
-        let res = open_workspace_file(non_existent.to_string(), None);
+        let res = open_workspace_file(non_existent.to_string(), None, None, None);
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("File does not exist"));
+    }
+
+    #[test]
+    fn test_normalize_open_target_web_urls() {
+        let target = normalize_open_target("https://github.com/google/gemini", None).unwrap();
+        assert!(target.is_url);
+        assert_eq!(target.path.to_str().unwrap(), "https://github.com/google/gemini");
+
+        let target_http = normalize_open_target("http://localhost:5173", None).unwrap();
+        assert!(target_http.is_url);
+        assert_eq!(target_http.path.to_str().unwrap(), "http://localhost:5173");
+    }
+
+    #[test]
+    fn test_normalize_open_target_file_uri_and_anchors() {
+        // file:/// with line range anchor #L10-L20 and percent encoding
+        let target = normalize_open_target("file:///C:/My%20Projects/doc.md#L10-L20", None).unwrap();
+        assert!(!target.is_url);
+        let path_str = target.path.to_str().unwrap().replace('\\', "/");
+        assert_eq!(path_str, "C:/My Projects/doc.md");
+        assert_eq!(target.line, Some(10));
+
+        // file:// prefix
+        let target2 = normalize_open_target("file://C:/notes.txt?v=1", None).unwrap();
+        let path2_str = target2.path.to_str().unwrap().replace('\\', "/");
+        assert_eq!(path2_str, "C:/notes.txt");
+    }
+
+    #[test]
+    fn test_normalize_open_target_workspace_relative() {
+        let temp_dir = std::env::temp_dir().join(format!("gemini_test_open_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let target_file = temp_dir.join("PROJECT_ANALYSIS.md");
+        std::fs::write(&target_file, "# Analysis").unwrap();
+
+        // Resolving relative "PROJECT_ANALYSIS.md" against workspace directory
+        let target = normalize_open_target("PROJECT_ANALYSIS.md", Some(&temp_dir)).unwrap();
+        assert!(!target.is_url);
+        assert_eq!(target.path, target_file);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_normalize_open_target_line_and_col_numbers() {
+        // api/main.py:179
+        let (p1, l1, c1) = parse_target_line_col("api/main.py:179");
+        assert_eq!(p1, "api/main.py");
+        assert_eq!(l1, Some(179));
+        assert_eq!(c1, None);
+
+        // api/main.py:179:15
+        let (p2, l2, c2) = parse_target_line_col("api/main.py:179:15");
+        assert_eq!(p2, "api/main.py");
+        assert_eq!(l2, Some(179));
+        assert_eq!(c2, Some(15));
+
+        // api/main.py:179-185
+        let (p3, l3, c3) = parse_target_line_col("api/main.py:179-185");
+        assert_eq!(p3, "api/main.py");
+        assert_eq!(l3, Some(179));
+        assert_eq!(c3, None);
+
+        // Windows drive letter with line number: C:\project\api\main.py:673
+        let (p4, l4, c4) = parse_target_line_col("C:\\project\\api\\main.py:673");
+        assert_eq!(p4, "C:\\project\\api\\main.py");
+        assert_eq!(l4, Some(673));
+        assert_eq!(c4, None);
+
+        // Parentheses: api/main.py(946)
+        let (p5, l5, _) = parse_target_line_col("api/main.py(946)");
+        assert_eq!(p5, "api/main.py");
+        assert_eq!(l5, Some(946));
+
+        // Function annotation: api/main.py (upload_file)
+        let (p6, _, _) = parse_target_line_col("api/main.py (upload_file)");
+        assert_eq!(p6, "api/main.py");
+    }
+
+    #[test]
+    fn test_fuzzy_workspace_search_and_line_stripping() {
+        let temp_dir = std::env::temp_dir().join(format!("gemini_test_fuzzy_{}", uuid::Uuid::new_v4()));
+        let sub_dir = temp_dir.join("backend").join("api");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        let target_file = sub_dir.join("main.py");
+        std::fs::write(&target_file, "print('hello')").unwrap();
+
+        // Target specifies relative "api/main.py:179" which lives in backend/api/main.py
+        let target = normalize_open_target("api/main.py:179", Some(&temp_dir)).unwrap();
+        assert_eq!(target.line, Some(179));
+        assert_eq!(target.path, target_file);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_open_workspace_file_create_if_missing() {
+        let temp_dir = std::env::temp_dir().join(format!("gemini_test_create_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let missing_path = temp_dir.join("new_dir").join("new_file.py");
+
+        assert!(!missing_path.exists());
+        let res = open_workspace_file(
+            missing_path.to_string_lossy().to_string(),
+            None,
+            Some(temp_dir.to_string_lossy().to_string()),
+            Some(true),
+        );
+        // It should have created the file on disk
+        assert!(missing_path.exists());
+        let _ = res; // Opening might succeed or fallback to notepad
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]

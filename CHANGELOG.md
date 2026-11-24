@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.0] - 2026-11-24
+
+### Added & Enhanced
+- **Universal Code Location, Line Goto & Resource Link Navigation (`workspace.rs`, `markdown.ts`, `ChatView.svelte`)**:
+  - Implemented `normalize_open_target`, `parse_target_line_col`, and `find_matching_file_in_workspace` in the Rust backend to universally handle code locations with line numbers, fragments, query strings, and parenthesized annotations (e.g. `api/main.py:179`, `file.py:179:15`, `file.py:179-185`, `#L179-L185`, `file.py(179)`, `file.py (upload_file)`).
+  - Preserved Windows drive colons (`C:\...` at index 1 or `/C:\...` at index 2) so drive letter colons are never confused with line numbers.
+  - Resolved Antigravity Brain session artifacts (`.gemini/antigravity/brain/...` and `<appDataDir>\brain\<conversation-id>\...`) and home paths (`~`).
+  - Implemented fuzzy workspace subdirectory search: relative targets such as `api/main.py` are automatically discovered inside workspace subdirectories (e.g. `backend/api/main.py` or `src/api/main.py`) when omitted from the root.
+  - Multi-tier editor launching:
+    - **Tier 1 (Direct Goto)**: When line numbers are present, executes `cmd.exe /c <editor> -r -g "<path>:<line>"` with `CREATE_NO_WINDOW (0x08000000)` across VS Code (`code`), Cursor (`cursor`), and Windsurf (`windsurf`) to open and jump directly to the target line without terminal window flashing.
+    - **Tier 2 (Default Application)**: Opens via Windows ShellExecute (`open::that_detached` / `cmd.exe /c start "" "<path>"`) using the registered default app.
+    - **Tier 3 (Notepad Fallback)**: Automatically falls back to Notepad for unassociated file extensions on Windows.
+  - **Interactive "Create & Open" Confirmation**: When a referenced file does not exist on disk, prompts the user via `dialogManager.confirm` to create missing parent folders and files on demand.
+
+- **DOMPurify Link Target Protection & Rich Markdown Pills (`markdown.ts`, `ChatView.svelte`)**:
+  - Fixed a critical silent click-drop bug where DOMPurify stripped the `href` attribute on non-web URIs (`file:///...` and paths with colons `api/main.py:179`), leaving empty `<a>` tags with null click targets.
+  - Embedded protected `data-path="${cleanHref}"` and `data-raw-path` attributes on all rendered markdown links, whitelisting them in DOMPurify's `ADD_ATTR`.
+  - Configured DOMPurify `ALLOWED_URI_REGEXP` to whitelist `file:`, relative paths, and colon-delimited line numbers.
+  - Upgraded the chat click interceptor in `ChatView.svelte` with multi-attribute fallbacks (`data-path` -> `data-raw-path` -> `href` -> `textContent`), guaranteeing clicks are captured reliably.
+  - Rendered interactive **File Link Pills** with `📄` file emoji and `↗` indicator, with hover tooltips (`"Open <file:line> in default app"`).
+  - Autolinked standalone file mentions like `📄 filename.ext:line` into interactive link pills.
+
+- **ACP Streaming Completion & Lingering Tool Call Supervisor (`acp_client.rs`, `toolSteps.ts`, `+page.svelte`)**:
+  - Resolved the persistent issue where the UI remained in a "working/streaming" spinning state even though the underlying CLI finished its execution.
+  - Implemented strict turn-end evaluation in `acp_client.rs`, ensuring `stopReason: "end_turn"` or prompt return immediately emits `is_done: true` and cleans up session tracking.
+  - Implemented proactive tool call step cleanup, transitioning any lingering `in_progress` steps to `completed` upon turn completion.
+
+- **Automated Verification & Standards**:
+  - Expanded backend unit test suite in `src-tauri/src/commands/workspace.rs` with line and column parsing, Windows drive line handling, fuzzy workspace matching, and create-if-missing tests (`test_normalize_open_target_line_and_col_numbers`, `test_fuzzy_workspace_search_and_line_stripping`, `test_open_workspace_file_create_if_missing`).
+  - Total automated unit tests increased to **122/122 passing**.
+  - Updated [ARCH-ACP-001.yaml](file:///c:/AIFiles/gemini-desktop/knowledge/architecture/ARCH-ACP-001.yaml) (v1.15.0) and [PROD-EXPLORER-001.yaml](file:///c:/AIFiles/gemini-desktop/knowledge/product/PROD-EXPLORER-001.yaml) (v1.6.0).
+
+---
+
 ## [0.9.0] - 2026-11-24
 
 ### Added & Enhanced

@@ -48,7 +48,7 @@
   // AKBO Central Knowledge Pool Configuration state
   let isPoolConfigOpen = $state(false);
   let akboPoolDir = $state("");
-  let akboStageOnly = $state(true);
+  let akboStageOnly = $state(false);
   let isSavingPoolConfig = $state(false);
 
   // Create plugin form state

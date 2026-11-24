@@ -118,7 +118,7 @@
           class="text-secondary-theme transition-transform duration-200 shrink-0 {isExpanded ? 'rotate-90 text-primary-theme' : ''}"
         />
 
-        {#if activeStep}
+        {#if activeStep && isStreaming}
           <Loader2 size={13} class="animate-spin text-accent-theme shrink-0" />
           <span class="font-medium text-primary-theme truncate">
             Executing tasks ({completedSteps.length}/{steps.length} completed)...
