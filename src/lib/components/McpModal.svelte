@@ -119,6 +119,18 @@
       },
     },
     {
+      id: "akbo",
+      label: "AKBO AI Knowledge & Dreaming",
+      description: "Codebase Knowledge Graph, runtime observations, and out-of-band memory consolidation",
+      icon: "🌙",
+      config: {
+        key: "akbo",
+        command: "npx",
+        args: ["-y", "akbo-cli", "mcp"],
+        env: {},
+      },
+    },
+    {
       id: "postgres",
       label: "PostgreSQL Database",
       description: "Inspect schema, run read-only queries on Postgres",

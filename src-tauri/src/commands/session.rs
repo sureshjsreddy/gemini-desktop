@@ -477,9 +477,14 @@ pub async fn send_prompt(
     let acp_session_id = match state.acp_session.get_acp_session_id(&session_id) {
         Some(id) => id,
         None => {
+            let active_mcp_servers = crate::commands::mcp::get_active_mcp_servers_for_session(
+                ws.as_ref().map(|w| w.path.as_str()),
+                &active_engine,
+            );
+
             let new_session_params = serde_json::json!({
                 "cwd": ws_path_str,
-                "mcpServers": [],
+                "mcpServers": active_mcp_servers,
             });
 
             let res = state.acp_session.send_request_with_response("session/new", new_session_params).await?;

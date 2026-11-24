@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.1] - 2026-11-24
+
+### Fixed & Enhanced
+- **Dynamic MCP Server & Plugin Tool Aggregation in ACP Mode (`mcp.rs`, `session.rs`)**:
+  - Fixed a critical Agent Client Protocol (ACP) session bootstrapping gap where `mcpServers: []` was hardcoded in `session/new`, causing Antigravity CLI (`agy acp`) to drop all configured session MCP servers.
+  - Implemented `get_active_mcp_servers_for_session` to dynamically aggregate and format active MCP servers across enabled Antigravity plugins, global configuration, and workspace configuration into the official ACP `mcpServers` array.
+  - Resolved plugin sidecar module resolution failures by resolving relative path arguments in plugin manifests to absolute paths against the plugin root and automatically injecting the plugin directory as `cwd`.
+  - Added namespaced plugin server registration (`<plugin>_<server>`) alongside direct aliases to ensure compatibility with skill definitions and corporate multi-agent workflows.
+  - Preserved workspace precedence and explicit tool suppression (`disabled: true`).
+  - Added `get_session_mcp_servers` Tauri IPC command for frontend introspection and automated test harnesses.
+
+- **AKBO AI Knowledge Base & Memory Dreaming MCP Preset (`McpModal.svelte`)**:
+  - Added a 1-click **AKBO AI Knowledge & Dreaming (MCP)** preset (`npx -y akbo-cli mcp`) to `PRESETS` in `McpModal.svelte`.
+  - Enables zero-token AST Codebase Knowledge Graph (CKG) search, blast-radius calculation, runtime observation recording, and out-of-band memory consolidation ("dreaming") across Gemini CLI and Antigravity CLI sessions.
+
+- **Architecture Standard & Automated Verification**:
+  - Updated [PROD-MCP-001.yaml](file:///c:/AIFiles/gemini-desktop/knowledge/product/PROD-MCP-001.yaml) (v1.5.0) to standardize ACP multi-layer MCP server aggregation and plugin path resolution.
+  - Added unit test suites verifying workspace server filtering, disabled tool suppression, and plugin argument resolution (`test_get_active_mcp_servers_for_session_workspace_and_filtering`, `test_plugin_mcp_args_resolution_and_cwd_injection`).
+
+---
+
 ## [0.8.0] - 2026-11-22
 
 ### Added & Enhanced

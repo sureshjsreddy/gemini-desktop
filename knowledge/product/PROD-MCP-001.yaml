@@ -3,7 +3,7 @@ type: product_standard
 title: Dual-Engine Model Context Protocol (MCP) Server Configuration & Tool Ingestion
 domain: product
 status: approved
-version: 1.4.0
+version: 1.5.0
 authority:
   level: official
   confidence: high
@@ -34,6 +34,8 @@ do:
   - "Provide 1-click MCP migration from Gemini CLI to Antigravity CLI via `import_mcp_from_gemini` and `detect_importable_gemini_mcp`: auto-detects MCP servers in `settings.json` and copies them into Antigravity's `mcp_config.json` at either Global or Workspace scope, with option to preserve or overwrite existing servers."
   - "Intercept any MCP tool executions (`mcp_*`) with the interactive Tool Permission Approval banner."
   - "Surface source MCP server metadata (e.g. `mcp_server` field) in interactive Tool Permission Cards so users can distinguish external MCP actions from local tools."
+  - "In ACP mode (`session/new`), dynamically aggregate active MCP servers across enabled Antigravity plugins, global configuration, and workspace configuration via `get_active_mcp_servers_for_session`, never sending a hardcoded empty list (`[]`)."
+  - "When bundling plugin MCP servers into ACP `session/new`, namespace server identifiers (`<plugin>_<server>`), resolve relative argument paths against the plugin root directory, and set `cwd` to the plugin directory to prevent module resolution failures."
 
 dont:
   - "Do not share or cross-contaminate MCP server files between Gemini CLI (`settings.json`) and Antigravity CLI (`mcp_config.json`)."
