@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import type { AgyPluginInfo, AgyPluginOpResult, CreateCustomPluginRequest } from "$lib/types";
+  import type { AgyPluginInfo, AgyPluginOpResult, CreateCustomPluginRequest, AkboPoolConfig } from "$lib/types";
   import { dialogManager } from "$lib/dialog.svelte";
   import {
     X,
@@ -45,6 +45,12 @@
   // Catalog custom install input
   let customInstallTarget = $state("");
 
+  // AKBO Central Knowledge Pool Configuration state
+  let isPoolConfigOpen = $state(false);
+  let akboPoolDir = $state("");
+  let akboStageOnly = $state(true);
+  let isSavingPoolConfig = $state(false);
+
   // Create plugin form state
   let formName = $state("");
   let formDisplayName = $state("");
@@ -58,6 +64,13 @@
 
   // Curated catalog recommendations
   const CURATED_CATALOG = [
+    {
+      id: "akbo",
+      name: "AKBO Knowledge Oracle & Central Memory Pool",
+      category: "Knowledge & Memory",
+      description: "AST Codebase Knowledge Graph (CKG), centralized cross-project memory pooling, and autonomous post-turn consolidation ('dreaming').",
+      skills: ["akbo"],
+    },
     {
       id: "android-cli-plugin",
       name: "Android CLI & Device Hub",
@@ -120,9 +133,46 @@
     }
   }
 
+  async function loadAkboPoolConfig() {
+    try {
+      const cfg = await invoke<AkboPoolConfig>("get_akbo_pool_config");
+      akboPoolDir = cfg.centralPoolDir;
+      akboStageOnly = cfg.stageOnly;
+    } catch (e: any) {
+      console.error("Failed to load AKBO pool config:", e);
+    }
+  }
+
+  async function handleSaveAkboPoolConfig() {
+    if (!akboPoolDir.trim()) {
+      statusMessage = { text: "Central Knowledge Pool directory path cannot be empty", type: "error" };
+      return;
+    }
+    isSavingPoolConfig = true;
+    try {
+      const res = await invoke<AgyPluginOpResult>("save_akbo_pool_config", {
+        config: {
+          centralPoolDir: akboPoolDir.trim(),
+          stageOnly: akboStageOnly,
+        },
+      });
+      if (res.success) {
+        statusMessage = { text: res.message, type: "success" };
+        isPoolConfigOpen = false;
+      } else {
+        statusMessage = { text: res.message, type: "error" };
+      }
+    } catch (e: any) {
+      statusMessage = { text: `Failed to save AKBO pool config: ${e}`, type: "error" };
+    } finally {
+      isSavingPoolConfig = false;
+    }
+  }
+
   $effect(() => {
     if (isOpen) {
       loadPlugins();
+      loadAkboPoolConfig();
     }
   });
 
@@ -490,6 +540,20 @@
                       </div>
 
                       <div class="flex items-center gap-1.5 ml-auto">
+                        {#if plugin.name === "akbo"}
+                          <Tooltip text="Configure Central Knowledge Pool directory & dreaming" position="top">
+                            <button
+                              onclick={() => {
+                                loadAkboPoolConfig();
+                                isPoolConfigOpen = !isPoolConfigOpen;
+                              }}
+                              class="flex items-center gap-1 px-2 py-1 rounded bg-accent-theme/10 hover:bg-accent-theme/20 text-accent-theme border border-accent-theme/30 transition-colors cursor-pointer text-xs"
+                            >
+                              <Sliders size={12} />
+                              <span>Configure Pool</span>
+                            </button>
+                          </Tooltip>
+                        {/if}
                         {#if plugin.path}
                           <Tooltip text="Reveal folder in Windows File Explorer" position="top">
                             <button
@@ -514,6 +578,66 @@
                         {/if}
                       </div>
                     </div>
+
+                    {#if plugin.name === "akbo" && isPoolConfigOpen}
+                      <div class="mt-2 p-3.5 rounded-xl bg-surface-elevated/70 border border-subtle space-y-3">
+                        <div class="flex items-center justify-between">
+                          <span class="font-semibold text-xs text-primary-theme flex items-center gap-1.5">
+                            <Sliders size={13} class="text-accent-theme" />
+                            Central Knowledge Pool Configuration
+                          </span>
+                          <button
+                            onclick={() => (isPoolConfigOpen = false)}
+                            class="text-muted-theme hover:text-primary-theme cursor-pointer"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+
+                        <div>
+                          <label for="akbo-pool-dir-input" class="block text-[11px] font-medium text-secondary-theme mb-1">
+                            Central Pool Directory (mirrors <code class="text-accent-theme">projects/&lt;project-name&gt;/</code>)
+                          </label>
+                          <input
+                            id="akbo-pool-dir-input"
+                            type="text"
+                            bind:value={akboPoolDir}
+                            placeholder="e.g. C:\Users\user\.akb\central-pool"
+                            class="w-full px-2.5 py-1.5 rounded-md bg-surface border border-theme-default text-xs text-primary-theme placeholder:text-muted-theme focus:outline-hidden focus:border-accent-theme/60 font-mono transition-colors"
+                          />
+                        </div>
+
+                        <div class="flex items-center justify-between pt-1">
+                          <div class="text-[11px]">
+                            <span class="font-medium text-primary-theme">Review Proposals (<code class="text-xs">--stage-only</code>)</span>
+                            <p class="text-muted-theme text-[10px]">Autonomous dreaming stages changes for your manual review before updating ADRs.</p>
+                          </div>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-label="Toggle stage-only mode"
+                            aria-checked={akboStageOnly}
+                            onclick={() => (akboStageOnly = !akboStageOnly)}
+                            class="w-8 h-4.5 rounded-full transition-colors relative cursor-pointer {akboStageOnly ? 'bg-accent-theme' : 'bg-surface border border-subtle'}"
+                          >
+                            <span
+                              class="absolute top-0.5 left-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform {akboStageOnly ? 'translate-x-3.5' : 'translate-x-0'}"
+                            ></span>
+                          </button>
+                        </div>
+
+                        <div class="flex justify-end pt-1">
+                          <button
+                            onclick={handleSaveAkboPoolConfig}
+                            disabled={isSavingPoolConfig}
+                            class="px-3 py-1.5 rounded-lg bg-accent-theme text-white text-xs font-medium hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+                          >
+                            <Check size={12} />
+                            <span>Save Pool Config</span>
+                          </button>
+                        </div>
+                      </div>
+                    {/if}
                   </div>
                 {/each}
               </div>

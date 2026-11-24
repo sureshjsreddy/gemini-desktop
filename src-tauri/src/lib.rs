@@ -122,7 +122,9 @@ pub fn run() {
             install_agy_plugin,
             uninstall_agy_plugin,
             create_custom_plugin,
-            open_plugin_directory
+            open_plugin_directory,
+            get_akbo_pool_config,
+            save_akbo_pool_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

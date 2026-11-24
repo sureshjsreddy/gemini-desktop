@@ -3,7 +3,7 @@ type: product_standard
 title: Antigravity CLI (agy) Plugins & Extensions Management Standard
 domain: product
 status: approved
-version: 1.0.0
+version: 1.1.0
 authority:
   level: official
   confidence: high
@@ -18,13 +18,15 @@ applies_to:
   - commands
 
 rule:
-  "Gemini Desktop provides native GUI management for Antigravity CLI (`agy`) plugins and extension bundles. When `agy` is active, users can inspect installed plugins, toggle them on/off live, install marketplace packages, and scaffold custom plugin bundles. When official Gemini CLI (`gemini`) is active, an informative banner guides users that plugins are an `agy` agentic feature without disruptive conversion prompts."
+  "Gemini Desktop provides native GUI management for Antigravity CLI (`agy`) plugins and extension bundles. When `agy` is active, users can inspect installed plugins, toggle them on/off live, install curated plugins (including AKBO Knowledge Oracle with autonomous post-turn dreaming), configure Central Knowledge Pools, install marketplace packages, and scaffold custom plugin bundles. When official Gemini CLI (`gemini`) is active, an informative banner guides users that plugins are an `agy` agentic feature without disruptive conversion prompts."
 
 do:
   - "Query installed plugins dynamically via `list_agy_plugins` (`agy plugin list --json`), enriching metadata with local `plugin.json` (`displayName`, `description`, `version`, `logo`)."
   - "Support live 1-click enable/disable toggles via `toggle_agy_plugin` (`agy plugin enable/disable <name>`) without requiring application restart."
   - "Provide direct folder access via `open_plugin_directory` (`explorer.exe`) to view plugin assets, skills, and configuration."
   - "Support installing official, partner, or custom plugins via `install_agy_plugin` (`agy plugin install <target>`)."
+  - "Provide 1-click curated installation for `akbo` in `PluginsModal.svelte`, auto-generating `plugin.json`, `mcp_config.json`, `hooks.json` (`Stop` event hook), `hooks/on-stop.cjs`, `rules/AGENTS.md`, and `skills/akbo/SKILL.md`."
+  - "Provide Central Knowledge Pool GUI configuration via `get_akbo_pool_config` and `save_akbo_pool_config` (`~/.gemini/config/akbo_pool.json`) with configurable directory path and `--stage-only` proposal review toggle."
   - "Support custom plugin scaffolding via `create_custom_plugin`: generate `plugin.json`, `README.md`, and optional `skills/<skill>/SKILL.md`, `mcp_config.json`, `rules/AGENTS.md`, and `agents/<agent>.md` in `%USERPROFILE%/.gemini/config/plugins/<name>/`."
   - "Surface capability pills (`Skills count`, `MCP tools`, `Rules`) on installed plugin cards."
   - "When `activeEngine === 'gemini'`, display an informative educational banner explaining that plugins are an Antigravity (`agy`) feature, guiding users to switch engines if desired."

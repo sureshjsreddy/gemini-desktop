@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] - 2026-11-24
+
+### Added & Enhanced
+- **1-Click AKBO Knowledge Oracle & Central Memory Pool Plugin Installer (`PluginsModal.svelte`, `plugins.rs`)**:
+  - Added native 1-click installation for the AKBO Knowledge Oracle plugin directly within the Plugins & Extensions Catalog.
+  - Automatically scaffolds and enables the complete bundle in `%USERPROFILE%\.gemini\config\plugins\akbo\`:
+    - `plugin.json`: Version 2.0.0 manifest referencing skills, rules, MCP servers, and lifecycle hooks.
+    - `mcp_config.json`: Bundles `npx -y akbo-cli mcp` for zero-token AST Codebase Knowledge Graph (CKG) queries.
+    - `hooks.json` & `on-stop.cjs`: Post-turn `Stop` lifecycle hook for autonomous out-of-band memory consolidation ("dreaming").
+    - `rules/AGENTS.md`: Agent guidelines for pre-execution CKG grounding, out-of-band observation recording, and safety guardrails.
+    - `skills/akbo/SKILL.md`: Reusable playbook for `/dream`, `/invariants`, `/harvest`, and impact analysis.
+  - Implemented `install_builtin_akbo_plugin` in Rust backend, mapped to `install_agy_plugin` for target `akbo`.
+
+- **Central Knowledge Pool GUI Configuration (`PluginsModal.svelte`, `plugins.rs`)**:
+  - Added an expandable configuration drawer on the installed AKBO card in `PluginsModal.svelte`.
+  - Added Tauri IPC commands `get_akbo_pool_config` and `save_akbo_pool_config`, persisting settings to `%USERPROFILE%\.gemini\config\akbo_pool.json`.
+  - Configurable Central Knowledge Pool directory (mirroring project structures under `<central_pool>/projects/<project-name>/`).
+  - Interactive switch to toggle `--stage-only` proposal review mode vs. autonomous auto-approve mode.
+
+- **Clean Plugin Uninstallation & Disk Cleanup**:
+  - Enhanced `uninstall_agy_plugin_internal` to cleanly remove plugin files from `%USERPROFILE%\.gemini\config\plugins\<name>` upon uninstallation.
+
+- **Automated Verification & Standards**:
+  - Updated [PROD-PLUGIN-001.yaml](file:///c:/AIFiles/gemini-desktop/knowledge/product/PROD-PLUGIN-001.yaml) (v1.1.0) with AKBO plugin installation and Central Knowledge Pool GUI standards.
+  - Added unit test suites verifying AKBO pool configuration serialization and defaults (`test_akbo_pool_config_serialization`, `test_akbo_pool_config_defaults`) bringing backend tests to 115/115 passing.
+
+---
+
 ## [0.8.1] - 2026-11-24
 
 ### Fixed & Enhanced

@@ -103,6 +103,12 @@ A modern, blazing-fast native desktop application for interacting with the **Gem
   - Built-in 1-click presets for **AKBO Knowledge & Dreaming** (`akbo-cli`), Local Filesystem, GitHub Docker, Postgres, Memory, and Brave Search.
   - Dual guided-form and monospaced raw JSON editors with live status toggle switches (`disabled: true`).
 
+- **🧩 Antigravity Plugins Catalog & AKBO Central Knowledge Pool**
+  - Native GUI for discovering, installing, enabling, configuring, and scaffolding Antigravity CLI (`agy`) plugins.
+  - Built-in 1-click installation for **AKBO Knowledge Oracle & Central Memory Pool** (`akbo`) bundling AST Codebase Knowledge Graph (CKG) tools, agent invariant rules, and automated post-turn memory consolidation ("dreaming").
+  - **Central Knowledge Pool GUI Configuration**: Customize central memory repository paths (`~/.gemini/config/akbo_pool.json`) and toggle `--stage-only` proposal review mode directly in `PluginsModal.svelte`.
+  - Clean lifecycle uninstallation and disk directory cleanup.
+
 ---
 
 ## ⌨️ Keyboard Shortcuts

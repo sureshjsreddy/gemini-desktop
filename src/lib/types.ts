@@ -393,6 +393,12 @@ export interface CreateCustomPluginRequest {
   agentName?: string;
 }
 
+export interface AkboPoolConfig {
+  centralPoolDir: string;
+  stageOnly: boolean;
+}
+
+
 
 
 
