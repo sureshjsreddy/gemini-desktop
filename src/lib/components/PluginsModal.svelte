@@ -188,6 +188,7 @@
       if (res.success) {
         statusMessage = { text: res.message, type: "success" };
         plugin.enabled = targetState;
+        await invoke("restart_gemini_session").catch(() => {});
       } else {
         statusMessage = { text: res.message, type: "error" };
       }
@@ -213,6 +214,7 @@
       });
       if (res.success) {
         statusMessage = { text: res.message, type: "success" };
+        await invoke("restart_gemini_session").catch(() => {});
         await loadPlugins();
       } else {
         statusMessage = { text: res.message, type: "error" };
@@ -235,6 +237,7 @@
       if (res.success) {
         statusMessage = { text: res.message, type: "success" };
         customInstallTarget = "";
+        await invoke("restart_gemini_session").catch(() => {});
         await loadPlugins();
         activeTab = "installed";
       } else {

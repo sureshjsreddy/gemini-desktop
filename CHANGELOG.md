@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.2] - 2026-11-25
+
+### Fixed & Enhanced
+- **Strict ACP MCP Schema Normalization, Session Reset & Runtime Diagnostics (`mcp.rs`, `McpModal.svelte`, `PluginsModal.svelte`, `lib.rs`)**:
+  - **ACP `McpServerStdio` & `McpServerHttp` Schema Compliance**: Added `format_acp_kv_array` and `build_acp_mcp_entry` in `mcp.rs` to normalize `env` and `headers` maps (`{K: V}`) into the strict ACP `Array<{ name, value }>` format, always emit `args` and `env` arrays on stdio servers (resolving `gemini --acp` `session/new` `-32603` Zod validation failures), emit `type: "http"` with `headers` arrays for `url`/`serverUrl` servers, and fall back from `agy-node` to `node` when `agy-node` is absent from `PATH`.
+  - **Eliminated Duplicate Plugin MCP Spawns**: Removed un-namespaced duplicate plugin server aliases in `get_active_mcp_servers_for_session` so enabled plugin servers preload once (`<plugin>_<server>`) without doubling work inside `agy`'s 5-second preload deadline.
+  - **Automatic ACP Session Reset on MCP & Plugin Changes**: Saving MCP settings in `McpModal.svelte` or toggling/installing/uninstalling plugins in `PluginsModal.svelte` now calls `restart_gemini_session`, ensuring the next prompt initializes a fresh `session/new` with updated tools.
+  - **Playwright Preset & Runtime Diagnostics**: Added a 1-click **Playwright Browser** preset (`npx -y @playwright/mcp@latest`) and `diagnose_mcp_runtime` Tauri command to scan the latest `agy` `acp-server-*.log` for BAIC admin policy blocks (`mcp disabled by BAIC admin controls`), 5-second preload timeouts (`context deadline exceeded`), and server spawn errors.
+  - **AKBO CLI v3.0.0 Pinning (`plugins.rs`)**: Updated built-in AKBO plugin manifest, `mcp.cjs` launcher, `hooks/on-stop.cjs`, and `skills/akbo/SKILL.md` to pinned `akbo-cli@3.0.0` (Hybrid AST CKG & diff-aware guardrails).
+  - **Standards & Verification**: Updated [PROD-MCP-001.yaml](file:///c:/AIFiles/gemini-desktop/knowledge/product/PROD-MCP-001.yaml) (v1.6.0) and expanded unit tests (`test_acp_mcp_env_and_http_normalization`, `test_diagnose_agy_log_content_admin_and_timeout`), bringing Rust backend tests to **125/125 passing**.
+
+---
+
 ## [0.10.1] - 2026-11-25
 
 ### Changed & Fixed

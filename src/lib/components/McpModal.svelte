@@ -41,6 +41,15 @@
   let currentFilePath = $state("");
   let importableServers = $state<string[]>([]);
   let isImporting = $state(false);
+  let runtimeDiagnostics = $state<{
+    engine: string;
+    active_servers: string[];
+    preloaded_count: number | null;
+    admin_blocked: boolean;
+    preload_timeout: boolean;
+    server_errors: string[];
+    latest_log_path: string | null;
+  } | null>(null);
 
   // Map of serverId -> McpServerConfig
   let servers = $state<Record<string, McpServerConfig>>({});
@@ -73,6 +82,18 @@
 
   let PRESETS: Preset[] = $derived.by(() => {
     const list: Preset[] = [
+      {
+        id: "playwright",
+        label: "Playwright Browser",
+        description: "Headless/headed browser automation, screenshots, and DOM inspection",
+        icon: "🎭",
+        config: {
+          key: "playwright",
+          command: "npx",
+          args: ["-y", "@playwright/mcp@latest"],
+          env: {},
+        },
+      },
       {
       id: "github-docker",
       label: "GitHub (Docker)",
@@ -218,6 +239,15 @@
         }
       } else {
         importableServers = [];
+      }
+
+      try {
+        runtimeDiagnostics = await invoke("diagnose_mcp_runtime", {
+          workspacePath: activeWorkspace?.path || null,
+          engine: activeEngine,
+        });
+      } catch {
+        runtimeDiagnostics = null;
       }
     } catch (err: any) {
       statusMessage = { text: `Failed to load settings: ${err}`, type: "error" };
@@ -412,8 +442,17 @@
       }
 
       const fileBase = currentFilePath ? currentFilePath.split(/[\\/]/).pop() : "config";
+      await invoke("restart_gemini_session").catch(() => {});
+      try {
+        runtimeDiagnostics = await invoke("diagnose_mcp_runtime", {
+          workspacePath: activeWorkspace?.path || null,
+          engine: activeEngine,
+        });
+      } catch {
+        // Ignore diagnostics refresh errors
+      }
       statusMessage = {
-        text: `Saved to ${activeScope === "workspace" ? "Workspace" : "Global"} ${fileBase} successfully!`,
+        text: `Saved to ${activeScope === "workspace" ? "Workspace" : "Global"} ${fileBase}. Active session reset for next prompt.`,
         type: "success",
       };
     } catch (err: any) {
@@ -553,9 +592,39 @@
           <span class="truncate">{currentFilePath || "Resolving settings..."}</span>
         </div>
         <span class="shrink-0 text-[10px] text-secondary-theme">
-          {Object.keys(servers).length} server{Object.keys(servers).length === 1 ? "" : "s"} configured
+          {Object.keys(servers).length} server{Object.keys(servers).length === 1 ? "" : "s"} configured{#if runtimeDiagnostics} • {runtimeDiagnostics.active_servers.length} active for session{/if}
         </span>
       </div>
+
+      <!-- Runtime MCP Diagnostics Banner (Admin Policy / Preload Timeout / Spawn Errors) -->
+      {#if runtimeDiagnostics && (runtimeDiagnostics.admin_blocked || runtimeDiagnostics.preload_timeout || runtimeDiagnostics.server_errors.length > 0)}
+        <div class="px-5 py-2 bg-amber-500/10 border-b border-amber-500/25 text-[11px] text-amber-300 space-y-1">
+          {#if runtimeDiagnostics.admin_blocked}
+            <div class="flex items-start gap-2">
+              <AlertCircle size={13} class="shrink-0 mt-0.5 text-amber-400" />
+              <span>
+                <strong>Admin Policy Block Detected:</strong> Antigravity CLI reported <code>mcp disabled by BAIC admin controls</code>. Even if local tool schemas exist on disk, your organization's account policy restricts MCP tool injection for this session.
+              </span>
+            </div>
+          {/if}
+          {#if runtimeDiagnostics.preload_timeout}
+            <div class="flex items-start gap-2">
+              <AlertCircle size={13} class="shrink-0 mt-0.5 text-amber-400" />
+              <span>
+                <strong>Preload Timeout (&gt;5s):</strong> Antigravity CLI timed out waiting for an MCP server to start (<code>context deadline exceeded</code>). Add <code>-y</code> to <code>npx</code> args or install the MCP package globally so startup finishes within 5 seconds.
+              </span>
+            </div>
+          {/if}
+          {#if !runtimeDiagnostics.admin_blocked && runtimeDiagnostics.server_errors.length > 0}
+            <div class="flex items-start gap-2">
+              <AlertCircle size={13} class="shrink-0 mt-0.5 text-amber-400" />
+              <span class="truncate" title={runtimeDiagnostics.server_errors.join('\n')}>
+                <strong>Latest CLI MCP Warning:</strong> {runtimeDiagnostics.server_errors[0]}
+              </span>
+            </div>
+          {/if}
+        </div>
+      {/if}
 
       <!-- Import from Gemini CLI Banner (When Antigravity is active & unimported servers detected) -->
       {#if activeEngine === "agy" && importableServers.length > 0}

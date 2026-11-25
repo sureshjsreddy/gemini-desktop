@@ -72,6 +72,7 @@ pub fn run() {
             get_mcp_config,
             save_mcp_config,
             get_session_mcp_servers,
+            diagnose_mcp_runtime,
             detect_importable_gemini_mcp,
             import_mcp_from_gemini,
             import_gemini_plugins_via_agy,

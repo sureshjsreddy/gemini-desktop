@@ -228,6 +228,105 @@ pub async fn import_mcp_from_gemini(
     import_mcp_from_gemini_internal(workspace_path.as_deref())
 }
 
+/// Converts an MCP `env` or `headers` value (map `{K: V}` or array `[{name, value}]`)
+/// into the strict ACP array format `[{ "name": K, "value": V }]`.
+fn format_acp_kv_array(val: Option<&serde_json::Value>) -> serde_json::Value {
+    match val {
+        Some(serde_json::Value::Array(arr)) => serde_json::Value::Array(arr.clone()),
+        Some(serde_json::Value::Object(obj)) => {
+            let mut keys: Vec<&String> = obj.keys().collect();
+            keys.sort();
+            let items: Vec<serde_json::Value> = keys
+                .into_iter()
+                .map(|k| {
+                    let v_str = match &obj[k] {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    serde_json::json!({
+                        "name": k,
+                        "value": v_str
+                    })
+                })
+                .collect();
+            serde_json::Value::Array(items)
+        }
+        _ => serde_json::json!([]),
+    }
+}
+
+/// Builds an ACP-compliant `McpServer` entry (`McpServerStdio` or `McpServerHttp`)
+/// from a raw `mcpServers` config object.
+fn build_acp_mcp_entry(
+    name: &str,
+    cfg_obj: &serde_json::Map<String, serde_json::Value>,
+    resolve_plugin_dir: Option<&std::path::Path>,
+    default_cwd: Option<&str>,
+) -> serde_json::Value {
+    let mut entry_map = serde_json::Map::new();
+    entry_map.insert("name".to_string(), serde_json::Value::String(name.to_string()));
+
+    // Streamable HTTP / SSE transport
+    if let Some(url_val) = cfg_obj.get("url").or_else(|| cfg_obj.get("serverUrl")) {
+        entry_map.insert("type".to_string(), serde_json::Value::String("http".to_string()));
+        entry_map.insert("url".to_string(), url_val.clone());
+        entry_map.insert("headers".to_string(), format_acp_kv_array(cfg_obj.get("headers")));
+        return serde_json::Value::Object(entry_map);
+    }
+
+    // Stdio transport
+    if let Some(cmd_val) = cfg_obj.get("command") {
+        let final_cmd = if let Some(cmd_str) = cmd_val.as_str() {
+            if cmd_str == "agy-node"
+                && crate::process_manager::find_binary_by_name("agy-node").is_none()
+                && crate::process_manager::find_binary_by_name("node").is_some()
+            {
+                serde_json::Value::String("node".to_string())
+            } else {
+                cmd_val.clone()
+            }
+        } else {
+            cmd_val.clone()
+        };
+        entry_map.insert("command".to_string(), final_cmd);
+    }
+
+    let resolved_args = if let Some(args_val) = cfg_obj.get("args").and_then(|a| a.as_array()) {
+        if let Some(plugin_dir) = resolve_plugin_dir {
+            args_val
+                .iter()
+                .map(|arg| {
+                    if let Some(arg_str) = arg.as_str() {
+                        let candidate = plugin_dir.join(std::path::Path::new(arg_str));
+                        if candidate.exists() {
+                            #[cfg(target_os = "windows")]
+                            let norm = candidate.to_string_lossy().replace('/', "\\");
+                            #[cfg(not(target_os = "windows"))]
+                            let norm = candidate.to_string_lossy().to_string();
+                            return serde_json::Value::String(norm);
+                        }
+                    }
+                    arg.clone()
+                })
+                .collect()
+        } else {
+            args_val.clone()
+        }
+    } else {
+        Vec::new()
+    };
+    entry_map.insert("args".to_string(), serde_json::Value::Array(resolved_args));
+    entry_map.insert("env".to_string(), format_acp_kv_array(cfg_obj.get("env")));
+
+    if let Some(cwd_val) = cfg_obj.get("cwd") {
+        entry_map.insert("cwd".to_string(), cwd_val.clone());
+    } else if let Some(cwd_fallback) = default_cwd {
+        entry_map.insert("cwd".to_string(), serde_json::Value::String(cwd_fallback.to_string()));
+    }
+
+    serde_json::Value::Object(entry_map)
+}
+
 /// Gathers all active, enabled MCP servers for an ACP session.
 /// Resolves in order of precedence:
 /// 1. Plugins' mcp_config.json (when engine == "agy", relative paths resolved against plugin directory)
@@ -303,6 +402,7 @@ pub fn get_active_mcp_servers_for_session(
                         if let Ok(content) = std::fs::read_to_string(&plugin_mcp_file) {
                             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
                                 if let Some(servers) = parsed.get("mcpServers").and_then(|s| s.as_object()) {
+                                    let plugin_dir_str = plugin_dir.to_string_lossy().to_string();
                                     for (raw_s_name, s_cfg) in servers {
                                         if let Some(cfg_obj) = s_cfg.as_object() {
                                             if cfg_obj.get("disabled") == Some(&serde_json::Value::Bool(true)) {
@@ -315,54 +415,13 @@ pub fn get_active_mcp_servers_for_session(
                                                 format!("{}_{}", plugin_name, raw_s_name)
                                             };
 
-                                            let mut entry_map = serde_json::Map::new();
-                                            entry_map.insert("name".to_string(), serde_json::Value::String(namespaced_name.clone()));
-
-                                            if let Some(cmd) = cfg_obj.get("command") {
-                                                entry_map.insert("command".to_string(), cmd.clone());
-                                            }
-
-                                            // Resolve relative paths in arguments against plugin_dir
-                                            if let Some(args_val) = cfg_obj.get("args").and_then(|a| a.as_array()) {
-                                                let resolved_args: Vec<serde_json::Value> = args_val.iter().map(|arg| {
-                                                    if let Some(arg_str) = arg.as_str() {
-                                                        let candidate = plugin_dir.join(std::path::Path::new(arg_str));
-                                                        if candidate.exists() {
-                                                            #[cfg(target_os = "windows")]
-                                                            let norm = candidate.to_string_lossy().replace('/', "\\");
-                                                            #[cfg(not(target_os = "windows"))]
-                                                            let norm = candidate.to_string_lossy().to_string();
-                                                            return serde_json::Value::String(norm);
-                                                        }
-                                                    }
-                                                    arg.clone()
-                                                }).collect();
-                                                entry_map.insert("args".to_string(), serde_json::Value::Array(resolved_args));
-                                            }
-
-                                            if let Some(env_val) = cfg_obj.get("env") {
-                                                entry_map.insert("env".to_string(), env_val.clone());
-                                            }
-
-                                            // Set cwd to plugin directory if not explicitly provided
-                                            if let Some(cwd_val) = cfg_obj.get("cwd") {
-                                                entry_map.insert("cwd".to_string(), cwd_val.clone());
-                                            } else {
-                                                entry_map.insert("cwd".to_string(), serde_json::Value::String(plugin_dir.to_string_lossy().to_string()));
-                                            }
-
-                                            if let Some(url_val) = cfg_obj.get("url") {
-                                                entry_map.insert("url".to_string(), url_val.clone());
-                                            }
-
-                                            server_map.insert(namespaced_name.clone(), serde_json::Value::Object(entry_map.clone()));
-
-                                            // Also provide raw_s_name alias if non-colliding
-                                            if raw_s_name != &namespaced_name && !server_map.contains_key(raw_s_name) {
-                                                let mut raw_map = entry_map;
-                                                raw_map.insert("name".to_string(), serde_json::Value::String(raw_s_name.clone()));
-                                                server_map.insert(raw_s_name.clone(), serde_json::Value::Object(raw_map));
-                                            }
+                                            let entry_val = build_acp_mcp_entry(
+                                                &namespaced_name,
+                                                cfg_obj,
+                                                Some(&plugin_dir),
+                                                Some(&plugin_dir_str),
+                                            );
+                                            server_map.insert(namespaced_name, entry_val);
                                         }
                                     }
                                 }
@@ -384,26 +443,8 @@ pub fn get_active_mcp_servers_for_session(
                         continue;
                     }
 
-                    let mut entry_map = serde_json::Map::new();
-                    entry_map.insert("name".to_string(), serde_json::Value::String(s_name.clone()));
-
-                    if let Some(cmd) = cfg_obj.get("command") {
-                        entry_map.insert("command".to_string(), cmd.clone());
-                    }
-                    if let Some(args) = cfg_obj.get("args") {
-                        entry_map.insert("args".to_string(), args.clone());
-                    }
-                    if let Some(env) = cfg_obj.get("env") {
-                        entry_map.insert("env".to_string(), env.clone());
-                    }
-                    if let Some(cwd) = cfg_obj.get("cwd") {
-                        entry_map.insert("cwd".to_string(), cwd.clone());
-                    }
-                    if let Some(url) = cfg_obj.get("url") {
-                        entry_map.insert("url".to_string(), url.clone());
-                    }
-
-                    server_map.insert(s_name.clone(), serde_json::Value::Object(entry_map));
+                    let entry_val = build_acp_mcp_entry(s_name, cfg_obj, None, None);
+                    server_map.insert(s_name.clone(), entry_val);
                 }
             }
         }
@@ -422,28 +463,8 @@ pub fn get_active_mcp_servers_for_session(
                                 continue;
                             }
 
-                            let mut entry_map = serde_json::Map::new();
-                            entry_map.insert("name".to_string(), serde_json::Value::String(s_name.clone()));
-
-                            if let Some(cmd) = cfg_obj.get("command") {
-                                entry_map.insert("command".to_string(), cmd.clone());
-                            }
-                            if let Some(args) = cfg_obj.get("args") {
-                                entry_map.insert("args".to_string(), args.clone());
-                            }
-                            if let Some(env) = cfg_obj.get("env") {
-                                entry_map.insert("env".to_string(), env.clone());
-                            }
-                            if let Some(cwd) = cfg_obj.get("cwd") {
-                                entry_map.insert("cwd".to_string(), cwd.clone());
-                            } else {
-                                entry_map.insert("cwd".to_string(), serde_json::Value::String(trimmed.to_string()));
-                            }
-                            if let Some(url) = cfg_obj.get("url") {
-                                entry_map.insert("url".to_string(), url.clone());
-                            }
-
-                            server_map.insert(s_name.clone(), serde_json::Value::Object(entry_map));
+                            let entry_val = build_acp_mcp_entry(s_name, cfg_obj, None, Some(trimmed));
+                            server_map.insert(s_name.clone(), entry_val);
                         }
                     }
                 }
@@ -458,6 +479,123 @@ pub fn get_active_mcp_servers_for_session(
     sorted_keys.into_iter().filter_map(|k| server_map.remove(&k)).collect()
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct McpRuntimeDiagnostics {
+    pub engine: String,
+    pub active_servers: Vec<String>,
+    pub preloaded_count: Option<usize>,
+    pub admin_blocked: bool,
+    pub preload_timeout: bool,
+    pub server_errors: Vec<String>,
+    pub latest_log_path: Option<String>,
+}
+
+pub fn diagnose_agy_log_content(content: &str) -> (Option<usize>, bool, bool, Vec<String>) {
+    let mut preloaded_count: Option<usize> = None;
+    let mut admin_blocked = false;
+    let mut preload_timeout = false;
+    let mut server_errors: Vec<String> = Vec::new();
+
+    for line in content.lines() {
+        let lower = line.to_lowercase();
+        if let Some(idx) = line.find("Preloading ") {
+            if let Some(rest) = line[idx + "Preloading ".len()..].split_whitespace().next() {
+                if let Ok(n) = rest.parse::<usize>() {
+                    preloaded_count = Some(n);
+                }
+            }
+        }
+        if lower.contains("mcp disabled by baic admin controls")
+            || lower.contains("mcp_server_status_disabled_by_admin")
+            || lower.contains("disabled by admin")
+        {
+            admin_blocked = true;
+        }
+        if lower.contains("failed to preload the session's mcp servers")
+            && lower.contains("context deadline exceeded")
+        {
+            preload_timeout = true;
+        }
+        if lower.contains("mcp disabled by baic")
+            || lower.contains("mcp_server_status_disabled_by_admin")
+            || ((lower.contains("mcp server") || lower.contains("server name "))
+                && (lower.contains("failed to load")
+                    || lower.contains("executable file not found")
+                    || lower.contains("connection closed unexpectedly")))
+        {
+            let cleaned = line
+                .split(']')
+                .nth(1)
+                .map(|s| s.trim())
+                .unwrap_or_else(|| line.trim())
+                .to_string();
+            if !cleaned.is_empty() && !server_errors.contains(&cleaned) {
+                server_errors.push(cleaned);
+            }
+        }
+    }
+
+    (preloaded_count, admin_blocked, preload_timeout, server_errors)
+}
+
+pub fn diagnose_mcp_runtime_internal(workspace_path: Option<&str>, engine: &str) -> McpRuntimeDiagnostics {
+    let servers = get_active_mcp_servers_for_session(workspace_path, engine);
+    let active_servers: Vec<String> = servers
+        .iter()
+        .filter_map(|s| s.get("name").and_then(|v| v.as_str()).map(|n| n.to_string()))
+        .collect();
+
+    let mut preloaded_count = None;
+    let mut admin_blocked = false;
+    let mut preload_timeout = false;
+    let mut server_errors = Vec::new();
+    let mut latest_log_path = None;
+
+    if engine.trim().eq_ignore_ascii_case("agy") {
+        if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+            let log_dir = PathBuf::from(home).join(".gemini").join("antigravity-cli").join("log");
+            if log_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&log_dir) {
+                    let mut latest: Option<(std::time::SystemTime, PathBuf)> = None;
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                        if p.is_file() && fname.starts_with("acp-server-") && fname.ends_with(".log") {
+                            if let Ok(meta) = entry.metadata() {
+                                if let Ok(modified) = meta.modified() {
+                                    if latest.as_ref().map(|(t, _)| modified > *t).unwrap_or(true) {
+                                        latest = Some((modified, p));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some((_, p)) = latest {
+                        latest_log_path = Some(p.to_string_lossy().to_string());
+                        if let Ok(content) = std::fs::read_to_string(&p) {
+                            let (pc, ab, pt, errs) = diagnose_agy_log_content(&content);
+                            preloaded_count = pc;
+                            admin_blocked = ab;
+                            preload_timeout = pt;
+                            server_errors = errs;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    McpRuntimeDiagnostics {
+        engine: engine.to_string(),
+        active_servers,
+        preloaded_count,
+        admin_blocked,
+        preload_timeout,
+        server_errors,
+        latest_log_path,
+    }
+}
+
 #[tauri::command]
 pub async fn get_session_mcp_servers(
     state: State<'_, AppState>,
@@ -469,6 +607,19 @@ pub async fn get_session_mcp_servers(
     }).unwrap_or_else(|| "gemini".to_string());
 
     Ok(get_active_mcp_servers_for_session(workspace_path.as_deref(), &effective_engine))
+}
+
+#[tauri::command]
+pub async fn diagnose_mcp_runtime(
+    state: State<'_, AppState>,
+    workspace_path: Option<String>,
+    engine: Option<String>,
+) -> Result<McpRuntimeDiagnostics, String> {
+    let effective_engine = engine.or_else(|| {
+        state.db.get_setting("active_cli_engine").ok().flatten()
+    }).unwrap_or_else(|| "gemini".to_string());
+
+    Ok(diagnose_mcp_runtime_internal(workspace_path.as_deref(), &effective_engine))
 }
 
 #[cfg(test)]
@@ -618,7 +769,8 @@ mod tests {
         let active_entry = servers.iter().find(|s| s["name"] == "active_tool").unwrap();
         assert_eq!(active_entry["command"], "node");
         assert_eq!(active_entry["args"][0], "server.js");
-        assert_eq!(active_entry["env"]["PORT"], "3000");
+        assert_eq!(active_entry["env"][0]["name"], "PORT");
+        assert_eq!(active_entry["env"][0]["value"], "3000");
 
         // 3. Setup workspace Antigravity config (.agents/mcp_config.json)
         let ws_agy_servers = serde_json::json!({
@@ -632,8 +784,53 @@ mod tests {
 
         let agy_servers = get_active_mcp_servers_for_session(Some(&ws_str), "agy");
         assert!(agy_servers.iter().any(|s| s["name"] == "agy_tool"));
+        let agy_entry = agy_servers.iter().find(|s| s["name"] == "agy_tool").unwrap();
+        assert!(agy_entry["env"].is_array());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_acp_mcp_env_and_http_normalization() {
+        let stdio_cfg = serde_json::json!({
+            "command": "npx",
+            "args": ["-y", "@playwright/mcp@latest"],
+            "env": { "Z_KEY": "2", "A_KEY": "1" }
+        });
+        let stdio_entry = build_acp_mcp_entry("playwright", stdio_cfg.as_object().unwrap(), None, None);
+        assert_eq!(stdio_entry["name"], "playwright");
+        assert_eq!(stdio_entry["command"], "npx");
+        assert_eq!(stdio_entry["args"][0], "-y");
+        assert_eq!(stdio_entry["env"][0]["name"], "A_KEY");
+        assert_eq!(stdio_entry["env"][0]["value"], "1");
+        assert_eq!(stdio_entry["env"][1]["name"], "Z_KEY");
+        assert_eq!(stdio_entry["env"][1]["value"], "2");
+
+        let http_cfg = serde_json::json!({
+            "serverUrl": "https://mcp.example.com/mcp",
+            "headers": { "Authorization": "Bearer tok" }
+        });
+        let http_entry = build_acp_mcp_entry("remote", http_cfg.as_object().unwrap(), None, None);
+        assert_eq!(http_entry["type"], "http");
+        assert_eq!(http_entry["url"], "https://mcp.example.com/mcp");
+        assert_eq!(http_entry["headers"][0]["name"], "Authorization");
+        assert_eq!(http_entry["headers"][0]["value"], "Bearer tok");
+    }
+
+    #[test]
+    fn test_diagnose_agy_log_content_admin_and_timeout() {
+        let sample_log = "\
+I1125 09:37:01.000000 10 session_handlers.go:397] Preloading 2 MCP servers of the session
+W1125 09:37:06.000000 10 session_handlers.go:401] Failed to preload the session's MCP servers: context deadline exceeded
+W1125 09:37:06.100000 11 connector.go:131] MCP server structural-biology_structure_viewer_mcp: exec: \"agy-node\": executable file not found in %PATH%
+W1125 09:37:06.200000 12 mcp_manager.go:100] mcp disabled by BAIC admin controls
+";
+        let (count, admin_blocked, preload_timeout, errs) = diagnose_agy_log_content(sample_log);
+        assert_eq!(count, Some(2));
+        assert!(admin_blocked);
+        assert!(preload_timeout);
+        assert!(errs.iter().any(|e| e.contains("agy-node")));
+        assert!(errs.iter().any(|e| e.contains("BAIC admin controls")));
     }
 
     #[test]

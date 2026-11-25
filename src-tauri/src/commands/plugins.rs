@@ -278,8 +278,8 @@ pub fn install_builtin_akbo_plugin() -> Result<AgyPluginOpResult, String> {
     let manifest = serde_json::json!({
         "name": "akbo",
         "displayName": "AKBO Knowledge Oracle & Central Memory Pool",
-        "version": "2.0.0",
-        "description": "Structural Codebase Knowledge Graph (CKG), centralized cross-project knowledge pooling, and staged post-conversation memory consolidation ('dreaming').",
+        "version": "3.0.0",
+        "description": "Hybrid AST Codebase Knowledge Graph (TS Compiler + WASM tree-sitter), centralized cross-project knowledge pooling, AST-backed convention guardrails, and staged post-conversation memory consolidation ('dreaming').",
         "skills": ["akbo"],
         "rules": ["AGENTS.md"],
         "mcpServers": ["akbo"]
@@ -380,7 +380,7 @@ const env = {
   AKBO_POOL_DIR: targetProjectPool
 };
 
-const PINNED_PKG = 'akbo-cli@2.0.0';
+const PINNED_PKG = 'akbo-cli@3.0.0';
 let command = 'npx';
 let args = ['-y', PINNED_PKG, 'mcp', workspacePath, '--pool', targetProjectPool];
 let useShell = true;
@@ -610,7 +610,7 @@ function main() {
   // Run dreaming exclusively in targetProjectPool
   try {
     const stageArg = stageOnly ? ' --stage-only' : ' --auto-approve';
-    const PINNED_PKG = 'akbo-cli@2.0.0';
+    const PINNED_PKG = 'akbo-cli@3.0.0';
     let runner = `npx -y ${PINNED_PKG}`;
 
     try {
@@ -712,31 +712,32 @@ Use this skill when you want to inspect project architecture invariants, trigger
 ### 1. Memory Consolidation (`/dream`)
 Consolidates recorded observations and recent conversation error traces out-of-band into staged proposals in `.akb/staged/` (default) for review:
 ```powershell
-npx -y akbo-cli@2.0.0 dream --stage-only
-npx -y akbo-cli@2.0.0 dream --list-staged
-npx -y akbo-cli@2.0.0 dream --approve all
+npx -y akbo-cli@3.0.0 dream --stage-only
+npx -y akbo-cli@3.0.0 dream --list-staged
+npx -y akbo-cli@3.0.0 dream --approve all
 ```
 To auto-approve and immediately update the central pool without manual staging:
 ```powershell
-npx -y akbo-cli@2.0.0 dream --auto-approve
+npx -y akbo-cli@3.0.0 dream --auto-approve
 ```
 
 ### 2. Inspect Invariants (`/invariants`)
 Retrieves all approved architecture and development invariants for the active project from the central pool:
 ```powershell
-npx -y akbo-cli@2.0.0 invariants
+npx -y akbo-cli@3.0.0 invariants
 ```
 
-### 3. Codebase Knowledge Graph Harvest (`/harvest`)
-Deterministically scans project topology, schemas, and endpoints (0 LLM tokens) and updates the CKG cache in the central pool:
+### 3. Hybrid AST Codebase Knowledge Graph Harvest (`/harvest`)
+Deterministically scans project topology using the Hybrid AST Engine (TS Compiler AST + WASM tree-sitter for C#, Java, Python, Rust, Go with comment-stripped regex fallback, 0 LLM tokens) and updates the CKG cache in the central pool:
 ```powershell
-npx -y akbo-cli@2.0.0 harvest .
+npx -y akbo-cli@3.0.0 harvest .
 ```
 
-### 4. Boundary Blast-Radius Impact Analysis
-Traces architectural boundaries (inbound HTTP/gRPC callers, endpoints, schemas, and `IMPLEMENTS` edges) before refactoring:
+### 4. Scoped Blast-Radius & Convention Guardrails
+Traces architectural boundaries and cross-file TS `IMPORTS`/`CALLS_SYMBOL` (`scope: all | architectural | symbol` on `akbo_impact`, `file#symbol` disambiguation) before refactoring, and evaluates `ast_query` + diff-aware guardrails:
 ```powershell
-npx -y akbo-cli@2.0.0 context <symbol_or_file>
+npx -y akbo-cli@3.0.0 context <symbol_or_file>
+npx -y akbo-cli@3.0.0 guard <file> -c "<code_or_diff>"
 ```
 "#;
     std::fs::write(skill_dir.join("SKILL.md"), skill_md)
@@ -1162,10 +1163,10 @@ mod tests {
 
     #[test]
     fn test_akbo_mcp_wrapper_syntax() {
-        let pinned_pkg = "akbo-cli@2.0.0";
+        let pinned_pkg = "akbo-cli@3.0.0";
         let sample_mcp = format!(r#"const args = ['-y', '{}', 'mcp', workspacePath, '--pool', targetProjectPool];"#, pinned_pkg);
         assert!(sample_mcp.contains("--pool"));
-        assert!(sample_mcp.contains("akbo-cli@2.0.0"));
+        assert!(sample_mcp.contains("akbo-cli@3.0.0"));
         assert!(!sample_mcp.contains("@latest"));
         assert!(sample_mcp.contains("mcp"));
     }

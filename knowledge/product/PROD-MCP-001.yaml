@@ -3,7 +3,7 @@ type: product_standard
 title: Dual-Engine Model Context Protocol (MCP) Server Configuration & Tool Ingestion
 domain: product
 status: approved
-version: 1.5.0
+version: 1.6.0
 authority:
   level: official
   confidence: high
@@ -35,7 +35,10 @@ do:
   - "Intercept any MCP tool executions (`mcp_*`) with the interactive Tool Permission Approval banner."
   - "Surface source MCP server metadata (e.g. `mcp_server` field) in interactive Tool Permission Cards so users can distinguish external MCP actions from local tools."
   - "In ACP mode (`session/new`), dynamically aggregate active MCP servers across enabled Antigravity plugins, global configuration, and workspace configuration via `get_active_mcp_servers_for_session`, never sending a hardcoded empty list (`[]`)."
-  - "When bundling plugin MCP servers into ACP `session/new`, namespace server identifiers (`<plugin>_<server>`), resolve relative argument paths against the plugin root directory, and set `cwd` to the plugin directory to prevent module resolution failures."
+  - "Normalize ACP `mcpServers` entries strictly to the ACP schema: convert `env` and `headers` maps (`{K: V}`) to `Array<{name, value}>`, always emit `args` and `env` arrays on stdio servers (required by Gemini CLI Zod validation), emit `type: \"http\"` with `headers` array for HTTP servers, and resolve `agy-node` to `node` when `agy-node` is absent from PATH."
+  - "Emit only the single namespaced identifier (`<plugin>_<server>`) for plugin MCP servers without duplicating un-namespaced aliases so `agy` does not spawn duplicate processes inside its 5-second `Preloading` deadline."
+  - "Automatically reset the active ACP session (`restart_gemini_session`) whenever MCP server configs or plugins are saved, toggled, installed, or uninstalled so the next prompt starts a fresh `session/new` with updated tools."
+  - "Provide `diagnose_mcp_runtime` to inspect active session servers and scan the latest `agy` `acp-server-*.log` for BAIC admin control blocks (`mcp disabled by BAIC admin controls`), 5-second preload timeouts (`context deadline exceeded`), and server spawn errors."
 
 dont:
   - "Do not share or cross-contaminate MCP server files between Gemini CLI (`settings.json`) and Antigravity CLI (`mcp_config.json`)."
