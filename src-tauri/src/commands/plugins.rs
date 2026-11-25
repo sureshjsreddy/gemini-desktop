@@ -221,7 +221,7 @@ pub fn get_akbo_pool_config_internal() -> Result<AkboPoolConfig, String> {
                     .to_string();
                 let stage_only = parsed.get("stageOnly")
                     .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+                    .unwrap_or(true);
                 return Ok(AkboPoolConfig {
                     central_pool_dir: pool_dir,
                     stage_only,
@@ -232,7 +232,7 @@ pub fn get_akbo_pool_config_internal() -> Result<AkboPoolConfig, String> {
 
     Ok(AkboPoolConfig {
         central_pool_dir: default_pool,
-        stage_only: false,
+        stage_only: true,
     })
 }
 
@@ -279,7 +279,7 @@ pub fn install_builtin_akbo_plugin() -> Result<AgyPluginOpResult, String> {
         "name": "akbo",
         "displayName": "AKBO Knowledge Oracle & Central Memory Pool",
         "version": "2.0.0",
-        "description": "Deterministic AST Codebase Knowledge Graph (CKG), centralized cross-project knowledge pooling, and autonomous post-conversation memory consolidation ('dreaming').",
+        "description": "Structural Codebase Knowledge Graph (CKG), centralized cross-project knowledge pooling, and staged post-conversation memory consolidation ('dreaming').",
         "skills": ["akbo"],
         "rules": ["AGENTS.md"],
         "mcpServers": ["akbo"]
@@ -380,8 +380,36 @@ const env = {
   AKBO_POOL_DIR: targetProjectPool
 };
 
-const child = spawn('npx', ['-y', 'akbo-cli@latest', 'mcp', workspacePath, '--pool', targetProjectPool], {
-  shell: true,
+const PINNED_PKG = 'akbo-cli@2.0.0';
+let command = 'npx';
+let args = ['-y', PINNED_PKG, 'mcp', workspacePath, '--pool', targetProjectPool];
+let useShell = true;
+
+try {
+  const pkgJsonPath = path.join(workspacePath, 'package.json');
+  const localCli = path.join(workspacePath, 'dist', 'cli.js');
+  if (fs.existsSync(pkgJsonPath) && fs.existsSync(localCli)) {
+    const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8'));
+    if (pkg && pkg.name === 'akbo-cli') {
+      command = process.execPath;
+      args = [localCli, 'mcp', workspacePath, '--pool', targetProjectPool];
+      useShell = false;
+    }
+  }
+} catch {}
+
+if (command === 'npx') {
+  try {
+    const checkCmd = process.platform === 'win32' ? 'where akbo-mcp' : 'which akbo-mcp';
+    execSync(checkCmd, { stdio: 'ignore', timeout: 2000 });
+    command = 'akbo-mcp';
+    args = [workspacePath, '--pool', targetProjectPool];
+    useShell = process.platform === 'win32';
+  } catch {}
+}
+
+const child = spawn(command, args, {
+  shell: useShell,
   stdio: 'inherit',
   env
 });
@@ -468,7 +496,7 @@ function main() {
   const configFile = path.join(userHome, '.gemini', 'config', 'akbo_pool.json');
 
   let centralPoolRoot = process.env.AKBO_CENTRAL_POOL_DIR || process.env.AKBO_POOL_DIR;
-  let stageOnly = false;
+  let stageOnly = true;
 
   if (fs.existsSync(configFile)) {
     try {
@@ -547,10 +575,64 @@ function main() {
     }
   } catch {}
 
+  // Skip spawning CLI entirely if there are no pending unconsolidated observations
+  let hasPendingObservations = false;
+  try {
+    const poolSessions = path.join(targetProjectPool, '.akb', 'sessions');
+    if (fs.existsSync(poolSessions)) {
+      for (const agent of fs.readdirSync(poolSessions)) {
+        const obsFile = path.join(poolSessions, agent, 'observations.jsonl');
+        if (!fs.existsSync(obsFile)) continue;
+        const lines = fs.readFileSync(obsFile, 'utf-8').split('\n').filter(Boolean);
+        for (const line of lines) {
+          try {
+            const parsed = JSON.parse(line);
+            if (!parsed.status || parsed.status === 'recorded') {
+              hasPendingObservations = true;
+              break;
+            }
+          } catch {}
+        }
+        if (hasPendingObservations) break;
+      }
+    }
+  } catch {}
+
+  if (!hasPendingObservations) {
+    process.stdout.write(JSON.stringify({
+      status: 'no_pending_observations',
+      project: projectName,
+      poolPath: targetProjectPool
+    }));
+    return;
+  }
+
   // Run dreaming exclusively in targetProjectPool
   try {
-    const stageArg = stageOnly ? ' --stage-only' : '';
-    const cmd = `npx -y akbo-cli@latest dream "${workspacePath}" --pool "${targetProjectPool}"${stageArg} --json`;
+    const stageArg = stageOnly ? ' --stage-only' : ' --auto-approve';
+    const PINNED_PKG = 'akbo-cli@2.0.0';
+    let runner = `npx -y ${PINNED_PKG}`;
+
+    try {
+      const pkgJsonPath = path.join(workspacePath, 'package.json');
+      const localCli = path.join(workspacePath, 'dist', 'cli.js');
+      if (fs.existsSync(pkgJsonPath) && fs.existsSync(localCli)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8'));
+        if (pkg && pkg.name === 'akbo-cli') {
+          runner = `"${process.execPath}" "${localCli}"`;
+        }
+      }
+    } catch {}
+
+    if (runner.startsWith('npx')) {
+      try {
+        const checkCmd = process.platform === 'win32' ? 'where akbo' : 'which akbo';
+        execSync(checkCmd, { stdio: 'ignore', timeout: 2000 });
+        runner = 'akbo';
+      } catch {}
+    }
+
+    const cmd = `${runner} dream "${workspacePath}" --pool "${targetProjectPool}"${stageArg} --json`;
 
     execSync(cmd, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -628,37 +710,39 @@ Use this skill when you want to inspect project architecture invariants, trigger
 ## Available Actions & Commands
 
 ### 1. Memory Consolidation (`/dream`)
-Consolidates recorded observations and recent conversation error traces out-of-band into durable Architecture Decision Records (`ADR-xxx.yaml`) or updates existing knowledge units:
+Consolidates recorded observations and recent conversation error traces out-of-band into staged proposals in `.akb/staged/` (default) for review:
 ```powershell
-npx -y akbo-cli dream --stage-only
+npx -y akbo-cli@2.0.0 dream --stage-only
+npx -y akbo-cli@2.0.0 dream --list-staged
+npx -y akbo-cli@2.0.0 dream --approve all
 ```
 To auto-approve and immediately update the central pool without manual staging:
 ```powershell
-npx -y akbo-cli dream --auto-approve
+npx -y akbo-cli@2.0.0 dream --auto-approve
 ```
 
 ### 2. Inspect Invariants (`/invariants`)
 Retrieves all approved architecture and development invariants for the active project from the central pool:
 ```powershell
-npx -y akbo-cli invariants
+npx -y akbo-cli@2.0.0 invariants
 ```
 
 ### 3. Codebase Knowledge Graph Harvest (`/harvest`)
-Deterministically scans the project AST (0 LLM tokens) and updates the CKG cache in the central pool:
+Deterministically scans project topology, schemas, and endpoints (0 LLM tokens) and updates the CKG cache in the central pool:
 ```powershell
-npx -y akbo-cli harvest .
+npx -y akbo-cli@2.0.0 harvest .
 ```
 
-### 4. Blast-Radius Impact Analysis
-Traces inbound callers, interface implementations, and dependents before refactoring:
+### 4. Boundary Blast-Radius Impact Analysis
+Traces architectural boundaries (inbound HTTP/gRPC callers, endpoints, schemas, and `IMPLEMENTS` edges) before refactoring:
 ```powershell
-npx -y akbo-cli impact <symbol_or_file>
+npx -y akbo-cli@2.0.0 context <symbol_or_file>
 ```
 "#;
     std::fs::write(skill_dir.join("SKILL.md"), skill_md)
         .map_err(|e| format!("Failed to write skills/akbo/SKILL.md: {}", e))?;
 
-    // 7. Ensure ~/.gemini/config/akbo_pool.json exists with stageOnly: false by default
+    // 7. Ensure ~/.gemini/config/akbo_pool.json exists with stageOnly: true by default
     let pool_config_dir = PathBuf::from(&home).join(".gemini").join("config");
     let _ = std::fs::create_dir_all(&pool_config_dir);
     let pool_config_file = pool_config_dir.join("akbo_pool.json");
@@ -666,7 +750,7 @@ npx -y akbo-cli impact <symbol_or_file>
         let default_pool = PathBuf::from(&home).join(".akb").join("central-pool").to_string_lossy().to_string();
         let pool_payload = serde_json::json!({
             "centralPoolDir": default_pool,
-            "stageOnly": false
+            "stageOnly": true
         });
         if let Ok(pool_json) = serde_json::to_string_pretty(&pool_payload) {
             let _ = std::fs::write(&pool_config_file, pool_json);
@@ -1069,17 +1153,20 @@ mod tests {
 
     #[test]
     fn test_akbo_on_stop_script_syntax() {
-        let sample_script = r#"const cmd = `npx -y akbo-cli@latest dream "${workspacePath}" --pool "${targetProjectPool}"${stageArg} --json`;"#;
-        assert!(sample_script.contains("akbo-cli@latest dream \"${workspacePath}\""));
+        let sample_script = r#"const cmd = `${runner} dream "${workspacePath}" --pool "${targetProjectPool}"${stageArg} --json`;"#;
+        assert!(sample_script.contains("dream \"${workspacePath}\""));
         assert!(!sample_script.contains("--targetDir"));
         assert!(!sample_script.contains("--transcriptFiles"));
+        assert!(!sample_script.contains("akbo-cli@latest"));
     }
 
     #[test]
     fn test_akbo_mcp_wrapper_syntax() {
-        let sample_mcp = r#"const child = spawn('npx', ['-y', 'akbo-cli@latest', 'mcp', workspacePath, '--pool', targetProjectPool], { shell: true, stdio: 'inherit', env });"#;
+        let pinned_pkg = "akbo-cli@2.0.0";
+        let sample_mcp = format!(r#"const args = ['-y', '{}', 'mcp', workspacePath, '--pool', targetProjectPool];"#, pinned_pkg);
         assert!(sample_mcp.contains("--pool"));
-        assert!(sample_mcp.contains("akbo-cli@latest"));
+        assert!(sample_mcp.contains("akbo-cli@2.0.0"));
+        assert!(!sample_mcp.contains("@latest"));
         assert!(sample_mcp.contains("mcp"));
     }
 }

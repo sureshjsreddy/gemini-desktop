@@ -108,13 +108,13 @@ A modern, blazing-fast native desktop application for interacting with the **Gem
   - Connect AI agents to local and remote tools, databases, and services via Model Context Protocol (MCP 2.0).
   - Dynamic multi-layer server aggregation across enabled Antigravity plugins, global settings (`mcp_config.json`), and workspace profiles (`.agents/mcp_config.json`).
   - Automatic plugin argument path resolution and execution scoping, ensuring sidecar scripts and bundled MCP tools launch seamlessly in ACP mode.
-  - Built-in 1-click presets for **AKBO Knowledge & Dreaming** (`akbo-cli`), Local Filesystem, GitHub Docker, Postgres, Memory, and Brave Search.
+  - Built-in 1-click presets for **AKBO Knowledge & Dreaming** (`akbo-cli@2.0.0`), Local Filesystem, GitHub Docker, Postgres, Memory, and Brave Search.
   - Dual guided-form and monospaced raw JSON editors with live status toggle switches (`disabled: true`).
 
 - **🧩 Antigravity Plugins Catalog & AKBO Central Knowledge Pool**
   - Native GUI for discovering, installing, enabling, configuring, and scaffolding Antigravity CLI (`agy`) plugins.
-  - Built-in 1-click installation for **AKBO Knowledge Oracle & Central Memory Pool** (`akbo`) bundling AST Codebase Knowledge Graph (CKG) tools, agent invariant rules, and automated post-turn memory consolidation ("dreaming").
-  - **Central Knowledge Pool GUI Configuration**: Customize central memory repository paths (`~/.gemini/config/akbo_pool.json`) and toggle `--stage-only` proposal review mode directly in `PluginsModal.svelte`.
+  - Built-in 1-click installation for **AKBO Knowledge Oracle & Central Memory Pool** (`akbo`) bundling Structural Codebase Knowledge Graph (CKG) tools, agent invariant rules, pinned `akbo-cli@2.0.0` / local-first binary resolution, and observation-gated staged post-turn memory consolidation ("dreaming").
+  - **Central Knowledge Pool GUI Configuration**: Customize central memory repository paths (`~/.gemini/config/akbo_pool.json`) and toggle `--stage-only` proposal review mode (enabled by default for safe review) directly in `PluginsModal.svelte`.
   - Clean lifecycle uninstallation and disk directory cleanup.
 
 ---

@@ -48,7 +48,7 @@
   // AKBO Central Knowledge Pool Configuration state
   let isPoolConfigOpen = $state(false);
   let akboPoolDir = $state("");
-  let akboStageOnly = $state(false);
+  let akboStageOnly = $state(true);
   let isSavingPoolConfig = $state(false);
 
   // Create plugin form state
@@ -68,7 +68,7 @@
       id: "akbo",
       name: "AKBO Knowledge Oracle & Central Memory Pool",
       category: "Knowledge & Memory",
-      description: "AST Codebase Knowledge Graph (CKG), centralized cross-project memory pooling, and autonomous post-turn consolidation ('dreaming').",
+      description: "Structural Codebase Knowledge Graph (CKG), centralized cross-project memory pooling, and staged post-turn consolidation ('dreaming').",
       skills: ["akbo"],
     },
     {

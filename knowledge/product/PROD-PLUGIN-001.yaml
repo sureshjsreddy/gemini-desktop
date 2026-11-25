@@ -3,7 +3,7 @@ type: product_standard
 title: Antigravity CLI (agy) Plugins & Extensions Management Standard
 domain: product
 status: approved
-version: 1.1.0
+version: 1.2.0
 authority:
   level: official
   confidence: high
@@ -18,15 +18,15 @@ applies_to:
   - commands
 
 rule:
-  "Gemini Desktop provides native GUI management for Antigravity CLI (`agy`) plugins and extension bundles. When `agy` is active, users can inspect installed plugins, toggle them on/off live, install curated plugins (including AKBO Knowledge Oracle with autonomous post-turn dreaming), configure Central Knowledge Pools, install marketplace packages, and scaffold custom plugin bundles. When official Gemini CLI (`gemini`) is active, an informative banner guides users that plugins are an `agy` agentic feature without disruptive conversion prompts."
+  "Gemini Desktop provides native GUI management for Antigravity CLI (`agy`) plugins and extension bundles. When `agy` is active, users can inspect installed plugins, toggle them on/off live, install curated plugins (including AKBO Knowledge Oracle with staged post-turn dreaming), configure Central Knowledge Pools, install marketplace packages, and scaffold custom plugin bundles. When official Gemini CLI (`gemini`) is active, an informative banner guides users that plugins are an `agy` agentic feature without disruptive conversion prompts."
 
 do:
   - "Query installed plugins dynamically via `list_agy_plugins` (`agy plugin list --json`), enriching metadata with local `plugin.json` (`displayName`, `description`, `version`, `logo`)."
   - "Support live 1-click enable/disable toggles via `toggle_agy_plugin` (`agy plugin enable/disable <name>`) without requiring application restart."
   - "Provide direct folder access via `open_plugin_directory` (`explorer.exe`) to view plugin assets, skills, and configuration."
   - "Support installing official, partner, or custom plugins via `install_agy_plugin` (`agy plugin install <target>`)."
-  - "Provide 1-click curated installation for `akbo` in `PluginsModal.svelte`, auto-generating `plugin.json`, `mcp.cjs` launcher (isolating all caches, sessions, and knowledge units exclusively in the central pool `~/.akb/central-pool/projects/<project>/` with zero workspace pollution), `mcp_config.json`, `hooks.json` (`Stop` event hook), `hooks/on-stop.cjs` (invoking `akbo dream \"${workspacePath}\"` with positional directory argument), `rules/AGENTS.md`, and `skills/akbo/SKILL.md`."
-  - "Provide Central Knowledge Pool GUI configuration via `get_akbo_pool_config` and `save_akbo_pool_config` (`~/.gemini/config/akbo_pool.json`) with configurable directory path and `stageOnly` defaulting to `false` for immediate durable ADR consolidation."
+  - "Provide 1-click curated installation for `akbo` in `PluginsModal.svelte`, auto-generating `plugin.json`, `mcp.cjs` launcher (isolating all caches, sessions, and knowledge units exclusively in the central pool `~/.akb/central-pool/projects/<project>/` with zero workspace pollution, preferring local/installed binaries or pinned `akbo-cli@2.0.0`), `mcp_config.json`, `hooks.json` (`Stop` event hook), `hooks/on-stop.cjs` (skipping turns without pending observations and invoking `akbo dream \"${workspacePath}\"`), `rules/AGENTS.md`, and `skills/akbo/SKILL.md`."
+  - "Provide Central Knowledge Pool GUI configuration via `get_akbo_pool_config` and `save_akbo_pool_config` (`~/.gemini/config/akbo_pool.json`) with configurable directory path and `stageOnly` defaulting to `true` so candidate ADRs are staged for user review before catalog updates."
   - "Support custom plugin scaffolding via `create_custom_plugin`: generate `plugin.json`, `README.md`, and optional `skills/<skill>/SKILL.md`, `mcp_config.json`, `rules/AGENTS.md`, and `agents/<agent>.md` in `%USERPROFILE%/.gemini/config/plugins/<name>/`."
   - "Surface capability pills (`Skills count`, `MCP tools`, `Rules`) on installed plugin cards."
   - "When `activeEngine === 'gemini'`, display an informative educational banner explaining that plugins are an Antigravity (`agy`) feature, guiding users to switch engines if desired."
@@ -35,6 +35,7 @@ do:
 dont:
   - "Do not attempt to execute `agy plugin` commands when `activeEngine === 'gemini'` or when `agy` binary is not found on the system."
   - "Do not hardcode machine-specific local paths in marketplace-facing plugin configurations; prefer portable npm/npx runners (`npx -y <package> mcp`)."
+  - "Do not use floating `@latest` npm specifiers in AKBO launchers or presets; pin the tested `akbo-cli@2.0.0` version as the fallback after local/global binary lookup."
   - "Do not overwrite existing plugin directories during custom plugin scaffolding without user confirmation."
 
 reason:

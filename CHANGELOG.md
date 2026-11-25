@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.1] - 2026-11-25
+
+### Changed & Fixed
+- **AKBO Plugin Stability, Version Pinning & Safe Staged Dreaming (`plugins.rs`, `PluginsModal.svelte`, `McpModal.svelte`)**:
+  - **Safe Staged Consolidation by Default (`stageOnly: true`)**: Updated `get_akbo_pool_config_internal`, `install_builtin_akbo_plugin`, `hooks/on-stop.cjs`, and `PluginsModal.svelte` to default `stageOnly` to `true`, staging candidate ADRs in `.akb/staged/` for user review instead of auto-approving immediately; explicitly passes `--auto-approve` when staging is disabled.
+  - **Deterministic Runner Resolution & `akbo-cli@2.0.0` Pinning**: Replaced floating `akbo-cli@latest` / unpinned `akbo-cli` invocations across `mcp.cjs`, `hooks/on-stop.cjs`, `skills/akbo/SKILL.md`, and the `McpModal.svelte` AKBO preset with a three-tier resolver: workspace-local `dist/cli.js` (when `package.json` `name === 'akbo-cli'`) -> globally installed `akbo-mcp` / `akbo` on `PATH` -> pinned `npx -y akbo-cli@2.0.0`.
+  - **Zero-Overhead `on-stop.cjs` Observation Gating**: Added an observation scan across `<central_pool>/projects/<project>/.akb/sessions/*/observations.jsonl` in `hooks/on-stop.cjs` to immediately return `no_pending_observations` and skip spawning the CLI on turns without unconsolidated observations.
+  - **Updated AKBO Metadata & Skill Playbook**: Updated plugin/catalog descriptions to **Structural Codebase Knowledge Graph (CKG)** and refreshed `skills/akbo/SKILL.md` with `--list-staged`, `--approve all`, and `context <symbol_or_file>` boundary blast-radius commands.
+  - **Standards & Verification**: Updated [PROD-PLUGIN-001.yaml](file:///c:/AIFiles/gemini-desktop/knowledge/product/PROD-PLUGIN-001.yaml) (v1.2.0) and unit tests (`test_akbo_on_stop_script_syntax`, `test_akbo_mcp_wrapper_syntax`).
+
+---
+
 ## [0.10.0] - 2026-11-24
 
 ### Added & Enhanced
