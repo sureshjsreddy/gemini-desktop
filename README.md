@@ -137,12 +137,26 @@ A modern, blazing-fast native desktop application for interacting with the **Gem
 
 ## 📥 Installation & Downloads
 
+### 📦 Windows Package Manager (WinGet)
+
+The recommended way to install and keep Gemini Desktop updated on Windows:
+
+```powershell
+# Install Gemini Desktop
+winget install SureshJanakiReddy.GeminiDesktop
+
+# Upgrade to latest release
+winget upgrade SureshJanakiReddy.GeminiDesktop
+```
+
+### 💾 Direct Binary Downloads
+
 Pre-built Windows binaries are automatically generated on every release:
 
 1. Visit the [**Latest Releases**](https://github.com/sureshjsreddy/gemini-desktop/releases/latest) page.
 2. Download either:
-   - **`GeminiDesktop-Setup.exe`**: Standard Windows installer (NSIS).
-   - **`Gemini Desktop_x64_en-US.msi`**: Windows MSI installer.
+   - **`Gemini.Desktop_<version>_x64-setup.exe`**: Standard Windows setup installer (NSIS).
+   - **`Gemini.Desktop_<version>_x64_en-US.msi`**: Windows WiX MSI installer.
    - **`GeminiDesktop-Portable.exe`**: Portable standalone executable (no installation required).
 3. Run the installer or portable binary.
 
