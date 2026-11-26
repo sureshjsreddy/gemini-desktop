@@ -3,7 +3,7 @@ type: product_standard
 title: Antigravity CLI (agy) Plugins & Extensions Management Standard
 domain: product
 status: approved
-version: 1.4.0
+version: 1.5.0
 authority:
   level: official
   confidence: high
@@ -25,7 +25,7 @@ do:
   - "Support live 1-click enable/disable toggles via `toggle_agy_plugin` (`agy plugin enable/disable <name>`) without requiring application restart."
   - "Provide direct folder access via `open_plugin_directory` (`explorer.exe`) to view plugin assets, skills, and configuration."
   - "Support installing official, partner, or custom plugins via `install_agy_plugin` (`agy plugin install <target>`)."
-  - "Provide 1-click curated installation and in-place `Repair / Update` for `akbo` in `PluginsModal.svelte`, auto-generating a clean metadata-only `plugin.json` (relying on `agy` automatic discovery of `skills/`, `rules/`, `hooks.json`, and `mcp_config.json`), `mcp.cjs` launcher (isolating all caches, sessions, and knowledge units exclusively in the central pool `~/.akb/central-pool/projects/<project>/` with zero workspace pollution, detecting IDE fallback when `WORKSPACE_DIR`/`PROJECT_DIR` are unset and `cwd` equals `__dirname` to route per-call `dir` via `AKBO_CENTRAL_POOL_DIR` and dynamic MCP `tools/call` `pool` injection without pinning `projects/akbo`, non-destructively mirroring repo-local `knowledge/` into the central pool, and preferring local/installed binaries or pinned `akbo-cli@3.1.0`), `mcp_config.json`, `hooks.json` (`Stop` event hook), `hooks/on-stop.cjs` (checking `continuationActive || continuation_active`, ignoring fallback plugin-dir turns, mirroring repo-local `knowledge/`, skipping turns without pending observations, invoking `akbo dream \"${workspacePath}\"`, and emitting `{}` on stdout to satisfy `agy` protojson validation), `rules/AGENTS.md` (with `akbo_upsert_units` onboarding rules and `topic`/`finding` schema fields for `akbo_record_observation`), and `skills/akbo/SKILL.md`."
+  - "Provide 1-click curated installation and in-place `Repair / Update` for `akbo` in `PluginsModal.svelte`, auto-generating a clean metadata-only `plugin.json` (relying on `agy` automatic discovery of `skills/`, `rules/`, `hooks.json`, and `mcp_config.json`), `mcp.cjs` launcher (isolating all caches, sessions, and knowledge units exclusively in the central pool `~/.akb/central-pool/projects/<project>/` with zero workspace pollution, detecting IDE fallback when `WORKSPACE_DIR`/`PROJECT_DIR` are unset and `cwd` equals `__dirname` to route per-call `dir` via `AKBO_CENTRAL_POOL_DIR` and dynamic MCP `tools/call` `pool` injection without pinning `projects/akbo`, non-destructively mirroring repo-local `knowledge/` into the central pool, and preferring local/installed binaries or pinned `akbo-cli@3.2.0`), `mcp_config.json`, `hooks.json` (`Stop` event hook), `hooks/on-stop.cjs` (checking `continuationActive || continuation_active`, ignoring fallback plugin-dir turns, mirroring repo-local `knowledge/`, skipping turns without pending observations, invoking `akbo dream \"${workspacePath}\"`, and emitting `{}` on stdout to satisfy `agy` protojson validation), `rules/AGENTS.md` (with `akbo_upsert_units` onboarding rules and `topic`/`finding` schema fields for `akbo_record_observation`), and `skills/akbo/SKILL.md`."
   - "Provide Central Knowledge Pool GUI configuration via `get_akbo_pool_config` and `save_akbo_pool_config` (`~/.gemini/config/akbo_pool.json`) with configurable directory path and `stageOnly` defaulting to `true` so candidate ADRs are staged for user review before catalog updates."
   - "Support custom plugin scaffolding via `create_custom_plugin`: generate `plugin.json`, `README.md`, and optional `skills/<skill>/SKILL.md`, `mcp_config.json`, `rules/AGENTS.md`, and `agents/<agent>.md` in `%USERPROFILE%/.gemini/config/plugins/<name>/`."
   - "Surface capability pills (`Skills count`, `MCP tools`, `Rules`) on installed plugin cards."
@@ -35,7 +35,7 @@ do:
 dont:
   - "Do not attempt to execute `agy plugin` commands when `activeEngine === 'gemini'` or when `agy` binary is not found on the system."
   - "Do not hardcode machine-specific local paths in marketplace-facing plugin configurations; prefer portable npm/npx runners (`npx -y <package> mcp`)."
-  - "Do not use floating `@latest` npm specifiers in AKBO launchers or presets; pin the tested `akbo-cli@3.1.0` version as the fallback after local/global binary lookup."
+  - "Do not use floating `@latest` npm specifiers in AKBO launchers or presets; pin the tested `akbo-cli@3.2.0` version as the fallback after local/global binary lookup."
   - "Do not emit non-protojson fields (such as `{\"status\": ...}`) to `stdout` from Antigravity CLI `Stop` hook scripts, or add non-manifest `skills`/`rules`/`mcpServers` string arrays into `plugin.json`."
   - "Do not overwrite existing plugin directories during custom plugin scaffolding without user confirmation."
 

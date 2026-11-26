@@ -9,6 +9,7 @@ import {
 import { extractTasksFromMarkdown } from "../src/lib/utils/planParser.ts";
 import { parseDebugError } from "../src/lib/utils/debugParser.ts";
 import { isHiddenOrIgnored, isNodeVisible } from "../src/lib/utils/fileFilters.ts";
+import { buildMcpPresets } from "../src/lib/utils/mcpPresets.ts";
 
 test("engineModels: cross-engine sanitization & fallback labels", () => {
   assert.equal(sanitizeModelForEngine("gemini-2.5-pro", "agy"), "auto");
@@ -67,4 +68,20 @@ test("fileFilters: filters ignored and hidden paths cleanly", () => {
   assert.equal(isNodeVisible(".env", false), false);
   assert.equal(isNodeVisible(".env", true), true);
   assert.equal(isNodeVisible("README.md", false), true);
+});
+
+test("mcpPresets: AKBO preset pins akbo-cli@3.2.0 and respects workspacePath", () => {
+  const presets = buildMcpPresets("C:\\repos\\sample-app");
+  const akbo = presets.find((p) => p.id === "akbo");
+  assert.ok(akbo, "akbo preset should exist");
+  assert.equal(akbo.config.command, "npx");
+  assert.deepEqual(akbo.config.args, ["-y", "akbo-cli@3.2.0", "mcp"]);
+  assert.ok(!akbo.config.args.some((a) => a.includes("@latest") || a.includes("3.1.0")));
+
+  const fsPreset = presets.find((p) => p.id === "filesystem");
+  assert.ok(fsPreset);
+  assert.equal(fsPreset.config.args[2], "C:\\repos\\sample-app");
+
+  const defaultFsPreset = buildMcpPresets().find((p) => p.id === "filesystem");
+  assert.equal(defaultFsPreset?.config.args[2], "C:\\projects");
 });

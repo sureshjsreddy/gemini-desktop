@@ -113,13 +113,13 @@ A modern, blazing-fast native desktop application for interacting with **Gemini 
   - Connect AI agents to local and remote tools, databases, and services via Model Context Protocol (MCP 2.0).
   - Dynamic multi-layer server aggregation across enabled Antigravity plugins, global settings (`mcp_config.json`), and workspace profiles (`.agents/mcp_config.json`), with strict ACP schema normalization (`env`/`headers` arrays) and single-pass plugin namespacing.
   - Automatic plugin argument path resolution and execution scoping, ensuring sidecar scripts and bundled MCP tools launch seamlessly in ACP mode, plus automatic ACP session reset when saving MCP or plugin changes.
-  - Built-in 1-click presets for **Playwright Browser** (`@playwright/mcp`), **AKBO Knowledge & Dreaming** (`akbo-cli@3.1.0`), Local Filesystem, GitHub Docker, Postgres, Memory, and Brave Search.
+  - Built-in 1-click presets for **Playwright Browser** (`@playwright/mcp`), **AKBO Knowledge & Dreaming** (`akbo-cli@3.2.0`), Local Filesystem, GitHub Docker, Postgres, Memory, and Brave Search.
   - Live MCP runtime diagnostics (`diagnose_mcp_runtime`) detecting Antigravity BAIC admin policy blocks, 5-second preload timeouts, and spawn errors directly in `McpModal.svelte`.
   - Dual guided-form and monospaced raw JSON editors with live status toggle switches (`disabled: true`).
 
 - **🧩 Antigravity Plugins Catalog & AKBO Central Knowledge Pool**
   - Native GUI for discovering, installing, repairing/updating, enabling, configuring, and scaffolding Antigravity CLI (`agy`) plugins.
-  - Built-in 1-click installation & **Repair / Update** for **AKBO Knowledge Oracle & Central Memory Pool** (`akbo`) bundling Hybrid AST Codebase Knowledge Graph (CKG) tools, baseline project onboarding rules (`akbo_upsert_units` + `akbo_record_observation` + `local+pool` guidance), IDE fallback dynamic per-project pool routing (`AKBO_CENTRAL_POOL_DIR`, `AKBO_DISALLOW_DIRS`, dynamic `tools/call` `pool` injection), non-destructive repo-local `knowledge/` mirroring, pinned `akbo-cli@3.1.0` / local-first binary resolution, and `protojson`-compliant staged post-turn memory consolidation ("dreaming").
+  - Built-in 1-click installation & **Repair / Update** for **AKBO Knowledge Oracle & Central Memory Pool** (`akbo`) bundling Hybrid AST Codebase Knowledge Graph (CKG) tools (Semantic TS `ts.Program`/`TypeChecker` + WASM tree-sitter), baseline project onboarding rules (`akbo_upsert_units` + `akbo_record_observation` + `local+pool` guidance), IDE fallback dynamic per-project pool routing (`AKBO_CENTRAL_POOL_DIR`, `AKBO_DISALLOW_DIRS`, dynamic `tools/call` `pool` injection), non-destructive repo-local `knowledge/` mirroring, pinned `akbo-cli@3.2.0` / local-first binary resolution, and `protojson`-compliant staged post-turn memory consolidation ("dreaming").
   - **Central Knowledge Pool GUI Configuration**: Customize central memory repository paths (`~/.gemini/config/akbo_pool.json`) and toggle `--stage-only` proposal review mode (enabled by default for safe review) directly in `PluginsModal.svelte`.
   - Clean lifecycle uninstallation and disk directory cleanup.
 

@@ -232,8 +232,8 @@ fn akbo_manifest_json() -> serde_json::Value {
     serde_json::json!({
         "name": "akbo",
         "displayName": "AKBO Knowledge Oracle & Central Memory Pool",
-        "version": "3.1.0",
-        "description": "Hybrid AST Codebase Knowledge Graph (TS Compiler + WASM tree-sitter), centralized cross-project knowledge pooling, AST-backed convention guardrails, and staged post-conversation memory consolidation ('dreaming')."
+        "version": "3.2.0",
+        "description": "Hybrid AST Codebase Knowledge Graph (Semantic TS Program/TypeChecker + WASM tree-sitter), centralized cross-project knowledge pooling, AST-backed convention guardrails, and staged post-conversation memory consolidation ('dreaming')."
     })
 }
 
@@ -464,7 +464,7 @@ function main() {
   // Run dreaming exclusively in targetProjectPool
   try {
     const stageArg = stageOnly ? ' --stage-only' : ' --auto-approve';
-    const PINNED_PKG = 'akbo-cli@3.1.0';
+    const PINNED_PKG = 'akbo-cli@3.2.0';
     let runner = `npx -y ${PINNED_PKG}`;
 
     try {
@@ -780,7 +780,7 @@ if (isPluginFallback) {
   env.AKBO_POOL_DIR = pinnedProjectPool;
 }
 
-const PINNED_PKG = 'akbo-cli@3.1.0';
+const PINNED_PKG = 'akbo-cli@3.2.0';
 let command = 'npx';
 let args = pinnedProjectPool
   ? ['-y', PINNED_PKG, 'mcp', workspacePath, '--pool', pinnedProjectPool]
@@ -911,12 +911,53 @@ child.on('exit', (code, signal) => {
 "#
 }
 
-pub fn install_builtin_akbo_plugin() -> Result<AgyPluginOpResult, String> {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map_err(|_| "Could not determine user home directory".to_string())?;
+fn akbo_skill_markdown() -> &'static str {
+    r#"---
+name: akbo
+description: Centralized Codebase Knowledge Graph (CKG), out-of-band memory consolidation (dreaming), and architectural invariant management.
+---
 
-    let plugin_dir = PathBuf::from(&home)
+# AKBO Knowledge Oracle & Central Memory Pool
+
+Use this skill when you want to inspect project architecture invariants, trigger out-of-band memory consolidation ("dreaming"), review staged proposals, or check central pool status.
+
+## Available Actions & Commands
+
+### 1. Memory Consolidation (`/dream`)
+Consolidates recorded observations and recent conversation error traces out-of-band into staged proposals in `.akb/staged/` (default) for review:
+```powershell
+npx -y akbo-cli@3.2.0 dream --stage-only
+npx -y akbo-cli@3.2.0 dream --list-staged
+npx -y akbo-cli@3.2.0 dream --approve all
+```
+To auto-approve and immediately update the central pool without manual staging:
+```powershell
+npx -y akbo-cli@3.2.0 dream --auto-approve
+```
+
+### 2. Inspect Invariants (`/invariants`)
+Retrieves all approved architecture and development invariants for the active project from the central pool:
+```powershell
+npx -y akbo-cli@3.2.0 invariants
+```
+
+### 3. Hybrid AST Codebase Knowledge Graph Harvest (`/harvest`)
+Deterministically scans project topology using the Hybrid AST Engine (Semantic TS `ts.Program`/`TypeChecker` + WASM tree-sitter for C#, Java, Python, Rust, Go with comment-stripped regex fallback, 0 LLM tokens) and updates the CKG cache in the central pool:
+```powershell
+npx -y akbo-cli@3.2.0 harvest .
+```
+
+### 4. Scoped Blast-Radius & Convention Guardrails
+Traces architectural boundaries and cross-file TS `IMPORTS`/`CALLS_SYMBOL` (`scope: all | architectural | symbol` on `akbo_impact`, `file#symbol` disambiguation) before refactoring, and evaluates `ast_query` + diff-aware guardrails:
+```powershell
+npx -y akbo-cli@3.2.0 context <symbol_or_file>
+npx -y akbo-cli@3.2.0 guard <file> -c "<code_or_diff>"
+```
+"#
+}
+
+fn write_builtin_akbo_plugin_bundle(home_dir: &std::path::Path) -> Result<PathBuf, String> {
+    let plugin_dir = home_dir
         .join(".gemini")
         .join("config")
         .join("plugins")
@@ -986,57 +1027,15 @@ pub fn install_builtin_akbo_plugin() -> Result<AgyPluginOpResult, String> {
     let skill_dir = plugin_dir.join("skills").join("akbo");
     std::fs::create_dir_all(&skill_dir)
         .map_err(|e| format!("Failed to create skills directory: {}", e))?;
-    let skill_md = r#"---
-name: akbo
-description: Centralized Codebase Knowledge Graph (CKG), out-of-band memory consolidation (dreaming), and architectural invariant management.
----
-
-# AKBO Knowledge Oracle & Central Memory Pool
-
-Use this skill when you want to inspect project architecture invariants, trigger out-of-band memory consolidation ("dreaming"), review staged proposals, or check central pool status.
-
-## Available Actions & Commands
-
-### 1. Memory Consolidation (`/dream`)
-Consolidates recorded observations and recent conversation error traces out-of-band into staged proposals in `.akb/staged/` (default) for review:
-```powershell
-npx -y akbo-cli@3.1.0 dream --stage-only
-npx -y akbo-cli@3.1.0 dream --list-staged
-npx -y akbo-cli@3.1.0 dream --approve all
-```
-To auto-approve and immediately update the central pool without manual staging:
-```powershell
-npx -y akbo-cli@3.1.0 dream --auto-approve
-```
-
-### 2. Inspect Invariants (`/invariants`)
-Retrieves all approved architecture and development invariants for the active project from the central pool:
-```powershell
-npx -y akbo-cli@3.1.0 invariants
-```
-
-### 3. Hybrid AST Codebase Knowledge Graph Harvest (`/harvest`)
-Deterministically scans project topology using the Hybrid AST Engine (TS Compiler AST + WASM tree-sitter for C#, Java, Python, Rust, Go with comment-stripped regex fallback, 0 LLM tokens) and updates the CKG cache in the central pool:
-```powershell
-npx -y akbo-cli@3.1.0 harvest .
-```
-
-### 4. Scoped Blast-Radius & Convention Guardrails
-Traces architectural boundaries and cross-file TS `IMPORTS`/`CALLS_SYMBOL` (`scope: all | architectural | symbol` on `akbo_impact`, `file#symbol` disambiguation) before refactoring, and evaluates `ast_query` + diff-aware guardrails:
-```powershell
-npx -y akbo-cli@3.1.0 context <symbol_or_file>
-npx -y akbo-cli@3.1.0 guard <file> -c "<code_or_diff>"
-```
-"#;
-    std::fs::write(skill_dir.join("SKILL.md"), skill_md)
+    std::fs::write(skill_dir.join("SKILL.md"), akbo_skill_markdown())
         .map_err(|e| format!("Failed to write skills/akbo/SKILL.md: {}", e))?;
 
-    // 7. Ensure ~/.gemini/config/akbo_pool.json exists with stageOnly: true by default
-    let pool_config_dir = PathBuf::from(&home).join(".gemini").join("config");
+    // 8. Ensure ~/.gemini/config/akbo_pool.json exists with stageOnly: true by default
+    let pool_config_dir = home_dir.join(".gemini").join("config");
     let _ = std::fs::create_dir_all(&pool_config_dir);
     let pool_config_file = pool_config_dir.join("akbo_pool.json");
     if !pool_config_file.exists() {
-        let default_pool = PathBuf::from(&home).join(".akb").join("central-pool").to_string_lossy().to_string();
+        let default_pool = home_dir.join(".akb").join("central-pool").to_string_lossy().to_string();
         let pool_payload = serde_json::json!({
             "centralPoolDir": default_pool,
             "stageOnly": true
@@ -1046,7 +1045,17 @@ npx -y akbo-cli@3.1.0 guard <file> -c "<code_or_diff>"
         }
     }
 
-    // 8. Enable plugin
+    Ok(plugin_dir)
+}
+
+pub fn install_builtin_akbo_plugin() -> Result<AgyPluginOpResult, String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map_err(|_| "Could not determine user home directory".to_string())?;
+
+    write_builtin_akbo_plugin_bundle(PathBuf::from(&home).as_path())?;
+
+    // Enable plugin
     let _ = toggle_agy_plugin_internal("akbo", true);
 
     Ok(AgyPluginOpResult {
@@ -1553,6 +1562,8 @@ mod tests {
     #[test]
     fn test_akbo_on_stop_script_syntax() {
         let on_stop = akbo_on_stop_script();
+        assert!(on_stop.contains("akbo-cli@3.2.0"));
+        assert!(!on_stop.contains("akbo-cli@3.1.0"));
         assert!(on_stop.contains("dream \"${workspacePath}\""));
         assert!(on_stop.contains("payload.continuationActive || payload.continuation_active"));
         assert!(on_stop.contains("process.stdout.write('{}')"));
@@ -1568,6 +1579,7 @@ mod tests {
     fn test_akbo_manifest_and_rules_contracts() {
         let manifest = akbo_manifest_json();
         assert_eq!(manifest.get("name").and_then(|v| v.as_str()), Some("akbo"));
+        assert_eq!(manifest.get("version").and_then(|v| v.as_str()), Some("3.2.0"));
         assert!(manifest.get("skills").is_none(), "skills should be auto-discovered by agy");
         assert!(manifest.get("rules").is_none(), "rules should be auto-discovered by agy");
         assert!(manifest.get("mcpServers").is_none(), "mcpServers should be auto-discovered by agy");
@@ -1579,12 +1591,18 @@ mod tests {
         assert!(rules.contains("local+pool"));
         assert!(rules.contains("as `dir`"));
         assert!(!rules.contains("`content`: Concrete technical description"));
+
+        let skill = akbo_skill_markdown();
+        assert!(skill.contains("akbo-cli@3.2.0"));
+        assert!(!skill.contains("akbo-cli@3.1.0"));
+        assert!(!skill.contains("@latest"));
     }
 
     #[test]
     fn test_akbo_mcp_wrapper_syntax() {
         let mcp = akbo_mcp_script();
-        assert!(mcp.contains("akbo-cli@3.1.0"));
+        assert!(mcp.contains("akbo-cli@3.2.0"));
+        assert!(!mcp.contains("akbo-cli@3.1.0"));
         assert!(!mcp.contains("@latest"));
         assert!(mcp.contains("AKBO_CENTRAL_POOL_DIR"));
         assert!(mcp.contains("isPluginFallback"));
@@ -1867,5 +1885,82 @@ process.stdin.on('data', (chunk) => {
         assert!(!bad_res.success);
         assert_eq!(bad_res.issues.len(), 1);
         assert!(bad_res.issues[0].contains("kebab-case"));
+    }
+
+    #[test]
+    fn test_write_builtin_akbo_plugin_bundle_generates_3_2_0_and_preserves_pool_config() {
+        let fake_home = std::env::temp_dir().join(format!(
+            "gemini_desktop_akbo_bundle_test_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&fake_home).unwrap();
+
+        let plugin_dir = write_builtin_akbo_plugin_bundle(&fake_home).unwrap();
+        assert_eq!(
+            plugin_dir,
+            fake_home.join(".gemini").join("config").join("plugins").join("akbo")
+        );
+
+        let manifest_raw = std::fs::read_to_string(plugin_dir.join("plugin.json")).unwrap();
+        let manifest: serde_json::Value = serde_json::from_str(&manifest_raw).unwrap();
+        assert_eq!(manifest["name"], "akbo");
+        assert_eq!(manifest["version"], "3.2.0");
+        assert!(manifest["description"].as_str().unwrap_or("").contains("TypeChecker"));
+        assert!(manifest.get("skills").is_none());
+        assert!(manifest.get("rules").is_none());
+        assert!(manifest.get("mcpServers").is_none());
+
+        let mcp_js = std::fs::read_to_string(plugin_dir.join("mcp.cjs")).unwrap();
+        assert!(mcp_js.contains("akbo-cli@3.2.0"));
+        assert!(!mcp_js.contains("akbo-cli@3.1.0"));
+
+        let mcp_cfg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(plugin_dir.join("mcp_config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(mcp_cfg["mcpServers"]["akbo"]["command"], "node");
+        assert_eq!(mcp_cfg["mcpServers"]["akbo"]["args"][0], "mcp.cjs");
+
+        let hooks_cfg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(plugin_dir.join("hooks.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            hooks_cfg["akbo-central-pool-sync"]["Stop"][0]["command"],
+            "node ./hooks/on-stop.cjs"
+        );
+
+        let on_stop_js = std::fs::read_to_string(plugin_dir.join("hooks").join("on-stop.cjs")).unwrap();
+        assert!(on_stop_js.contains("akbo-cli@3.2.0"));
+        assert!(!on_stop_js.contains("akbo-cli@3.1.0"));
+
+        let rules_md = std::fs::read_to_string(plugin_dir.join("rules").join("AGENTS.md")).unwrap();
+        assert!(rules_md.contains("akbo_upsert_units"));
+        assert!(rules_md.contains("akbo_record_observation"));
+
+        let skill_md =
+            std::fs::read_to_string(plugin_dir.join("skills").join("akbo").join("SKILL.md")).unwrap();
+        assert!(skill_md.contains("akbo-cli@3.2.0"));
+        assert!(!skill_md.contains("akbo-cli@3.1.0"));
+
+        // Default akbo_pool.json created with stageOnly: true
+        let pool_cfg_path = fake_home.join(".gemini").join("config").join("akbo_pool.json");
+        let pool_cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&pool_cfg_path).unwrap()).unwrap();
+        assert_eq!(pool_cfg["stageOnly"], true);
+
+        // Repair / Update preserves custom akbo_pool.json settings
+        let custom_cfg = serde_json::json!({
+            "centralPoolDir": "C:\\CustomPool",
+            "stageOnly": false
+        });
+        std::fs::write(&pool_cfg_path, serde_json::to_string_pretty(&custom_cfg).unwrap()).unwrap();
+        write_builtin_akbo_plugin_bundle(&fake_home).unwrap();
+        let preserved_cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&pool_cfg_path).unwrap()).unwrap();
+        assert_eq!(preserved_cfg["centralPoolDir"], "C:\\CustomPool");
+        assert_eq!(preserved_cfg["stageOnly"], false);
+
+        let _ = std::fs::remove_dir_all(&fake_home);
     }
 }

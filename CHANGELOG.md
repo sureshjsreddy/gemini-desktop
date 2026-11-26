@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.2] - 2026-11-26
+
+### Changed
+- **AKBO CLI v3.2.0 Upgrade (`plugins.rs`, `mcpPresets.ts`, `McpModal.svelte`)**:
+  - Updated the built-in AKBO plugin installer manifest (`version: "3.2.0"`, updated description for Semantic TS `ts.Program`/`TypeChecker` + WASM tree-sitter AST extraction), `mcp.cjs` launcher, `hooks/on-stop.cjs`, and generated `skills/akbo/SKILL.md` (`akbo_skill_markdown`) to pin `akbo-cli@3.2.0`.
+  - Extracted `buildMcpPresets` into `src/lib/utils/mcpPresets.ts` and updated the 1-click **AKBO AI Knowledge & Dreaming** MCP preset to `npx -y akbo-cli@3.2.0 mcp`.
+- **Tests, Knowledge Base & Documentation**:
+  - Extracted `write_builtin_akbo_plugin_bundle` in `plugins.rs` and added end-to-end installer test coverage (`test_write_builtin_akbo_plugin_bundle_generates_3_2_0_and_preserves_pool_config`) verifying all 7 generated bundle files, `akbo-cli@3.2.0` version pinning, and `akbo_pool.json` preservation on Repair / Update, alongside updated `akbo_manifest_and_rules_contracts` / `on-stop` / `mcp.cjs` assertions (147/147 Rust tests).
+  - Added `mcpPresets` unit test in `tests/pure-utils.test.mjs` verifying `akbo-cli@3.2.0` pinning and workspace path routing (5/5 frontend tests).
+  - Updated `PROD-PLUGIN-001.yaml` (v1.5.0), `DEV-TEST-001.yaml` (v1.9.0), and `README.md`.
+
 ## [0.11.1] - 2026-11-26
 
 ### Fixed & Changed
