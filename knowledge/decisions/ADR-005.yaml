@@ -1,0 +1,31 @@
+id: ADR-005
+type: decision_record
+title: Pluggable CLI Engine Adapter Registry & Transport Abstraction
+domain: decisions
+status: accepted
+version: 1.0.0
+authority:
+  level: official
+  confidence: high
+owner:
+  team: core_architecture
+
+context:
+  "Supporting both Google Gemini CLI (`gemini`) and Antigravity CLI (`agy`) alongside future CLIs such as Claude Code or OpenAI Codex CLI created scattered `if active_engine == \"agy\"` conditionals across frontend modals, process launching, settings routing, and model catalogs."
+
+decision:
+  "We introduced a centralized `CliEngineAdapter` trait and registry in `src-tauri/src/engines/`, paired with `TransportProtocol` / `AgentTransport` abstractions in `src-tauri/src/transports/`, capability-driven UI rendering via `engineStore.svelte.ts`, and reusable components (`EngineSwitcher.svelte`, `CliPathStatusBanner.svelte`)."
+
+consequences:
+  positive:
+    - "Adding a new CLI engine only requires implementing `CliEngineAdapter` and registering it in `all_adapters()`, with zero edits to core UI components."
+    - "Engine-specific capabilities (`supportsPlugins`, `supportsReasoningEffort`, `supportsNativeCompress`, `supportsConcurrentSteer`) automatically drive UI controls."
+    - "Unified process spawning (`ProcessSupervisor::build_cli_command`), cross-engine model sanitization (`sanitizeModelForEngine` / `getEffectiveModel`), and per-(workspace, engine) remembered models keep UX consistent."
+  negative:
+    - "Adapter capability flags and descriptor DTOs must be kept synchronized when adding novel CLI-specific UI workflows."
+
+related_items:
+  - ARCH-ENGINE-001
+  - ARCH-SYS-001
+  - DEV-SVELTE-001
+  - PROD-MODEL-001

@@ -308,6 +308,26 @@
               <span>agy plugins</span>
             </button>
           </Tooltip>
+
+          <Tooltip text="Antigravity Agent Personas" subtext="List available agent personas configured for agy --agent" position="bottom">
+            <button
+              type="button"
+              onclick={() => executeCommand("agy agent list")}
+              class="px-2 py-1 rounded text-[11px] text-purple-300 hover:text-purple-200 hover:bg-purple-900/30 border border-purple-500/20 flex items-center gap-1 transition-colors cursor-pointer"
+            >
+              <span>agy agents</span>
+            </button>
+          </Tooltip>
+
+          <Tooltip text="Antigravity Changelog" subtext="Display recent Antigravity CLI release notes" position="bottom">
+            <button
+              type="button"
+              onclick={() => executeCommand("agy changelog")}
+              class="px-2 py-1 rounded text-[11px] text-purple-300 hover:text-purple-200 hover:bg-purple-900/30 border border-purple-500/20 flex items-center gap-1 transition-colors cursor-pointer"
+            >
+              <span>agy changelog</span>
+            </button>
+          </Tooltip>
         {:else}
           <Tooltip text="Gemini CLI Version" subtext="Check installed Gemini CLI version and build information" position="bottom">
             <button

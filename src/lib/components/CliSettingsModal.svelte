@@ -4,9 +4,6 @@
     GlobalCliSettings,
     SaveGlobalCliSettingsPayload,
     CliEngine,
-    CliEnginesStatus,
-    CliPathStatus,
-    PathAddResult,
   } from "$lib/types";
   import {
     Sliders,
@@ -21,10 +18,11 @@
     FolderOpen,
     Copy,
     AlertCircle,
-    Globe,
-    CheckCircle2,
   } from "lucide-svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
+  import EngineSwitcher from "$lib/components/EngineSwitcher.svelte";
+  import CliPathStatusBanner from "$lib/components/CliPathStatusBanner.svelte";
+  import { engineStore } from "$lib/stores/engineStore.svelte";
 
   let {
     isOpen = false,
@@ -45,8 +43,6 @@
 
   // Settings State
   let activeEngine = $state<CliEngine>("gemini");
-  let engineStatus = $state<CliEnginesStatus | null>(null);
-  let isSwitchingEngine = $state(false);
   let settingsFilePath = $state("");
   let chatCompressionEnabled = $state(false);
   let compressionThresholdPercent = $state(75);
@@ -57,11 +53,14 @@
   let retentionMaxAge = $state("30d");
   let rawJson = $state("");
 
-  // PATH State
-  let cliPathStatus = $state<CliPathStatus | null>(null);
-  let isCheckingPath = $state(false);
-  let isAddingToPath = $state(false);
-  let pathAddResult = $state<PathAddResult | null>(null);
+  // Antigravity (agy) Specific Settings State
+  let agyAgentMode = $state("auto");
+  let showThinking = $state(true);
+  let orchPlannerModel = $state("");
+  let orchExecutorModel = $state("");
+  let orchEffort = $state("");
+  let agyAutoCompactOverride = $state("");
+  let agyDisableEmbeddedRipgrep = $state(false);
 
   $effect(() => {
     if (isOpen) {
@@ -69,29 +68,37 @@
     }
   });
 
+  function syncSettingsState(res: GlobalCliSettings) {
+    settingsFilePath = res.filePath;
+    chatCompressionEnabled = res.chatCompression.enabled;
+    compressionThresholdPercent = Math.round(res.chatCompression.contextPercentageThreshold * 100);
+    maxSessionTurns = res.maxSessionTurns;
+    respectGitIgnore = res.fileFiltering.respectGitIgnore;
+    respectGeminiIgnore = res.fileFiltering.respectGeminiIgnore;
+    retentionEnabled = res.sessionRetention.enabled;
+    retentionMaxAge = res.sessionRetention.maxAge;
+    rawJson = res.rawJson;
+    agyAgentMode = res.agyAgentMode || "auto";
+    showThinking = res.showThinking ?? true;
+    const orch = res.orchestrator || {};
+    orchPlannerModel = typeof orch.plannerModel === "string" ? orch.plannerModel : "";
+    orchExecutorModel = typeof orch.executorModel === "string" ? orch.executorModel : "";
+    orchEffort = typeof orch.effort === "string" ? orch.effort : "";
+    agyAutoCompactOverride = res.agyAutoCompactOverride || "";
+    agyDisableEmbeddedRipgrep = res.agyDisableEmbeddedRipgrep ?? false;
+  }
+
   async function loadSettings() {
     isLoading = true;
     errorMessage = null;
     successNotice = null;
     try {
-      const [res, engines, pathStatus] = await Promise.all([
+      const [res] = await Promise.all([
         invoke<GlobalCliSettings>("get_global_cli_settings"),
-        invoke<CliEnginesStatus>("get_cli_engines_status"),
-        invoke<CliPathStatus>("check_cli_path_status").catch(() => null),
+        engineStore.refresh(),
       ]);
-      settingsFilePath = res.filePath;
-      chatCompressionEnabled = res.chatCompression.enabled;
-      compressionThresholdPercent = Math.round(res.chatCompression.contextPercentageThreshold * 100);
-      maxSessionTurns = res.maxSessionTurns;
-      respectGitIgnore = res.fileFiltering.respectGitIgnore;
-      respectGeminiIgnore = res.fileFiltering.respectGeminiIgnore;
-      retentionEnabled = res.sessionRetention.enabled;
-      retentionMaxAge = res.sessionRetention.maxAge;
-      rawJson = res.rawJson;
-
-      engineStatus = engines;
-      activeEngine = engines.activeEngine;
-      cliPathStatus = pathStatus;
+      syncSettingsState(res);
+      activeEngine = engineStore.activeEngine;
     } catch (e: any) {
       errorMessage = typeof e === "string" ? e : e?.message || "Failed to load global CLI settings.";
     } finally {
@@ -99,52 +106,16 @@
     }
   }
 
-  async function handleSwitchEngine(engine: CliEngine) {
-    if (activeEngine === engine || isSwitchingEngine) return;
-    isSwitchingEngine = true;
+  async function handleAfterEngineSwitch(updated: CliEngine) {
+    activeEngine = updated;
     errorMessage = null;
     successNotice = null;
-    try {
-      const updated = await invoke<CliEngine>("set_active_cli_engine", { engine });
-      activeEngine = updated;
-      if (typeof window !== "undefined") {
-        localStorage.setItem("gemini_desktop_active_engine", updated);
-      }
-      if (engineStatus) {
-        engineStatus.activeEngine = updated;
-      }
-      await loadSettings();
-      cliPathStatus = await invoke<CliPathStatus>("check_cli_path_status").catch(() => null);
-      successNotice = `Switched agent engine to ${updated === "agy" ? "Antigravity CLI (agy)" : "Gemini CLI"}! All workspaces will now use this engine.`;
-      setTimeout(() => {
-        if (successNotice) successNotice = null;
-      }, 4000);
-    } catch (e: any) {
-      errorMessage = typeof e === "string" ? e : e?.message || "Failed to switch engine.";
-    } finally {
-      isSwitchingEngine = false;
-    }
-  }
-
-  async function handleAddToPath(engine: CliEngine) {
-    isAddingToPath = true;
-    pathAddResult = null;
-    try {
-      const res = await invoke<PathAddResult>("add_cli_to_user_path", { engine });
-      pathAddResult = res;
-      cliPathStatus = await invoke<CliPathStatus>("check_cli_path_status").catch(() => null);
-      const engines = await invoke<CliEnginesStatus>("get_cli_engines_status").catch(() => null);
-      if (engines) engineStatus = engines;
-    } catch (e: any) {
-      pathAddResult = {
-        success: false,
-        message: e?.toString() || "Failed to add to User PATH.",
-        targetDir: "",
-        alreadyInPath: false,
-      };
-    } finally {
-      isAddingToPath = false;
-    }
+    await loadSettings();
+    const desc = engineStore.getDescriptor(updated);
+    successNotice = `Switched agent engine to ${desc.displayName}! All workspaces will now use this engine.`;
+    setTimeout(() => {
+      if (successNotice) successNotice = null;
+    }, 4000);
   }
 
   async function handleSaveStructured() {
@@ -152,24 +123,41 @@
     errorMessage = null;
     successNotice = null;
     try {
-      const payload: SaveGlobalCliSettingsPayload = {
-        chatCompression: {
-          enabled: chatCompressionEnabled,
-          contextPercentageThreshold: compressionThresholdPercent / 100,
-        },
-        maxSessionTurns: maxSessionTurns,
-        fileFiltering: {
-          respectGitIgnore: respectGitIgnore,
-          respectGeminiIgnore: respectGeminiIgnore,
-        },
-        sessionRetention: {
-          enabled: retentionEnabled,
-          maxAge: retentionMaxAge,
-        },
-      };
+      let orchestratorPayload: Record<string, any> | null | undefined = undefined;
+      if (activeEngine === "agy") {
+        const orchObj: Record<string, string> = {};
+        if (orchPlannerModel.trim()) orchObj.plannerModel = orchPlannerModel.trim();
+        if (orchExecutorModel.trim()) orchObj.executorModel = orchExecutorModel.trim();
+        if (orchEffort.trim()) orchObj.effort = orchEffort.trim();
+        orchestratorPayload = Object.keys(orchObj).length > 0 ? orchObj : null;
+      }
+
+      const payload: SaveGlobalCliSettingsPayload = activeEngine === "agy"
+        ? {
+            agyAgentMode: agyAgentMode.trim() || "auto",
+            showThinking,
+            orchestrator: orchestratorPayload,
+            agyAutoCompactOverride: agyAutoCompactOverride.trim(),
+            agyDisableEmbeddedRipgrep: agyDisableEmbeddedRipgrep,
+          }
+        : {
+            chatCompression: {
+              enabled: chatCompressionEnabled,
+              contextPercentageThreshold: compressionThresholdPercent / 100,
+            },
+            maxSessionTurns: maxSessionTurns,
+            fileFiltering: {
+              respectGitIgnore: respectGitIgnore,
+              respectGeminiIgnore: respectGeminiIgnore,
+            },
+            sessionRetention: {
+              enabled: retentionEnabled,
+              maxAge: retentionMaxAge,
+            },
+          };
 
       const updated = await invoke<GlobalCliSettings>("save_global_cli_settings", { payload });
-      rawJson = updated.rawJson;
+      syncSettingsState(updated);
       successNotice = "Global CLI settings saved successfully!";
       setTimeout(() => {
         if (successNotice) successNotice = null;
@@ -194,13 +182,7 @@
       };
 
       const updated = await invoke<GlobalCliSettings>("save_global_cli_settings", { payload });
-      chatCompressionEnabled = updated.chatCompression.enabled;
-      compressionThresholdPercent = Math.round(updated.chatCompression.contextPercentageThreshold * 100);
-      maxSessionTurns = updated.maxSessionTurns;
-      respectGitIgnore = updated.fileFiltering.respectGitIgnore;
-      respectGeminiIgnore = updated.fileFiltering.respectGeminiIgnore;
-      retentionEnabled = updated.sessionRetention.enabled;
-      retentionMaxAge = updated.sessionRetention.maxAge;
+      syncSettingsState(updated);
       successNotice = "Global settings.json updated and formatted successfully!";
       setTimeout(() => {
         if (successNotice) successNotice = null;
@@ -255,10 +237,10 @@
           </div>
           <div>
             <h2 id="cli-settings-title" class="text-sm font-semibold text-primary-theme flex items-center gap-2">
-              {activeEngine === 'agy' ? 'Antigravity CLI Global Settings' : 'Gemini CLI Global Settings'}
+              {engineStore.getDescriptor(activeEngine).shortName} Global Settings
             </h2>
             <p class="text-xs text-muted-theme mt-0.5">
-              Configure session compaction, turn limits, and token retention policies in <code class="font-mono text-secondary-theme">{settingsFilePath || (activeEngine === 'agy' ? '~/.gemini/antigravity-cli/settings.json' : '~/.gemini/settings.json')}</code>.
+              Configure session compaction, turn limits, and token retention policies in <code class="font-mono text-secondary-theme">{settingsFilePath || engineStore.getDescriptor(activeEngine).globalSettingsHint}</code>.
             </p>
           </div>
         </div>
@@ -324,133 +306,144 @@
               </div>
             </div>
 
-            <div class="grid grid-cols-2 gap-3 pt-1">
-              <!-- Antigravity (agy) Option -->
-              <button
-                type="button"
-                onclick={() => handleSwitchEngine("agy")}
-                disabled={isSwitchingEngine}
-                class="flex flex-col text-left p-3 rounded-lg border transition-all cursor-pointer {activeEngine === 'agy' ? 'border-accent-theme bg-accent-theme/10 shadow-xs ring-1 ring-accent-theme/50' : 'border-subtle bg-surface-elevated hover:border-theme-default'}"
-              >
-                <div class="flex items-center justify-between w-full mb-1">
-                  <span class="text-xs font-semibold text-primary-theme flex items-center gap-1.5">
-                    🚀 Antigravity (<code class="font-mono text-[11px]">agy</code>)
-                  </span>
-                  {#if activeEngine === "agy"}
-                    <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-                  {/if}
-                </div>
-                <p class="text-[10px] text-secondary-theme leading-normal">
-                  Enterprise Antigravity agent runtime with native Agent Client Protocol (ACP) support.
-                </p>
-                <div class="mt-2 text-[10px] flex items-center gap-1.5 font-mono {engineStatus?.agyInstalled ? 'text-emerald-400' : 'text-amber-400'}">
-                  <span class="w-1.5 h-1.5 rounded-full {engineStatus?.agyInstalled ? 'bg-emerald-400' : 'bg-amber-400'}"></span>
-                  <span>{engineStatus?.agyInstalled ? "Installed & Detected" : "Not found in PATH"}</span>
-                </div>
-              </button>
-
-              <!-- Gemini CLI Option -->
-              <button
-                type="button"
-                onclick={() => handleSwitchEngine("gemini")}
-                disabled={isSwitchingEngine}
-                class="flex flex-col text-left p-3 rounded-lg border transition-all cursor-pointer {activeEngine === 'gemini' ? 'border-accent-theme bg-accent-theme/10 shadow-xs ring-1 ring-accent-theme/50' : 'border-subtle bg-surface-elevated hover:border-theme-default'}"
-              >
-                <div class="flex items-center justify-between w-full mb-1">
-                  <span class="text-xs font-semibold text-primary-theme flex items-center gap-1.5">
-                    ♊ Gemini CLI (<code class="font-mono text-[11px]">gemini</code>)
-                  </span>
-                  {#if activeEngine === "gemini"}
-                    <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-                  {/if}
-                </div>
-                <p class="text-[10px] text-secondary-theme leading-normal">
-                  Standard Gemini CLI supporting Google AI Studio and Vertex AI dual authentication.
-                </p>
-                <div class="mt-2 text-[10px] flex items-center gap-1.5 font-mono {engineStatus?.geminiInstalled ? 'text-emerald-400' : 'text-amber-400'}">
-                  <span class="w-1.5 h-1.5 rounded-full {engineStatus?.geminiInstalled ? 'bg-emerald-400' : 'bg-amber-400'}"></span>
-                  <span>{engineStatus?.geminiInstalled ? "Installed & Detected" : "Not found in PATH"}</span>
-                </div>
-              </button>
-            </div>
+            <EngineSwitcher variant="cards" onSwitch={handleAfterEngineSwitch} />
 
             <!-- Active Engine PATH Status / Quick Add -->
-            {#if activeEngine === "agy"}
-              <div class="mt-2.5 p-2.5 rounded-lg bg-surface-elevated border border-subtle flex items-center justify-between text-xs">
-                <div class="min-w-0 mr-2">
-                  <div class="flex items-center gap-1.5">
-                    <Globe size={13} class="text-accent-theme" />
-                    <span class="font-medium text-primary-theme">Antigravity CLI (agy)</span>
-                    {#if cliPathStatus?.agyInUserPath}
-                      <span class="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-mono font-medium flex items-center gap-1">
-                        <Check size={10} /> In User PATH
-                      </span>
-                    {:else}
-                      <span class="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-400 font-mono font-medium">
-                        Not in User PATH
-                      </span>
-                    {/if}
-                  </div>
-                  <p class="text-[11px] font-mono text-muted-theme truncate mt-0.5">
-                    {cliPathStatus?.agyDir || "Directory not located"}
-                  </p>
-                </div>
-                {#if !cliPathStatus?.agyInUserPath}
-                  <button
-                    type="button"
-                    onclick={() => handleAddToPath("agy")}
-                    disabled={isAddingToPath}
-                    class="px-2.5 py-1 rounded bg-accent-theme hover:bg-accent-hover text-white text-[11px] font-medium transition-colors cursor-pointer shrink-0 disabled:opacity-50"
-                  >
-                    {isAddingToPath ? "Adding..." : "Add to User PATH"}
-                  </button>
-                {/if}
-              </div>
-            {:else}
-              <div class="mt-2.5 p-2.5 rounded-lg bg-surface-elevated border border-subtle flex items-center justify-between text-xs">
-                <div class="min-w-0 mr-2">
-                  <div class="flex items-center gap-1.5">
-                    <Globe size={13} class="text-accent-theme" />
-                    <span class="font-medium text-primary-theme">Gemini CLI (gemini)</span>
-                    {#if cliPathStatus?.geminiInUserPath}
-                      <span class="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-mono font-medium flex items-center gap-1">
-                        <Check size={10} /> In User PATH
-                      </span>
-                    {:else}
-                      <span class="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-400 font-mono font-medium">
-                        Not in User PATH
-                      </span>
-                    {/if}
-                  </div>
-                  <p class="text-[11px] font-mono text-muted-theme truncate mt-0.5">
-                    {cliPathStatus?.geminiDir || "Directory not located"}
-                  </p>
-                </div>
-                {#if !cliPathStatus?.geminiInUserPath}
-                  <button
-                    type="button"
-                    onclick={() => handleAddToPath("gemini")}
-                    disabled={isAddingToPath}
-                    class="px-2.5 py-1 rounded bg-accent-theme hover:bg-accent-hover text-white text-[11px] font-medium transition-colors cursor-pointer shrink-0 disabled:opacity-50"
-                  >
-                    {isAddingToPath ? "Adding..." : "Add to User PATH"}
-                  </button>
-                {/if}
-              </div>
-            {/if}
-
-            {#if pathAddResult}
-              <div class="p-2.5 rounded-lg text-xs flex items-start gap-2 {pathAddResult.success ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'}">
-                {#if pathAddResult.success}
-                  <CheckCircle2 size={14} class="text-emerald-400 shrink-0 mt-0.5" />
-                {:else}
-                  <AlertCircle size={14} class="text-rose-400 shrink-0 mt-0.5" />
-                {/if}
-                <span class="leading-relaxed">{pathAddResult.message}</span>
-              </div>
-            {/if}
+            <div class="mt-2.5">
+              <CliPathStatusBanner engineId={activeEngine} />
+            </div>
           </div>
 
+          {#if activeEngine === "agy"}
+            <!-- Antigravity CLI Native Settings -->
+            <div class="p-4 rounded-lg border border-purple-500/25 bg-surface space-y-3">
+              <div>
+                <span class="text-xs font-semibold text-primary-theme flex items-center gap-2">
+                  <Zap size={14} class="text-purple-400" />
+                  Antigravity Agent Defaults (<code class="font-mono text-secondary-theme">agentMode &amp; showThinking</code>)
+                </span>
+                <p class="text-[11px] text-muted-theme mt-1 leading-relaxed">
+                  Persisted directly in <code class="font-mono text-secondary-theme">~/.gemini/antigravity-cli/settings.json</code>.
+                </p>
+              </div>
+
+              <div class="grid grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label for="agy-default-mode" class="block text-xs font-medium text-secondary-theme mb-1">Default Agent Mode</label>
+                  <select
+                    id="agy-default-mode"
+                    bind:value={agyAgentMode}
+                    class="w-full px-2.5 py-1.5 rounded-lg border border-theme-default bg-surface-elevated text-primary-theme text-xs font-mono focus:outline-none focus:border-accent-theme"
+                  >
+                    <option value="auto">auto (Sandboxed Auto)</option>
+                    <option value="accept-edits">accept-edits (Auto-Edit)</option>
+                    <option value="plan">plan (Read-Only Plan)</option>
+                    <option value="fast">fast (Streamlined)</option>
+                  </select>
+                </div>
+
+                <label class="flex items-center justify-between p-2.5 rounded-lg border border-subtle bg-surface-elevated cursor-pointer">
+                  <div>
+                    <span class="text-xs font-medium text-primary-theme">Stream Thinking Tokens</span>
+                    <p class="text-[10px] text-muted-theme">Emit reasoning trace via <code>showThinking</code></p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    bind:checked={showThinking}
+                    class="rounded accent-purple-500"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div class="p-4 rounded-lg border border-subtle bg-surface space-y-3">
+              <div>
+                <span class="text-xs font-semibold text-primary-theme flex items-center gap-2">
+                  <Sliders size={14} class="text-sky-400" />
+                  Orchestrator Sub-Model Configuration (<code class="font-mono text-secondary-theme">orchestrator</code>)
+                </span>
+                <p class="text-[11px] text-muted-theme mt-1 leading-relaxed">
+                  Optional planner/executor overrides when using the <code class="font-mono text-secondary-theme">orchestrator</code> multi-model coordinator.
+                </p>
+              </div>
+
+              <div class="grid grid-cols-3 gap-2.5">
+                <div>
+                  <label for="agy-orch-planner" class="block text-[11px] text-secondary-theme mb-1">Planner Model</label>
+                  <input
+                    id="agy-orch-planner"
+                    type="text"
+                    bind:value={orchPlannerModel}
+                    placeholder="e.g. gemini-4-hydrogen-high"
+                    class="w-full px-2.5 py-1.5 rounded-lg border border-theme-default bg-surface-elevated text-primary-theme text-xs font-mono focus:outline-none focus:border-accent-theme"
+                  />
+                </div>
+                <div>
+                  <label for="agy-orch-executor" class="block text-[11px] text-secondary-theme mb-1">Executor Model</label>
+                  <input
+                    id="agy-orch-executor"
+                    type="text"
+                    bind:value={orchExecutorModel}
+                    placeholder="e.g. gemini-4-carbon"
+                    class="w-full px-2.5 py-1.5 rounded-lg border border-theme-default bg-surface-elevated text-primary-theme text-xs font-mono focus:outline-none focus:border-accent-theme"
+                  />
+                </div>
+                <div>
+                  <label for="agy-orch-effort" class="block text-[11px] text-secondary-theme mb-1">Effort</label>
+                  <select
+                    id="agy-orch-effort"
+                    bind:value={orchEffort}
+                    class="w-full px-2.5 py-1.5 rounded-lg border border-theme-default bg-surface-elevated text-primary-theme text-xs font-mono focus:outline-none focus:border-accent-theme"
+                  >
+                    <option value="">Unset</option>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                    <option value="xhigh">xhigh</option>
+                    <option value="max">max</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div class="p-4 rounded-lg border border-subtle bg-surface space-y-3">
+              <div>
+                <span class="text-xs font-semibold text-primary-theme flex items-center gap-2">
+                  <Filter size={14} class="text-emerald-400" />
+                  Runtime Environment Overrides (Antigravity Only)
+                </span>
+                <p class="text-[11px] text-muted-theme mt-1 leading-relaxed">
+                  Injected automatically into spawned <code class="font-mono text-secondary-theme">agy acp</code> sessions without affecting Gemini CLI.
+                </p>
+              </div>
+
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label for="agy-compact-override" class="block text-[11px] text-secondary-theme mb-1">
+                    <code>AGY_CLI_AUTO_COMPACT_OVERRIDE</code>
+                  </label>
+                  <input
+                    id="agy-compact-override"
+                    type="text"
+                    bind:value={agyAutoCompactOverride}
+                    placeholder="Blank (default) or e.g. 0.85 / 180000"
+                    class="w-full px-2.5 py-1.5 rounded-lg border border-theme-default bg-surface-elevated text-primary-theme text-xs font-mono focus:outline-none focus:border-accent-theme"
+                  />
+                </div>
+                <label class="flex items-center justify-between p-2.5 rounded-lg border border-subtle bg-surface-elevated cursor-pointer">
+                  <div>
+                    <span class="text-xs font-medium text-primary-theme">Disable Embedded Ripgrep</span>
+                    <p class="text-[10px] text-muted-theme">Sets <code>ANTIGRAVITY_DISABLE_EMBEDDED_RIPGREP=1</code></p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    bind:checked={agyDisableEmbeddedRipgrep}
+                    class="rounded accent-accent-theme"
+                  />
+                </label>
+              </div>
+            </div>
+          {:else}
           <!-- Card 1: Context Compression -->
           <div class="p-4 rounded-lg border border-subtle bg-surface space-y-3">
             <div class="flex items-start justify-between">
@@ -616,6 +609,7 @@
               </div>
             {/if}
           </div>
+          {/if}
 
         {:else}
           <!-- Raw JSON Editor Tab -->

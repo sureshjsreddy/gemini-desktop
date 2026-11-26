@@ -1,8 +1,10 @@
 <script lang="ts">
   import type { Workspace, ApprovalMode, WorkspacePathValidation, CliModelInfo, CliModelDiscoveryResult } from "$lib/types";
-  import { X, Plus, Trash2, Check, Bell, BellRing, FileDiff, AlertTriangle, RefreshCw, Sparkles } from "lucide-svelte";
+  import { X, Plus, Trash2, Check, Bell, BellRing, FileDiff, AlertTriangle, RefreshCw, Sparkles, Shield } from "lucide-svelte";
   import { isNotificationSettingEnabled, setNotificationSetting, notifyBackgroundTaskComplete } from "$lib/utils/notifications";
   import { dialogManager } from "$lib/dialog.svelte";
+  import { engineStore } from "$lib/stores/engineStore.svelte";
+  import { formatContextLimitLabel, getEffectiveModel, saveRememberedWorkspaceModel, getRememberedWorkspaceModel } from "$lib/utils/engineModels";
   import { invoke } from "@tauri-apps/api/core";
 
   const APPROVAL_MODES: {
@@ -19,6 +21,11 @@
       value: "auto_edit",
       label: "Auto-Edit",
       description: "Auto-approves safe file edits; interactive prompt for shell and terminal commands",
+    },
+    {
+      value: "auto",
+      label: "Sandboxed Auto (Antigravity)",
+      description: "Runs autonomously inside the workspace sandbox and prompts only on sandbox escapes",
     },
     {
       value: "yolo",
@@ -93,15 +100,22 @@
 
   const AGY_MODEL_GROUPS: ModelOptionGroup[] = [
     {
-      group: "Antigravity Default",
+      group: "Antigravity Default & Orchestrator",
       options: [
         { value: "auto", label: "Auto — Default Antigravity model" },
+        { value: "orchestrator", label: "orchestrator — Multi-Model Coordinator (Planner + Executor)" },
       ],
     },
     {
-      group: "Gemini 4 Frontier (Enterprise / Licensed)",
+      group: "Gemini 4 Frontier (Hydrogen / Carbon / Neon)",
       options: [
-        { value: "gemini-4-argon", label: "gemini-4-argon (Gemini 4 Argon — Frontier Deep Reasoning & Architecture)" },
+        { value: "gemini-4-hydrogen-high", label: "gemini-4-hydrogen-high (Gemini 4 Hydrogen High)" },
+        { value: "gemini-4-hydrogen-xhigh", label: "gemini-4-hydrogen-xhigh (Gemini 4 Hydrogen Extra High)" },
+        { value: "gemini-4-hydrogen-medium", label: "gemini-4-hydrogen-medium (Gemini 4 Hydrogen Medium)" },
+        { value: "gemini-4-hydrogen-low", label: "gemini-4-hydrogen-low (Gemini 4 Hydrogen Low)" },
+        { value: "gemini-4-carbon", label: "gemini-4-carbon (Gemini 4 Carbon — Fast Frontier)" },
+        { value: "gemini-4-neon", label: "gemini-4-neon (Gemini 4 Neon — Balanced Frontier)" },
+        { value: "gemini-4-argon", label: "gemini-4-argon (Gemini 4 Argon — Legacy Frontier)" },
       ],
     },
     {
@@ -127,6 +141,18 @@
     },
   ];
 
+  function loadCachedDiscoveredModels(engine: string): CliModelInfo[] {
+    if (typeof window === "undefined") return [];
+    try {
+      const raw = localStorage.getItem(`gemini_desktop_discovered_models_${engine}`);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
   let {
     isOpen = false,
     activeWorkspace = null,
@@ -145,7 +171,14 @@
     onDeleteWorkspace: (id: string) => void;
   } = $props();
 
-  let effectiveModelGroups = $derived(activeEngine === "agy" ? AGY_MODEL_GROUPS : MODEL_GROUPS);
+  let activeDescriptor = $derived(engineStore.getDescriptor(activeEngine));
+  let effectiveModelGroups = $derived(
+    activeDescriptor.modelGroups && activeDescriptor.modelGroups.length > 0
+      ? activeDescriptor.modelGroups
+      : activeEngine === "agy"
+        ? AGY_MODEL_GROUPS
+        : MODEL_GROUPS
+  );
 
   let editingWorkspace: Workspace = $state({
     id: "",
@@ -154,6 +187,10 @@
     model: "auto",
     approval_mode: "default",
     track_file_changes: false,
+    reasoning_effort: "",
+    sandbox_enabled: false,
+    agent_name: "",
+    additional_dirs: "",
     system_prompt: "",
     created_at: new Date().toISOString(),
   });
@@ -174,14 +211,23 @@
   $effect(() => {
     if (previousActiveEngine === null) {
       previousActiveEngine = activeEngine;
+      liveDiscoveredModels = loadCachedDiscoveredModels(activeEngine);
+      discoveredEngine = liveDiscoveredModels.length > 0 ? activeEngine : null;
       return;
     }
     if (activeEngine !== previousActiveEngine) {
       previousActiveEngine = activeEngine;
-      liveDiscoveredModels = [];
+      liveDiscoveredModels = loadCachedDiscoveredModels(activeEngine);
       discoveryStatus = null;
-      discoveredEngine = null;
+      discoveredEngine = liveDiscoveredModels.length > 0 ? activeEngine : null;
       discoveredVersion = null;
+      if (editingWorkspace.id) {
+        const remembered = getRememberedWorkspaceModel(editingWorkspace.id, activeEngine);
+        if (remembered) {
+          editingWorkspace.model = remembered;
+          lastSyncedWorkspaceId = null;
+        }
+      }
     }
   });
 
@@ -225,6 +271,11 @@
 
       if (res.supported && res.models.length > 0) {
         liveDiscoveredModels = res.models;
+        if (typeof window !== "undefined") {
+          try {
+            localStorage.setItem(`gemini_desktop_discovered_models_${eng}`, JSON.stringify(res.models));
+          } catch {}
+        }
         discoveryStatus = {
           type: "success",
           text: `Discovered ${res.models.length} active models directly via ${engName}${verSuffix}.`,
@@ -278,6 +329,10 @@
           ...target,
           approval_mode: target.approval_mode || "default",
           track_file_changes: target.track_file_changes ?? false,
+          reasoning_effort: target.reasoning_effort ?? "",
+          sandbox_enabled: target.sandbox_enabled ?? false,
+          agent_name: target.agent_name ?? "",
+          additional_dirs: target.additional_dirs ?? "",
         };
       } else {
         startNew();
@@ -291,10 +346,11 @@
     // Only re-sync dropdown state when editing workspace changes (avoids clobbering manual typing)
     if (editingWorkspace.id !== lastSyncedWorkspaceId) {
       lastSyncedWorkspaceId = editingWorkspace.id;
-      const isKnown = effectiveModelGroups.some((g) =>
+      const isKnownStatic = effectiveModelGroups.some((g) =>
         g.options.some((o) => o.value === editingWorkspace.model)
       );
-      if (isKnown) {
+      const isKnownLive = liveDiscoveredModels.some((m) => m.id === editingWorkspace.model);
+      if (isKnownStatic || isKnownLive) {
         selectedDropdownValue = editingWorkspace.model;
         customModelInput = "";
       } else {
@@ -309,9 +365,9 @@
     selectedDropdownValue = target.value;
     if (target.value === "manual_custom") {
       if (!customModelInput.trim()) {
-        const isKnown = effectiveModelGroups.some((g) =>
-          g.options.some((o) => o.value === editingWorkspace.model)
-        );
+        const isKnown =
+          effectiveModelGroups.some((g) => g.options.some((o) => o.value === editingWorkspace.model)) ||
+          liveDiscoveredModels.some((m) => m.id === editingWorkspace.model);
         customModelInput = isKnown ? "" : (editingWorkspace.model || "");
       }
       editingWorkspace.model = customModelInput.trim();
@@ -341,6 +397,10 @@
       model: "auto",
       approval_mode: "default",
       track_file_changes: false,
+      reasoning_effort: "",
+      sandbox_enabled: false,
+      agent_name: "",
+      additional_dirs: "",
       system_prompt: "",
       created_at: new Date().toISOString(),
     };
@@ -371,7 +431,14 @@
       }
 
       editingWorkspace.approval_mode = editingWorkspace.approval_mode || "default";
-      onSaveWorkspace({ ...editingWorkspace });
+      saveRememberedWorkspaceModel(editingWorkspace.id, activeEngine, editingWorkspace.model);
+      onSaveWorkspace({
+        ...editingWorkspace,
+        reasoning_effort: editingWorkspace.reasoning_effort?.trim() || undefined,
+        agent_name: editingWorkspace.agent_name?.trim() || undefined,
+        additional_dirs: editingWorkspace.additional_dirs?.trim() || undefined,
+        sandbox_enabled: editingWorkspace.sandbox_enabled ?? false,
+      });
     } catch (err) {
       await dialogManager.alert(`Failed to verify directory: ${err}`, "Validation Error");
     } finally {
@@ -425,7 +492,7 @@
             >
               <div class="truncate">{ws.name}</div>
               <div class="text-[10px] text-muted-theme font-mono truncate flex items-center justify-between">
-                <span class="truncate mr-1">{ws.model}</span>
+                <span class="truncate mr-1">{getEffectiveModel(ws.model, activeEngine)}</span>
                 <span class="capitalize text-[9px] shrink-0 opacity-75">{ws.approval_mode || "default"}</span>
               </div>
             </button>
@@ -453,9 +520,7 @@
               class="w-full px-3 py-2 bg-app border border-theme-default rounded-lg text-primary-theme font-mono focus:outline-none focus:border-accent-theme"
             />
             <span class="text-[11px] text-muted-theme mt-1 block">
-              {activeEngine === "agy"
-                ? "Antigravity CLI will run inside this directory and auto-read GEMINI.md or AGENTS.md."
-                : "Gemini CLI will run inside this directory and auto-read GEMINI.md."}
+              {activeDescriptor.workspaceInstructionsHint}
             </span>
           </div>
 
@@ -480,10 +545,11 @@
               class="w-full px-3 py-2 bg-app border border-theme-default rounded-lg text-primary-theme focus:outline-none focus:border-accent-theme font-mono"
             >
               {#if liveDiscoveredModels.length > 0}
-                <optgroup label={`Discovered via ${(discoveredEngine || activeEngine) === "agy" ? "Antigravity CLI (agy)" : "Gemini CLI"} (Live API)`}>
+                <optgroup label={`Discovered via ${activeDescriptor.shortName} (Live API)`}>
                   {#each liveDiscoveredModels as lm}
+                    {@const ctxLabel = formatContextLimitLabel(lm.input_token_limit)}
                     <option value={lm.id}>
-                      {lm.id} {lm.input_token_limit ? `(${Math.round(lm.input_token_limit / 1000)}k ctx)` : ""} {lm.is_default ? "— Default" : ""}
+                      {lm.id} {ctxLabel ? `(${ctxLabel})` : ""} {lm.is_default ? "— Default" : ""}
                     </option>
                   {/each}
                 </optgroup>
@@ -582,13 +648,90 @@
               bind:value={editingWorkspace.approval_mode}
               class="w-full px-3 py-2 bg-app border border-theme-default rounded-lg text-primary-theme focus:outline-none focus:border-accent-theme font-sans"
             >
-              {#each APPROVAL_MODES as m}
+              {#each APPROVAL_MODES.filter((m) => m.value !== "auto" || activeEngine === "agy") as m}
                 <option value={m.value}>{m.label}</option>
               {/each}
             </select>
             <span class="text-[11px] text-muted-theme mt-1.5 block">
               {APPROVAL_MODES.find((m) => m.value === (editingWorkspace.approval_mode || "default"))?.description}
             </span>
+          </div>
+
+          {#if activeDescriptor.capabilities.supportsReasoningEffort || activeDescriptor.capabilities.supportsAgentPersona}
+            <div class="grid grid-cols-2 gap-3 p-3 bg-app/70 border border-purple-500/25 rounded-lg">
+              <div>
+                <label for="ws-reasoning-effort" class="block text-primary-theme font-medium mb-1">
+                  Reasoning Effort (<code class="font-mono text-[10px] text-purple-400">--effort</code>)
+                </label>
+                <select
+                  id="ws-reasoning-effort"
+                  bind:value={editingWorkspace.reasoning_effort}
+                  class="w-full px-2.5 py-1.5 bg-surface border border-theme-default rounded-lg text-primary-theme font-mono text-xs focus:outline-none focus:border-accent-theme"
+                >
+                  <option value="">Default (Model Standard)</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="xhigh">xhigh</option>
+                  <option value="max">max</option>
+                </select>
+              </div>
+              <div>
+                <label for="ws-agent-persona" class="block text-primary-theme font-medium mb-1">
+                  Agent Persona (<code class="font-mono text-[10px] text-purple-400">--agent</code>)
+                </label>
+                <input
+                  id="ws-agent-persona"
+                  type="text"
+                  bind:value={editingWorkspace.agent_name}
+                  placeholder="Optional (e.g. architect, reviewer)"
+                  class="w-full px-2.5 py-1.5 bg-surface border border-theme-default rounded-lg text-primary-theme font-mono text-xs focus:outline-none focus:border-accent-theme"
+                />
+              </div>
+            </div>
+          {/if}
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-app border border-subtle rounded-lg">
+            <div>
+              <label for="ws-additional-dirs" class="block text-primary-theme font-medium mb-1">
+                Additional Directories (<code class="font-mono text-[10px] text-secondary-theme">{activeEngine === "agy" ? "--add-dir" : "--include-directories"}</code>)
+              </label>
+              <input
+                id="ws-additional-dirs"
+                type="text"
+                bind:value={editingWorkspace.additional_dirs}
+                placeholder="e.g. ../shared; D:\CommonLibs"
+                class="w-full px-2.5 py-1.5 bg-surface border border-theme-default rounded-lg text-primary-theme font-mono text-xs focus:outline-none focus:border-accent-theme"
+              />
+              <span class="text-[10px] text-muted-theme mt-1 block">Semicolon or comma-separated extra workspace paths.</span>
+            </div>
+
+            <div class="flex items-center justify-between px-2 py-1 rounded-lg bg-surface/60 border border-subtle">
+              <div class="pr-3">
+                <div class="flex items-center gap-1.5 font-medium text-primary-theme text-xs">
+                  <Shield size={13} class="text-teal-400" />
+                  <span>OS Sandbox (<code class="font-mono text-[10px]">--sandbox</code>)</span>
+                </div>
+                <p class="text-[10px] text-muted-theme mt-0.5">
+                  Isolates shell execution inside CLI sandbox boundaries.
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={editingWorkspace.sandbox_enabled ?? false}
+                aria-label="Toggle OS Sandbox"
+                onclick={() => {
+                  editingWorkspace.sandbox_enabled = !editingWorkspace.sandbox_enabled;
+                }}
+                class="relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none {editingWorkspace.sandbox_enabled ? 'bg-teal-500' : 'bg-slate-400/40 dark:bg-slate-700'}"
+              >
+                <span
+                  aria-hidden="true"
+                  class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out {editingWorkspace.sandbox_enabled ? 'translate-x-4' : 'translate-x-0'}"
+                ></span>
+              </button>
+            </div>
           </div>
 
           <div>
@@ -679,8 +822,8 @@
             </div>
           </div>
 
-          <!-- Antigravity Skills Compatibility Sync Card (When Agy Engine is selected) -->
-          {#if activeEngine === "agy"}
+          <!-- Antigravity Skills Compatibility Sync Card -->
+          {#if activeDescriptor.capabilities.supportsSkillSync}
             <div class="p-3 bg-app border border-subtle rounded-lg space-y-2">
               <div class="flex items-center justify-between">
                 <div class="flex items-center gap-2">

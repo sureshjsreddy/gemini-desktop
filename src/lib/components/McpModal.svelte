@@ -57,11 +57,15 @@
 
   // Form fields for editing
   let formServerKey = $state("");
+  let formTransport = $state<"stdio" | "http">("stdio");
   let formCommand = $state("");
   let formArgsText = $state("");
+  let formUrl = $state("");
+  let formHeadersList = $state<{ key: string; value: string }[]>([]);
   let formEnvList = $state<{ key: string; value: string }[]>([]);
   let formCwd = $state("");
   let formDisabled = $state(false);
+  let formEager = $state(false);
 
   // Raw JSON editor state
   let rawJsonText = $state("");
@@ -282,10 +286,14 @@
     if (!cfg) return;
 
     formServerKey = key;
+    const urlStr = cfg.url || cfg.serverUrl || "";
+    formTransport = urlStr ? "http" : "stdio";
     formCommand = cfg.command || "";
     formArgsText = (cfg.args || []).join("\n");
+    formUrl = urlStr;
     formCwd = cfg.cwd || "";
     formDisabled = cfg.disabled ?? false;
+    formEager = cfg.eager ?? false;
 
     const envs: { key: string; value: string }[] = [];
     if (cfg.env) {
@@ -294,24 +302,40 @@
       }
     }
     formEnvList = envs;
+
+    const hdrs: { key: string; value: string }[] = [];
+    if (cfg.headers) {
+      for (const [k, v] of Object.entries(cfg.headers)) {
+        hdrs.push({ key: k, value: String(v) });
+      }
+    }
+    formHeadersList = hdrs;
   }
 
   function startNewServer() {
     selectedServerKey = "";
     formServerKey = "my-mcp-server";
+    formTransport = "stdio";
     formCommand = "npx";
     formArgsText = "-y\n@modelcontextprotocol/server-memory";
+    formUrl = "";
+    formHeadersList = [];
     formEnvList = [];
     formCwd = "";
     formDisabled = false;
+    formEager = false;
   }
 
   function applyPreset(preset: Preset) {
     formServerKey = preset.config.key;
+    formTransport = "stdio";
     formCommand = preset.config.command;
     formArgsText = preset.config.args.join("\n");
+    formUrl = "";
+    formHeadersList = [];
     formCwd = preset.config.cwd || "";
     formDisabled = false;
+    formEager = false;
 
     const envs: { key: string; value: string }[] = [];
     for (const [k, v] of Object.entries(preset.config.env)) {
@@ -331,6 +355,14 @@
 
   function removeEnvRow(index: number) {
     formEnvList = formEnvList.filter((_, i) => i !== index);
+  }
+
+  function addHeaderRow() {
+    formHeadersList = [...formHeadersList, { key: "", value: "" }];
+  }
+
+  function removeHeaderRow(index: number) {
+    formHeadersList = formHeadersList.filter((_, i) => i !== index);
   }
 
   async function toggleServerDisabled(key: string, e: MouseEvent) {
@@ -356,31 +388,51 @@
       statusMessage = { text: "Server ID cannot be empty", type: "error" };
       return;
     }
-    if (!formCommand.trim()) {
-      statusMessage = { text: "Command cannot be empty", type: "error" };
-      return;
-    }
 
-    const args = formArgsText
-      .split("\n")
-      .map((a) => a.trim())
-      .filter(Boolean);
-
-    const envObj: Record<string, string> = {};
-    for (const item of formEnvList) {
-      const k = item.key.trim();
-      if (k) {
-        envObj[k] = item.value;
+    let newConfig: McpServerConfig;
+    if (formTransport === "http") {
+      if (!formUrl.trim()) {
+        statusMessage = { text: "HTTP/SSE Server URL cannot be empty", type: "error" };
+        return;
       }
-    }
+      const hdrObj: Record<string, string> = {};
+      for (const item of formHeadersList) {
+        const k = item.key.trim();
+        if (k) hdrObj[k] = item.value;
+      }
+      newConfig = {
+        url: formUrl.trim(),
+        headers: Object.keys(hdrObj).length > 0 ? hdrObj : undefined,
+        eager: formEager ? true : undefined,
+        disabled: formDisabled ? true : undefined,
+      };
+    } else {
+      if (!formCommand.trim()) {
+        statusMessage = { text: "Command cannot be empty", type: "error" };
+        return;
+      }
+      const args = formArgsText
+        .split("\n")
+        .map((a) => a.trim())
+        .filter(Boolean);
 
-    const newConfig: McpServerConfig = {
-      command: formCommand.trim(),
-      args: args.length > 0 ? args : undefined,
-      env: Object.keys(envObj).length > 0 ? envObj : undefined,
-      cwd: formCwd.trim() ? formCwd.trim() : undefined,
-      disabled: formDisabled ? true : undefined,
-    };
+      const envObj: Record<string, string> = {};
+      for (const item of formEnvList) {
+        const k = item.key.trim();
+        if (k) {
+          envObj[k] = item.value;
+        }
+      }
+
+      newConfig = {
+        command: formCommand.trim(),
+        args: args.length > 0 ? args : undefined,
+        env: Object.keys(envObj).length > 0 ? envObj : undefined,
+        cwd: formCwd.trim() ? formCwd.trim() : undefined,
+        eager: formEager ? true : undefined,
+        disabled: formDisabled ? true : undefined,
+      };
+    }
 
     // If key was renamed, delete old key
     const updatedServers = { ...servers };
@@ -792,18 +844,101 @@
               </div>
 
               <div>
-                <label for="mcp-cmd" class="block text-primary-theme font-medium mb-1">
-                  Command Executable <span class="text-rose-400">*</span>
-                </label>
-                <input
-                  id="mcp-cmd"
-                  type="text"
-                  bind:value={formCommand}
-                  placeholder="docker, npx, uvx, node, python"
-                  class="w-full px-3 py-2 bg-app border border-theme-default rounded-lg text-primary-theme font-mono focus:outline-none focus:border-accent-theme"
-                />
-                <span class="text-[10px] text-muted-theme mt-1 block">Binary executed to spawn the MCP server.</span>
+                <span class="block text-primary-theme font-medium mb-1">Transport Type</span>
+                <div class="grid grid-cols-2 gap-1.5 p-1 bg-app border border-theme-default rounded-lg">
+                  <button
+                    type="button"
+                    onclick={() => (formTransport = "stdio")}
+                    class="px-2.5 py-1.5 rounded text-xs font-medium cursor-pointer transition-colors {formTransport === 'stdio' ? 'bg-accent-theme text-white' : 'text-secondary-theme hover:text-primary-theme'}"
+                  >
+                    Stdio (Local)
+                  </button>
+                  <button
+                    type="button"
+                    onclick={() => (formTransport = "http")}
+                    class="px-2.5 py-1.5 rounded text-xs font-medium cursor-pointer transition-colors {formTransport === 'http' ? 'bg-accent-theme text-white' : 'text-secondary-theme hover:text-primary-theme'}"
+                  >
+                    HTTP / SSE
+                  </button>
+                </div>
               </div>
+            </div>
+
+            {#if formTransport === "http"}
+              <div class="space-y-3">
+                <div>
+                  <label for="mcp-url" class="block text-primary-theme font-medium mb-1">
+                    Server URL <span class="text-rose-400">*</span>
+                  </label>
+                  <input
+                    id="mcp-url"
+                    type="text"
+                    bind:value={formUrl}
+                    placeholder="https://mcp.example.com/sse"
+                    class="w-full px-3 py-2 bg-app border border-theme-default rounded-lg text-primary-theme font-mono focus:outline-none focus:border-accent-theme"
+                  />
+                  <span class="text-[10px] text-muted-theme mt-1 block">Remote Streamable HTTP or SSE endpoint URL.</span>
+                </div>
+
+                <div>
+                  <div class="flex items-center justify-between mb-1.5">
+                    <span class="block text-primary-theme font-medium">HTTP Headers</span>
+                    <button
+                      type="button"
+                      onclick={addHeaderRow}
+                      class="flex items-center gap-1 text-[11px] text-accent-theme hover:underline cursor-pointer"
+                    >
+                      <Plus size={12} />
+                      <span>Add Header</span>
+                    </button>
+                  </div>
+                  {#if formHeadersList.length === 0}
+                    <div class="p-2.5 bg-app/50 border border-dashed border-subtle rounded-lg text-[11px] text-muted-theme text-center">
+                      No custom headers configured. (Add e.g. <code>Authorization: Bearer $&#123;TOKEN&#125;</code>)
+                    </div>
+                  {:else}
+                    <div class="space-y-1.5 max-h-32 overflow-y-auto pr-1">
+                      {#each formHeadersList as hdr, i}
+                        <div class="flex items-center gap-2">
+                          <input
+                            type="text"
+                            placeholder="Header Name"
+                            bind:value={hdr.key}
+                            class="w-2/5 px-2.5 py-1.5 bg-app border border-theme-default rounded text-primary-theme font-mono text-xs focus:outline-none focus:border-accent-theme"
+                          />
+                          <input
+                            type="text"
+                            placeholder="Value"
+                            bind:value={hdr.value}
+                            class="flex-1 px-2.5 py-1.5 bg-app border border-theme-default rounded text-primary-theme font-mono text-xs focus:outline-none focus:border-accent-theme"
+                          />
+                          <button
+                            type="button"
+                            onclick={() => removeHeaderRow(i)}
+                            class="p-1.5 text-secondary-theme hover:text-rose-400 rounded transition-colors cursor-pointer"
+                            title="Remove header"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            {:else}
+            <div>
+              <label for="mcp-cmd" class="block text-primary-theme font-medium mb-1">
+                Command Executable <span class="text-rose-400">*</span>
+              </label>
+              <input
+                id="mcp-cmd"
+                type="text"
+                bind:value={formCommand}
+                placeholder="docker, npx, uvx, node, python"
+                class="w-full px-3 py-2 bg-app border border-theme-default rounded-lg text-primary-theme font-mono focus:outline-none focus:border-accent-theme"
+              />
+              <span class="text-[10px] text-muted-theme mt-1 block">Binary executed to spawn the MCP server.</span>
             </div>
 
             <div>
@@ -880,6 +1015,21 @@
                 class="w-full px-3 py-2 bg-app border border-theme-default rounded-lg text-primary-theme font-mono focus:outline-none focus:border-accent-theme"
               />
             </div>
+            {/if}
+
+            {#if activeEngine === "agy"}
+              <div class="flex items-center justify-between p-3 bg-app border border-subtle rounded-lg">
+                <div>
+                  <div class="font-medium text-primary-theme">Eager Preload (<code>eager: true</code>)</div>
+                  <p class="text-[11px] text-muted-theme">Connect eagerly during ACP session startup even before lazy tool discovery.</p>
+                </div>
+                <input
+                  type="checkbox"
+                  bind:checked={formEager}
+                  class="rounded accent-accent-theme cursor-pointer"
+                />
+              </div>
+            {/if}
 
             <!-- Footer Save / Delete Buttons -->
             <div class="pt-3 flex items-center justify-between border-t border-subtle mt-4">

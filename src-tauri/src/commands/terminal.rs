@@ -76,10 +76,10 @@ pub async fn run_terminal_command(
             }
             p
         } else {
-            fallback_safe_terminal_dir()
+            ProcessSupervisor::fallback_safe_dir()
         }
     } else {
-        fallback_safe_terminal_dir()
+        ProcessSupervisor::fallback_safe_dir()
     };
     cmd.current_dir(&safe_cwd);
 
@@ -104,23 +104,6 @@ pub async fn run_terminal_command(
         exit_code,
         duration_ms,
     })
-}
-
-fn fallback_safe_terminal_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
-        let p = PathBuf::from(home);
-        if p.is_dir() {
-            return p;
-        }
-    }
-    if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
-        let p = PathBuf::from(local_app).join("GeminiDesktop");
-        let _ = std::fs::create_dir_all(&p);
-        if p.is_dir() {
-            return p;
-        }
-    }
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 #[cfg(test)]

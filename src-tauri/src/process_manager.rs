@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::RwLock;
@@ -267,6 +268,71 @@ impl ProcessSupervisor {
         map
     }
 
+    /// Partitions CLI flags for Antigravity (`agy [root-options] acp [acp-options]`).
+    /// Root flags (`--model`, `--mode`, `--effort`) must precede the `acp` subcommand,
+    /// whereas session/sandbox flags (`--agent`, `--add-dir`, `--sandbox`,
+    /// `--dangerously-skip-permissions`) follow `acp`.
+    pub fn partition_agy_cli_args(extra_args: &[String]) -> (Vec<String>, Vec<String>) {
+        let mut root_args = Vec::new();
+        let mut acp_args = Vec::new();
+        let mut i = 0;
+        while i < extra_args.len() {
+            let arg = &extra_args[i];
+            if arg == "--model" || arg == "--mode" || arg == "--effort" {
+                root_args.push(arg.clone());
+                if i + 1 < extra_args.len() {
+                    i += 1;
+                    root_args.push(extra_args[i].clone());
+                }
+            } else {
+                acp_args.push(arg.clone());
+            }
+            i += 1;
+        }
+        (root_args, acp_args)
+    }
+
+    /// Builds a `std::process::Command` for invoking a CLI executable across platforms.
+    /// Automatically wraps Windows `.cmd` / `.bat` shims via `cmd.exe /c` and sets `CREATE_NO_WINDOW`.
+    pub fn build_cli_command<S: AsRef<OsStr>>(binary: &Path, args: &[S]) -> Command {
+        let path_str = binary.to_string_lossy().to_string();
+        let lower = path_str.to_lowercase();
+        let is_batch = lower.ends_with(".cmd") || lower.ends_with(".bat");
+
+        #[cfg(target_os = "windows")]
+        let mut cmd = if is_batch {
+            let mut c = Command::new("cmd.exe");
+            c.arg("/c");
+            c.arg(&path_str);
+            for arg in args {
+                c.arg(arg.as_ref());
+            }
+            c
+        } else {
+            let mut c = Command::new(&path_str);
+            for arg in args {
+                c.arg(arg.as_ref());
+            }
+            c
+        };
+
+        #[cfg(not(target_os = "windows"))]
+        let mut cmd = {
+            let mut c = Command::new(&path_str);
+            for arg in args {
+                c.arg(arg.as_ref());
+            }
+            c
+        };
+
+        #[cfg(target_os = "windows")]
+        {
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+
+        cmd
+    }
+
     pub fn spawn_agent(
         &self,
         engine: &str,
@@ -277,57 +343,23 @@ impl ProcessSupervisor {
     ) -> Result<Child, String> {
         let is_agy = engine.trim().eq_ignore_ascii_case("agy");
         let path_str = binary.to_string_lossy().to_string();
-        let is_batch = path_str.to_lowercase().ends_with(".cmd")
-                    || path_str.to_lowercase().ends_with(".bat");
 
-        #[cfg(target_os = "windows")]
-        let mut cmd = if is_batch {
-            let mut c = Command::new("cmd.exe");
-            c.arg("/c");
-            c.arg(&path_str);
-            c
-        } else {
-            Command::new(&path_str)
-        };
-
-        #[cfg(not(target_os = "windows"))]
-        let mut cmd = Command::new(&path_str);
-
+        let mut spawn_args: Vec<String> = Vec::new();
         if is_agy {
             // Antigravity CLI ACP server signature: `agy [root-options] acp [acp-options]`
             // Root options (--model, --mode, --effort) must precede the `acp` subcommand.
-            let mut root_args = Vec::new();
-            let mut acp_args = Vec::new();
-            let mut i = 0;
-            while i < extra_args.len() {
-                let arg = &extra_args[i];
-                if arg == "--model" || arg == "--mode" || arg == "--effort" {
-                    root_args.push(arg.clone());
-                    if i + 1 < extra_args.len() {
-                        i += 1;
-                        root_args.push(extra_args[i].clone());
-                    }
-                } else {
-                    acp_args.push(arg.clone());
-                }
-                i += 1;
-            }
-
-            for arg in root_args {
-                cmd.arg(arg);
-            }
-            cmd.arg("acp");
-            for arg in acp_args {
-                cmd.arg(arg);
-            }
+            let (root_args, acp_args) = Self::partition_agy_cli_args(extra_args);
+            spawn_args.extend(root_args);
+            spawn_args.push("acp".to_string());
+            spawn_args.extend(acp_args);
         } else {
             // Gemini CLI ACP signature: `gemini --skip-trust --acp [options]`
-            cmd.arg("--skip-trust");
-            cmd.arg("--acp");
-            for arg in extra_args {
-                cmd.arg(arg);
-            }
+            spawn_args.push("--skip-trust".to_string());
+            spawn_args.push("--acp".to_string());
+            spawn_args.extend(extra_args.iter().cloned());
         }
+
+        let mut cmd = Self::build_cli_command(binary, &spawn_args);
 
         // Inject global credentials and extra environment variables
         for (k, v) in extra_envs {
@@ -558,6 +590,70 @@ DEBUG='true'
 
         // Cache invalidation should reset cache without panic
         invalidate_cli_path_cache();
+    }
+
+    #[test]
+    fn test_partition_agy_cli_args_ordering() {
+        let input = vec![
+            "--model".to_string(),
+            "gemini-4-hydrogen-high".to_string(),
+            "--effort".to_string(),
+            "xhigh".to_string(),
+            "--mode".to_string(),
+            "auto".to_string(),
+            "--sandbox".to_string(),
+            "--agent".to_string(),
+            "reviewer".to_string(),
+            "--add-dir".to_string(),
+            "C:\\Shared".to_string(),
+        ];
+        let (root_args, acp_args) = ProcessSupervisor::partition_agy_cli_args(&input);
+        assert_eq!(
+            root_args,
+            vec![
+                "--model",
+                "gemini-4-hydrogen-high",
+                "--effort",
+                "xhigh",
+                "--mode",
+                "auto"
+            ]
+        );
+        assert_eq!(
+            acp_args,
+            vec!["--sandbox", "--agent", "reviewer", "--add-dir", "C:\\Shared"]
+        );
+    }
+
+    #[test]
+    fn test_build_cli_command_handles_batch_and_binary() {
+        let exe_cmd = ProcessSupervisor::build_cli_command(
+            Path::new("C:\\Users\\test\\agy.exe"),
+            &["--version"],
+        );
+        assert_eq!(exe_cmd.get_program(), "C:\\Users\\test\\agy.exe");
+        let exe_args: Vec<_> = exe_cmd.get_args().collect();
+        assert_eq!(exe_args, vec!["--version"]);
+
+        let cmd_shim = ProcessSupervisor::build_cli_command(
+            Path::new("C:\\Users\\test\\AppData\\Roaming\\npm\\gemini.cmd"),
+            &["models", "--output-format", "json"],
+        );
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(cmd_shim.get_program(), "cmd.exe");
+            let shim_args: Vec<_> = cmd_shim.get_args().collect();
+            assert_eq!(
+                shim_args,
+                vec![
+                    "/c",
+                    "C:\\Users\\test\\AppData\\Roaming\\npm\\gemini.cmd",
+                    "models",
+                    "--output-format",
+                    "json"
+                ]
+            );
+        }
     }
 }
 

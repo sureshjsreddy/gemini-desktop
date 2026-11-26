@@ -7,11 +7,16 @@
 [![Rust](https://img.shields.io/badge/Rust-2021-black?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![Tailwind CSS v4](https://img.shields.io/badge/Tailwind-v4-38bdf8?style=flat-square&logo=tailwindcss)](https://tailwindcss.com)
 
-A modern, blazing-fast native desktop application for interacting with the **Gemini CLI** via the **Agent Client Protocol (ACP)** over standard I/O (JSON-RPC). Built from the ground up with **Tauri v2**, **Rust**, and **SvelteKit / Svelte 5**.
+A modern, blazing-fast native desktop application for interacting with **Gemini CLI (`gemini`)** and **Antigravity CLI (`agy`)** via a pluggable engine/transport runtime and the **Agent Client Protocol (ACP)** over standard I/O (JSON-RPC). Built from the ground up with **Tauri v2**, **Rust**, and **SvelteKit / Svelte 5**.
 
 ---
 
 ## ✨ Features
+
+- **🔌 Pluggable Multi-CLI Engine & Live Model Discovery**
+  - **1-Click Engine Switching**: Switch seamlessly between **Gemini CLI (`gemini`)** and **Antigravity CLI (`agy`)** directly from the chat header pill (`<EngineSwitcher />`), sidebar footer badge, or setup/settings modals, backed by the extensible Rust `CliEngineAdapter` registry (`src-tauri/src/engines/`) and `TransportProtocol` seam (`src-tauri/src/transports/`).
+  - **Live CLI Model Catalogs & Fallback Safety**: Queries live model catalogs (`agy models` / Gemini CLI v0.67+ & v0.71+ nested context metadata), supports Antigravity `orchestrator` + thinking/effort presets + `gemini-4-*` frontier tiers, remembers workspace models per engine, and displays safe `auto (fallback)` labels consistently across header, sidebar footer, and modals when switching engines.
+  - **Instant PATH Health Banner**: Surfaces missing-in-`PATH` warnings with 1-click user `PATH` repair (`<CliPathStatusBanner />`).
 
 - **🔗 Universal Code Location, Line Goto & Resource Link Navigation**
   - **Interactive File Link Pills**: Click any code reference (e.g. `api/main.py:179`, `file.ts:42`, `PROJECT_ANALYSIS.md`) directly within the chat to immediately open it in your preferred editor.
@@ -108,13 +113,13 @@ A modern, blazing-fast native desktop application for interacting with the **Gem
   - Connect AI agents to local and remote tools, databases, and services via Model Context Protocol (MCP 2.0).
   - Dynamic multi-layer server aggregation across enabled Antigravity plugins, global settings (`mcp_config.json`), and workspace profiles (`.agents/mcp_config.json`), with strict ACP schema normalization (`env`/`headers` arrays) and single-pass plugin namespacing.
   - Automatic plugin argument path resolution and execution scoping, ensuring sidecar scripts and bundled MCP tools launch seamlessly in ACP mode, plus automatic ACP session reset when saving MCP or plugin changes.
-  - Built-in 1-click presets for **Playwright Browser** (`@playwright/mcp`), **AKBO Knowledge & Dreaming** (`akbo-cli@2.0.0`), Local Filesystem, GitHub Docker, Postgres, Memory, and Brave Search.
+  - Built-in 1-click presets for **Playwright Browser** (`@playwright/mcp`), **AKBO Knowledge & Dreaming** (`akbo-cli@3.0.0`), Local Filesystem, GitHub Docker, Postgres, Memory, and Brave Search.
   - Live MCP runtime diagnostics (`diagnose_mcp_runtime`) detecting Antigravity BAIC admin policy blocks, 5-second preload timeouts, and spawn errors directly in `McpModal.svelte`.
   - Dual guided-form and monospaced raw JSON editors with live status toggle switches (`disabled: true`).
 
 - **🧩 Antigravity Plugins Catalog & AKBO Central Knowledge Pool**
-  - Native GUI for discovering, installing, enabling, configuring, and scaffolding Antigravity CLI (`agy`) plugins.
-  - Built-in 1-click installation for **AKBO Knowledge Oracle & Central Memory Pool** (`akbo`) bundling Structural Codebase Knowledge Graph (CKG) tools, agent invariant rules, pinned `akbo-cli@2.0.0` / local-first binary resolution, and observation-gated staged post-turn memory consolidation ("dreaming").
+  - Native GUI for discovering, installing, repairing/updating, enabling, configuring, and scaffolding Antigravity CLI (`agy`) plugins.
+  - Built-in 1-click installation & **Repair / Update** for **AKBO Knowledge Oracle & Central Memory Pool** (`akbo`) bundling Hybrid AST Codebase Knowledge Graph (CKG) tools, baseline project onboarding rules (`akbo_upsert_units` + `akbo_record_observation`), pinned `akbo-cli@3.0.0` / local-first binary resolution, and `protojson`-compliant staged post-turn memory consolidation ("dreaming").
   - **Central Knowledge Pool GUI Configuration**: Customize central memory repository paths (`~/.gemini/config/akbo_pool.json`) and toggle `--stage-only` proposal review mode (enabled by default for safe review) directly in `PluginsModal.svelte`.
   - Clean lifecycle uninstallation and disk directory cleanup.
 
@@ -205,13 +210,14 @@ This boots Vite with hot-module reloading on `localhost:1420` and spawns the nat
 
 ### 4. Code Quality & Verification
 ```bash
+# Run pure TypeScript utility unit tests
+npm test
+
 # Type check Svelte & TypeScript
 npm run check
 
 # Run Rust unit tests
-npm --prefix src-tauri test
-# or
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml --lib
 ```
 
 ### 5. Build for Production

@@ -595,3 +595,17 @@ samp {
 [data-theme="warm-dusk"] .hljs-bullet {
   color: #fabd2f; /* warm amber gold */
 }
+
+/* Math / KaTeX Display Styling */
+.katex-display-block {
+  margin: 0.75rem 0;
+  padding: 0.65rem 0.9rem;
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--bg-surface) 75%, transparent);
+  border: 1px solid var(--border-subtle);
+  overflow-x: auto;
+}
+
+.katex-display-block .katex-display {
+  margin: 0;
+}

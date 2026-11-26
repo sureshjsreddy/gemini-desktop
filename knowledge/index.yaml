@@ -1,8 +1,8 @@
 # Gemini Desktop Master Knowledge Graph & Index
 system_name: GeminiDesktop
 repository_root: "c:/AIFiles/gemini-desktop"
-knowledge_units_count: 29
-last_updated: "2026-11-25"
+knowledge_units_count: 30
+last_updated: "2026-11-26"
 
 knowledge_units:
   architecture:
@@ -99,3 +99,6 @@ knowledge_units:
     - id: ADR-004
       file: "knowledge/decisions/ADR-004.yaml"
       title: "GitHub Actions Tag-Based CI/CD for Automated Windows Distribution"
+    - id: ADR-005
+      file: "knowledge/decisions/ADR-005.yaml"
+      title: "Pluggable CLI Engine Adapter Registry & Transport Abstraction"

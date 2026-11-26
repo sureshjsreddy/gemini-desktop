@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use crate::acp_client::{handle_acp_line, StreamChunkPayload};
+use crate::engines::CliEngineAdapter;
 use crate::commands::AppState;
 use crate::database::Message;
 use chrono::Utc;
@@ -71,113 +72,78 @@ pub fn resolve_git_context(prompt: &str, workspace_path: Option<&std::path::Path
     expanded.trim().to_string()
 }
 
+/// Splits comma, semicolon, or newline separated directory strings into trimmed entries.
+pub fn parse_additional_dirs(raw: Option<&str>) -> Vec<String> {
+    crate::engines::parse_additional_dirs(raw)
+}
+
 /// Constructs CLI argument list including model selection, approval mode, and workspace flags for Gemini CLI.
+#[allow(dead_code)]
 pub fn build_gemini_extra_args(model: &str, approval_mode: &str) -> Vec<String> {
-    let mut extra_args = Vec::new();
-    let trimmed_model = model.trim();
-    if !trimmed_model.is_empty() && trimmed_model != "auto" {
-        extra_args.push("--model".to_string());
-        extra_args.push(trimmed_model.to_string());
-    }
+    build_gemini_extra_args_with_options(model, approval_mode, false, None)
+}
 
-    match approval_mode {
-        "yolo" => {
-            extra_args.push("--approval-mode".to_string());
-            extra_args.push("yolo".to_string());
-        }
-        "auto_edit" => {
-            extra_args.push("--approval-mode".to_string());
-            extra_args.push("auto_edit".to_string());
-        }
-        "plan" => {
-            extra_args.push("--approval-mode".to_string());
-            extra_args.push("plan".to_string());
-        }
-        _ => {
-            extra_args.push("--approval-mode".to_string());
-            extra_args.push("default".to_string());
-        }
-    }
-
-    extra_args.push("--skip-trust".to_string());
-    extra_args
+/// Extended Gemini CLI argument builder supporting `--sandbox` and `--include-directories`.
+/// Never passes Antigravity-only flags such as `--effort` or `--agent`.
+#[allow(dead_code)]
+pub fn build_gemini_extra_args_with_options(
+    model: &str,
+    approval_mode: &str,
+    sandbox: bool,
+    additional_dirs: Option<&str>,
+) -> Vec<String> {
+    let mut args = crate::engines::GeminiEngineAdapter.build_acp_args(
+        model,
+        approval_mode,
+        None,
+        None,
+        sandbox,
+        additional_dirs,
+    );
+    args.push("--skip-trust".to_string());
+    args
 }
 
 /// Constructs CLI argument list for Antigravity CLI (agy) ACP mode.
+#[allow(dead_code)]
 pub fn build_agy_extra_args(model: &str, approval_mode: &str, effort: Option<&str>) -> Vec<String> {
-    let mut extra_args = Vec::new();
-    let trimmed_model = model.trim();
-    if !trimmed_model.is_empty() && trimmed_model != "auto" {
-        extra_args.push("--model".to_string());
-        extra_args.push(trimmed_model.to_string());
-    }
+    build_agy_extra_args_with_options(model, approval_mode, effort, None, false, None)
+}
 
-    if let Some(eff) = effort {
-        let trimmed_eff = eff.trim();
-        if !trimmed_eff.is_empty() {
-            extra_args.push("--effort".to_string());
-            extra_args.push(trimmed_eff.to_string());
-        }
-    }
-
-    match approval_mode {
-        "yolo" => {
-            extra_args.push("--dangerously-skip-permissions".to_string());
-        }
-        "auto_edit" => {
-            extra_args.push("--mode".to_string());
-            extra_args.push("accept-edits".to_string());
-        }
-        "plan" => {
-            extra_args.push("--mode".to_string());
-            extra_args.push("plan".to_string());
-        }
-        _ => {}
-    }
-
-    extra_args
+/// Extended Antigravity CLI (`agy`) argument builder supporting `--mode auto`, `--effort`,
+/// `--agent`, `--sandbox`, and repeatable `--add-dir`.
+#[allow(dead_code)]
+pub fn build_agy_extra_args_with_options(
+    model: &str,
+    approval_mode: &str,
+    effort: Option<&str>,
+    agent_name: Option<&str>,
+    sandbox: bool,
+    additional_dirs: Option<&str>,
+) -> Vec<String> {
+    crate::engines::AgyEngineAdapter.build_acp_args(
+        model,
+        approval_mode,
+        effort,
+        agent_name,
+        sandbox,
+        additional_dirs,
+    )
 }
 
 /// Sanitizes a model identifier for the active CLI engine.
 /// If the model is incompatible with the active engine, seamlessly falls back to "auto".
+#[allow(dead_code)]
 pub fn sanitize_model_for_engine(engine: &str, model: &str) -> String {
-    let trimmed = model.trim();
-    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
-        return "auto".to_string();
-    }
+    crate::engines::get_adapter(engine).sanitize_model(model)
+}
 
-    let is_agy = engine.trim().eq_ignore_ascii_case("agy");
-    if is_agy {
-        let lower = trimmed.to_lowercase();
-        // Gemini CLI-specific models that are not recognized by Antigravity CLI
-        let is_gemini_cli_specific = lower.starts_with("gemini-2.5")
-            || lower.starts_with("gemini-1.5")
-            || lower.starts_with("gemini-3.5")
-            || lower.starts_with("gemini-3.1")
-            || lower.starts_with("gemini-3-")
-            || lower == "gemini-3.8-flash";
-
-        if is_gemini_cli_specific {
-            return "auto".to_string();
-        }
-
-        trimmed.to_string()
-    } else {
-        let lower = trimmed.to_lowercase();
-        // Antigravity CLI-specific models that are not recognized by Gemini CLI
-        let is_agy_specific = lower.starts_with("claude-")
-            || lower.starts_with("gpt-oss-")
-            || lower.starts_with("gemini-4-")
-            || lower.ends_with("-high")
-            || lower.ends_with("-medium")
-            || lower.ends_with("-low");
-
-        if is_agy_specific {
-            return "auto".to_string();
-        }
-
-        trimmed.to_string()
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptAttachment {
+    pub path: String,
+    pub mime_type: Option<String>,
+    pub name: Option<String>,
 }
 
 #[tauri::command]
@@ -190,6 +156,7 @@ pub async fn send_prompt(
     model: String,
     approval_mode: Option<String>,
     message_id: Option<String>,
+    attachments: Option<Vec<PromptAttachment>>,
 ) -> Result<u64, String> {
     let now = Utc::now().to_rfc3339();
 
@@ -209,10 +176,19 @@ pub async fn send_prompt(
     };
     state.db.save_message(user_msg)?;
 
-    // 2. Determine workspace path
+    // 2. Determine workspace path and engine options
     let workspaces = state.db.list_workspaces()?;
     let ws = workspaces.into_iter().find(|w| w.id == workspace_id);
     let ws_path = ws.as_ref().map(|w| PathBuf::from(&w.path));
+    let reasoning_effort = ws.as_ref().and_then(|w| w.reasoning_effort.clone());
+    let sandbox_enabled = ws.as_ref().and_then(|w| w.sandbox_enabled).unwrap_or(false);
+    let agent_name = ws.as_ref().and_then(|w| w.agent_name.clone());
+    let additional_dirs = ws.as_ref().and_then(|w| w.additional_dirs.clone());
+    let system_prompt_text = ws
+        .as_ref()
+        .and_then(|w| w.system_prompt.clone())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     // Resolve active CLI engine (global app-level setting, defaults to "gemini" if not persisted by user)
     let active_engine = state.db.get_setting("active_cli_engine")
@@ -221,17 +197,30 @@ pub async fn send_prompt(
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "gemini".to_string());
 
-    let sanitized_model = sanitize_model_for_engine(&active_engine, &model);
+    let adapter = crate::engines::get_adapter(&active_engine);
+    let engine_desc = adapter.static_descriptor();
+    let is_agy = adapter.id() == "agy";
+    let sanitized_model = adapter.sanitize_model(&model);
 
     // Resolve effective approval mode and composite process key
-    let effective_mode = match approval_mode.as_deref().unwrap_or("default") {
-        "yolo" => "yolo",
-        "auto_edit" => "auto_edit",
-        "plan" => "plan",
-        _ => "default",
-    };
+    let effective_mode = adapter.normalize_approval_mode(approval_mode.as_deref().unwrap_or("default"));
     state.acp_session.set_session_mode(&session_id, effective_mode);
-    let process_key = format!("{}::{}::{}", workspace_id, active_engine, effective_mode);
+
+    let effort_key = if engine_desc.capabilities.supports_reasoning_effort {
+        reasoning_effort.as_deref().unwrap_or("")
+    } else {
+        ""
+    };
+    let agent_key = if engine_desc.capabilities.supports_agent_persona {
+        agent_name.as_deref().unwrap_or("")
+    } else {
+        ""
+    };
+    let dirs_key = additional_dirs.as_deref().unwrap_or("");
+    let process_key = format!(
+        "{}::{}::{}::{}::{}::{}::{}",
+        workspace_id, adapter.id(), effective_mode, effort_key, sandbox_enabled, agent_key, dirs_key
+    );
 
     // 3. Ensure CLI process is spawned and ACP connected
     let mut ws_guard = state.active_process_workspace.lock().await;
@@ -251,68 +240,42 @@ pub async fn send_prompt(
 
         state.acp_session.clear_sessions();
 
-        let is_agy = active_engine == "agy";
-        let (cli_bin, extra_args) = if is_agy {
-            let bin = match crate::process_manager::find_agy_executable() {
-                Some(p) => p,
-                None => {
-                    let assistant_id = format!("msg-{}", Uuid::new_v4());
-                    let fallback_text = format!(
-                        "**[Offline / Mock Mode]**\n\nAntigravity CLI (`agy`) could not be located on your system PATH or installation directories.\n\nPrompt received:\n> {}\n\nPlease ensure Antigravity CLI (`agy`) is installed and available in PATH, or switch to Gemini CLI in Settings.",
-                        prompt
-                    );
-                    let assistant_msg = Message {
-                        id: assistant_id,
-                        session_id: session_id.clone(),
-                        role: "assistant".to_string(),
-                        content: fallback_text.clone(),
-                        tool_calls_json: None,
-                        token_count: 50,
-                        created_at: Utc::now().to_rfc3339(),
-                    };
-                    let _ = state.db.save_message(assistant_msg);
+        let cli_bin = match adapter.find_executable() {
+            Some(p) => p,
+            None => {
+                let assistant_id = format!("msg-{}", Uuid::new_v4());
+                let fallback_text = format!(
+                    "**[Offline / Mock Mode]**\n\n{} could not be located on your system PATH or standard installation directories.\n\nPrompt received:\n> {}\n\nInstall hint: `{}` or switch active CLI engines in Settings.",
+                    engine_desc.display_name, prompt, engine_desc.install_hint
+                );
+                let assistant_msg = Message {
+                    id: assistant_id,
+                    session_id: session_id.clone(),
+                    role: "assistant".to_string(),
+                    content: fallback_text.clone(),
+                    tool_calls_json: None,
+                    token_count: 50,
+                    created_at: Utc::now().to_rfc3339(),
+                };
+                let _ = state.db.save_message(assistant_msg);
 
-                    let _ = app.emit("acp-chunk", StreamChunkPayload {
-                        session_id: session_id.clone(),
-                        delta: fallback_text,
-                        is_done: true,
-                    });
-                    return Ok(0);
-                }
-            };
-            let args = build_agy_extra_args(&sanitized_model, effective_mode, None);
-            (bin, args)
-        } else {
-            let bin = match crate::process_manager::find_gemini_executable() {
-                Some(p) => p,
-                None => {
-                    let assistant_id = format!("msg-{}", Uuid::new_v4());
-                    let fallback_text = format!(
-                        "**[Offline / Mock Mode]**\n\nGemini CLI could not be located on your system PATH or npm global directories.\n\nPrompt received:\n> {}\n\nPlease install Gemini CLI (`npm install -g @google/gemini-cli` or `scoop install gemini-cli`) and ensure it is in your PATH.",
-                        prompt
-                    );
-                    let assistant_msg = Message {
-                        id: assistant_id,
-                        session_id: session_id.clone(),
-                        role: "assistant".to_string(),
-                        content: fallback_text.clone(),
-                        tool_calls_json: None,
-                        token_count: 50,
-                        created_at: Utc::now().to_rfc3339(),
-                    };
-                    let _ = state.db.save_message(assistant_msg);
-
-                    let _ = app.emit("acp-chunk", StreamChunkPayload {
-                        session_id: session_id.clone(),
-                        delta: fallback_text,
-                        is_done: true,
-                    });
-                    return Ok(0);
-                }
-            };
-            let args = build_gemini_extra_args(&sanitized_model, effective_mode);
-            (bin, args)
+                let _ = app.emit("acp-chunk", StreamChunkPayload {
+                    session_id: session_id.clone(),
+                    delta: fallback_text,
+                    is_done: true,
+                });
+                return Ok(0);
+            }
         };
+
+        let extra_args = adapter.build_acp_args(
+            &sanitized_model,
+            effective_mode,
+            reasoning_effort.as_deref(),
+            agent_name.as_deref(),
+            sandbox_enabled,
+            additional_dirs.as_deref(),
+        );
 
         let auth_mode = state.db.get_setting("gemini_auth_mode")
             .ok()
@@ -348,6 +311,20 @@ pub async fn send_prompt(
             if let Ok(Some(key)) = state.db.get_setting("gemini_api_key") {
                 if !key.trim().is_empty() {
                     global_envs.push(("GEMINI_API_KEY".to_string(), key.trim().to_string()));
+                }
+            }
+        }
+
+        if is_agy {
+            if let Ok(Some(compact_override)) = state.db.get_setting("agy_auto_compact_override") {
+                let trimmed = compact_override.trim();
+                if !trimmed.is_empty() {
+                    global_envs.push(("AGY_CLI_AUTO_COMPACT_OVERRIDE".to_string(), trimmed.to_string()));
+                }
+            }
+            if let Ok(Some(disable_rg)) = state.db.get_setting("agy_disable_embedded_ripgrep") {
+                if disable_rg.trim() == "true" || disable_rg.trim() == "1" {
+                    global_envs.push(("ANTIGRAVITY_DISABLE_EMBEDDED_RIPGREP".to_string(), "1".to_string()));
                 }
             }
         }
@@ -422,11 +399,8 @@ pub async fn send_prompt(
                 *child_guard = Some(child);
                 drop(child_guard);
 
-                // Send initialize request (per ACP specification)
-                // Note: We advertise terminal capabilities for ACP execution.
-                // We deliberately omit client-side 'fs' interception capabilities so CLI agents
-                // use their robust native filesystem services.
-                let _ = state.acp_session.send_request_with_response("initialize", serde_json::json!({
+                // Send initialize request (per ACP specification) and store advertised capabilities
+                if let Ok(init_res) = state.acp_session.send_request_with_response("initialize", serde_json::json!({
                     "protocolVersion": 1,
                     "clientCapabilities": {
                         "terminal": true
@@ -436,7 +410,13 @@ pub async fn send_prompt(
                         "version": env!("CARGO_PKG_VERSION"),
                         "engine": active_engine
                     }
-                })).await;
+                })).await {
+                    let caps = state.acp_session.set_agent_capabilities_from_init(&init_res);
+                    let _ = app.emit("acp-capabilities-updated", serde_json::json!({
+                        "engine": active_engine,
+                        "capabilities": caps,
+                    }));
+                }
             }
             Err(e) => {
                 let assistant_id = format!("msg-{}", Uuid::new_v4());
@@ -473,7 +453,10 @@ pub async fn send_prompt(
     let should_track = ws.as_ref().and_then(|w| w.track_file_changes).unwrap_or(false);
     state.acp_session.set_track_file_changes(should_track);
 
-    // 4. Establish session context & send prompt over ACP
+    let caps = state.acp_session.get_agent_capabilities();
+    let mut acp_session_res_val: Option<serde_json::Value> = None;
+
+    // 4. Establish session context & send prompt over ACP (preferring session/resume when supported)
     let acp_session_id = match state.acp_session.get_acp_session_id(&session_id) {
         Some(id) => id,
         None => {
@@ -482,22 +465,87 @@ pub async fn send_prompt(
                 &active_engine,
             );
 
-            let new_session_params = serde_json::json!({
-                "cwd": ws_path_str,
-                "mcpServers": active_mcp_servers,
-            });
+            let mut resumed_id: Option<String> = None;
+            if caps.supports_resume {
+                if let Ok(Some(db_session)) = state.db.get_session(&session_id) {
+                    if let (Some(saved_acp_id), Some(saved_engine)) = (db_session.acp_session_id, db_session.acp_engine) {
+                        if !saved_acp_id.trim().is_empty() && saved_engine == active_engine {
+                            let resume_params = serde_json::json!({
+                                "sessionId": saved_acp_id,
+                                "cwd": ws_path_str,
+                                "mcpServers": active_mcp_servers,
+                            });
+                            if let Ok(res) = state.acp_session.send_request_with_response("session/resume", resume_params).await {
+                                let sid = res.get("sessionId")
+                                    .and_then(|s| s.as_str())
+                                    .unwrap_or(&saved_acp_id)
+                                    .to_string();
+                                state.acp_session.register_session_mapping(&session_id, &sid);
+                                acp_session_res_val = Some(res);
+                                resumed_id = Some(sid);
+                            }
+                        }
+                    }
+                }
+            }
 
-            let res = state.acp_session.send_request_with_response("session/new", new_session_params).await?;
+            if let Some(id) = resumed_id {
+                id
+            } else {
+                let mut new_session_map = serde_json::Map::new();
+                new_session_map.insert("cwd".to_string(), serde_json::Value::String(ws_path_str.clone()));
+                new_session_map.insert("mcpServers".to_string(), serde_json::Value::Array(active_mcp_servers));
 
-            let assigned_id = res.get("sessionId")
-                .and_then(|s| s.as_str())
-                .ok_or_else(|| "ACP agent did not return a sessionId from session/new".to_string())?
-                .to_string();
+                let parsed_dirs = parse_additional_dirs(additional_dirs.as_deref());
+                if caps.supports_additional_dirs && !parsed_dirs.is_empty() {
+                    new_session_map.insert(
+                        "additionalDirectories".to_string(),
+                        serde_json::Value::Array(parsed_dirs.into_iter().map(serde_json::Value::String).collect()),
+                    );
+                }
 
-            state.acp_session.register_session_mapping(&session_id, &assigned_id);
-            assigned_id
+                if engine_desc.capabilities.supports_system_prompt_append && caps.supports_system_prompt_append {
+                    if let Some(ref sys_prompt) = system_prompt_text {
+                        new_session_map.insert(
+                            "_meta".to_string(),
+                            serde_json::json!({
+                                "antigravity": {
+                                    "systemPrompt": {
+                                        "append": sys_prompt
+                                    }
+                                }
+                            }),
+                        );
+                    }
+                }
+
+                let res = state.acp_session.send_request_with_response(
+                    "session/new",
+                    serde_json::Value::Object(new_session_map),
+                ).await?;
+
+                let assigned_id = res.get("sessionId")
+                    .and_then(|s| s.as_str())
+                    .ok_or_else(|| "ACP agent did not return a sessionId from session/new".to_string())?
+                    .to_string();
+
+                state.acp_session.register_session_mapping(&session_id, &assigned_id);
+                let _ = state.db.update_session_acp_binding(&session_id, Some(&assigned_id), Some(&active_engine));
+                acp_session_res_val = Some(res);
+                assigned_id
+            }
         }
     };
+
+    if let Some(ref session_meta) = acp_session_res_val {
+        if session_meta.get("models").is_some() || session_meta.get("modes").is_some() {
+            let _ = app.emit("acp-session-capabilities", serde_json::json!({
+                "sessionId": session_id,
+                "models": session_meta.get("models"),
+                "modes": session_meta.get("modes"),
+            }));
+        }
+    }
 
     state.acp_session.set_active_local_session(&session_id);
 
@@ -511,37 +559,59 @@ pub async fn send_prompt(
     }
 
     // Explicitly set the active policy approval mode on this session via ACP session/set_mode
-    let is_agy = active_engine == "agy";
-    let acp_mode_id = if is_agy {
-        match effective_mode {
-            "auto_edit" => "accept-edits",
-            "plan" => "plan",
-            "yolo" => "default",
-            _ => "default",
-        }
-    } else {
-        match effective_mode {
-            "yolo" => "yolo",
-            "plan" => "plan",
-            _ => if effective_mode == "auto_edit" { "autoEdit" } else { "default" },
-        }
-    };
-    let set_mode_params = serde_json::json!({
-        "sessionId": acp_session_id,
-        "modeId": acp_mode_id
-    });
-    let _ = state.acp_session.send_request_with_response("session/set_mode", set_mode_params).await;
+    let acp_mode_opt: Option<&str> = adapter.map_acp_mode(effective_mode);
+
+    if let Some(acp_mode_id) = acp_mode_opt {
+        let set_mode_params = serde_json::json!({
+            "sessionId": acp_session_id,
+            "modeId": acp_mode_id
+        });
+        let _ = state.acp_session.send_request_with_response("session/set_mode", set_mode_params).await;
+    }
 
     let final_prompt = resolve_git_context(&prompt, ws_path.as_deref());
+    let mut prompt_blocks = vec![serde_json::json!({
+        "type": "text",
+        "text": final_prompt
+    })];
+
+    if caps.supports_image {
+        if let Some(att_list) = attachments.as_ref() {
+            for att in att_list {
+                let att_path = std::path::PathBuf::from(&att.path);
+                let ext = att_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                let mime = att.mime_type.as_deref().map(|s| s.to_string()).unwrap_or_else(|| {
+                    match ext.as_str() {
+                        "png" => "image/png".to_string(),
+                        "jpg" | "jpeg" => "image/jpeg".to_string(),
+                        "webp" => "image/webp".to_string(),
+                        "gif" => "image/gif".to_string(),
+                        _ => String::new(),
+                    }
+                });
+                if mime.starts_with("image/") {
+                    if let Ok(bytes) = std::fs::read(&att_path) {
+                        if bytes.len() <= 10 * 1024 * 1024 {
+                            let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                            prompt_blocks.push(serde_json::json!({
+                                "type": "image",
+                                "data": encoded,
+                                "mimeType": mime,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     let prompt_params = serde_json::json!({
         "sessionId": acp_session_id,
-        "prompt": [
-            {
-                "type": "text",
-                "text": final_prompt
-            }
-        ]
+        "prompt": prompt_blocks
     });
 
     let req_id = state.acp_session.send_prompt_request(&session_id, prompt_params).await?;
@@ -584,11 +654,18 @@ pub async fn steer_prompt(
         return Err("Steering hint cannot be empty".to_string());
     }
 
+    let active_engine = state.db.get_setting("active_cli_engine")
+        .ok()
+        .flatten()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "gemini".to_string());
+    let adapter_caps = crate::engines::get_adapter(&active_engine).static_descriptor().capabilities;
+
     let current_mode = state.acp_session.get_session_mode(&session_id);
     let is_plan_mode = current_mode == "plan";
 
-    // 1. Cancel in-flight generation in CLI if a prompt is currently active so it aborts cleanly
-    if state.acp_session.has_pending_prompt_for_session(&session_id) {
+    // For engines without concurrent steering support (e.g. Gemini CLI), cancel in-flight generation first.
+    if !adapter_caps.supports_concurrent_steer && state.acp_session.has_pending_prompt_for_session(&session_id) {
         let _ = state.acp_session.send_cancel(Some(&session_id), None).await;
         // Delay to allow cancellation to propagate through ACP
         tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
@@ -717,8 +794,9 @@ pub async fn rewind_turn(
     // 1. Cancel active turn for this session if running
     let _ = state.acp_session.send_cancel(Some(&session_id), None).await;
 
-    // 2. Clear ACP session mapping
+    // 2. Clear ACP session mapping (memory + DB binding)
     state.acp_session.remove_session(&session_id);
+    let _ = state.db.update_session_acp_binding(&session_id, None, None);
 
     // 3. Delete or inspect messages from database
     let should_revert_messages = revert_messages.unwrap_or(true);
@@ -863,8 +941,12 @@ pub async fn respond_tool_permission(
     request_id: serde_json::Value,
     option_id: Option<String>,
     allowed: Option<bool>,
+    answer: Option<String>,
 ) -> Result<(), String> {
-    state.acp_session.respond_permission(request_id, option_id, allowed.unwrap_or(true)).await
+    state
+        .acp_session
+        .respond_permission_with_answer(request_id, option_id, allowed.unwrap_or(true), answer)
+        .await
 }
 
 #[tauri::command]
@@ -972,8 +1054,9 @@ pub async fn create_continuation_session(
     };
     state.db.save_message(continuation_message.clone())?;
 
-    // Clean up old ACP session mapping so new session creates fresh context
+    // Clean up old ACP session mapping (memory + DB binding) so new session creates fresh context
     state.acp_session.remove_session(&exhausted_session_id);
+    let _ = state.db.update_session_acp_binding(&exhausted_session_id, None, None);
 
     Ok(ContinuationResult {
         new_session,
@@ -992,6 +1075,8 @@ mod tests {
                 id: "sess-100".to_string(),
                 workspace_id: "ws-1".to_string(),
                 title: "Sprint 2 (Continuation)".to_string(),
+                acp_session_id: None,
+                acp_engine: None,
                 created_at: "2026-10-28T12:00:00Z".to_string(),
                 updated_at: "2026-10-28T12:00:00Z".to_string(),
             },
@@ -1206,5 +1291,43 @@ mod tests {
         assert!(!extracted.contains(&"test2.abc".to_string()));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_extended_engine_flags_and_sanitization() {
+        // agy: --mode auto, --sandbox, --agent, repeatable --add-dir, --effort
+        let agy_args = build_agy_extra_args_with_options(
+            "gemini-4-hydrogen-high",
+            "auto",
+            Some("xhigh"),
+            Some("architect"),
+            true,
+            Some("C:\\Shared; ../common\nD:\\Libs"),
+        );
+        assert!(agy_args.windows(2).any(|w| w == ["--mode", "auto"]));
+        assert!(agy_args.windows(2).any(|w| w == ["--effort", "xhigh"]));
+        assert!(agy_args.windows(2).any(|w| w == ["--agent", "architect"]));
+        assert!(agy_args.contains(&"--sandbox".to_string()));
+        assert_eq!(agy_args.windows(2).filter(|w| w[0] == "--add-dir").count(), 3);
+
+        // gemini: "auto" safely maps to auto_edit; --sandbox and --include-directories allowed; never passes --effort/--agent
+        let gemini_args = build_gemini_extra_args_with_options(
+            "gemini-3.5-flash",
+            "auto",
+            true,
+            Some("C:\\Shared, ../common"),
+        );
+        assert!(gemini_args.windows(2).any(|w| w == ["--approval-mode", "auto_edit"]));
+        assert!(gemini_args.contains(&"--sandbox".to_string()));
+        assert_eq!(gemini_args.windows(2).filter(|w| w[0] == "--include-directories").count(), 2);
+        assert!(!gemini_args.contains(&"--effort".to_string()));
+        assert!(!gemini_args.contains(&"--agent".to_string()));
+        assert!(!gemini_args.contains(&"--add-dir".to_string()));
+
+        // Orchestrator & thinking-suffix fallback on Gemini engine
+        assert_eq!(sanitize_model_for_engine("gemini", "orchestrator"), "auto");
+        assert_eq!(sanitize_model_for_engine("gemini", "gemini-4"), "auto");
+        assert_eq!(sanitize_model_for_engine("gemini", "gemini-4-hydrogen-xhigh"), "auto");
+        assert_eq!(sanitize_model_for_engine("agy", "orchestrator"), "orchestrator");
     }
 }

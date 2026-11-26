@@ -6,12 +6,15 @@
     ApprovalMode,
     MentionOption,
     SlashCommandOption,
+    DynamicAcpCommand,
+    QueuedPromptItem,
     CliEngine,
   } from "$lib/types";
   import FilePickerModal from "$lib/components/FilePickerModal.svelte";
   import ChatMentionPopover from "$lib/components/ChatMentionPopover.svelte";
   import ChatSlashPopover from "$lib/components/ChatSlashPopover.svelte";
   import { modalManager } from "$lib/modal.svelte";
+  import { engineStore } from "$lib/stores/engineStore.svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { dialogManager } from "$lib/dialog.svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -29,6 +32,7 @@
     FileCode,
     Bug,
     Image,
+    Clock,
   } from "lucide-svelte";
   import { parseDebugError } from "$lib/utils/debugParser";
   import type { ParsedDebugError } from "$lib/types";
@@ -40,9 +44,13 @@
     isStreaming = false,
     approvalMode = "default",
     activeEngine = "gemini",
+    dynamicCommands = [],
+    queuedPrompts = [],
     onSendPrompt,
     onCancelPrompt,
     onSteerPrompt,
+    onQueuePrompt,
+    onRemoveQueuedPrompt,
     onTriggerDebugDoctor,
     onDebugErrorDetected,
     onOpenDiffModal,
@@ -56,9 +64,13 @@
     isStreaming: boolean;
     approvalMode?: ApprovalMode;
     activeEngine?: CliEngine;
-    onSendPrompt: (prompt: string) => void;
+    dynamicCommands?: DynamicAcpCommand[];
+    queuedPrompts?: QueuedPromptItem[];
+    onSendPrompt: (prompt: string, attachments?: AttachmentItem[]) => void;
     onCancelPrompt: () => void;
     onSteerPrompt?: (hint: string) => void;
+    onQueuePrompt?: (prompt: string, attachments?: AttachmentItem[]) => void;
+    onRemoveQueuedPrompt?: (id: string) => void;
     onTriggerDebugDoctor?: () => void;
     onDebugErrorDetected?: (error: ParsedDebugError) => void;
     onOpenDiffModal?: () => void;
@@ -99,7 +111,9 @@
   let dismissedSlashMatchStart: number | null = $state(null);
 
   let availableSlashCommands = $derived.by(() => {
-    const isAgy = activeEngine === "agy";
+    const desc = engineStore.getDescriptor(activeEngine);
+    const caps = desc.capabilities;
+    const isAgy = desc.id === "agy";
     const commands: SlashCommandOption[] = [
       {
         id: "plan",
@@ -121,15 +135,15 @@
       },
     ];
 
-    if (!isAgy) {
+    if (caps.supportsNativeCompress) {
       commands.push({
         id: "compress",
         label: "/compress",
         insertText: "/compress",
         title: "Compress Context",
-        description: "Gemini CLI native conversation context compression",
+        description: `${desc.shortName} native conversation context compression`,
         category: "action",
-        engine: "gemini",
+        engine: activeEngine,
       });
     }
 
@@ -177,15 +191,15 @@
       engine: "all",
     });
 
-    if (isAgy) {
+    if (caps.supportsPlugins) {
       commands.push({
         id: "plugins",
         label: "/plugins",
         insertText: "/plugins",
         title: "Plugins & Skills",
-        description: "Inspect active Antigravity plugins, extensions, and custom skills",
+        description: `Inspect active ${desc.shortName} plugins, extensions, and custom skills`,
         category: "tool",
-        engine: "agy",
+        engine: activeEngine,
       });
     }
 
@@ -194,9 +208,7 @@
       label: "/tools",
       insertText: "/tools",
       title: "List Active Tools",
-      description: isAgy
-        ? "View Antigravity agent tools, plugins, and custom skills"
-        : "View official Gemini CLI file, terminal, and MCP tool capabilities",
+      description: `View ${desc.shortName} file, terminal, and MCP tool capabilities`,
       category: "tool",
       engine: "all",
     });
@@ -206,9 +218,7 @@
       label: "/model",
       insertText: "/model ",
       title: "Switch Model",
-      description: isAgy
-        ? "Switch Antigravity models (gemini-4-argon, claude-sonnet-4-6, 3.8-flash)"
-        : "Switch Gemini CLI models (gemini-3.8-flash, 3.5-flash, auto)",
+      description: `Switch ${desc.shortName} models`,
       category: "config",
       engine: "all",
     });
@@ -239,10 +249,8 @@
       id: "settings",
       label: "/settings",
       insertText: "/settings",
-      title: isAgy ? "Antigravity Settings" : "Global CLI Settings",
-      description: isAgy
-        ? "Configure settings in ~/.gemini/antigravity-cli/settings.json"
-        : "Configure settings in ~/.gemini/settings.json",
+      title: `${desc.shortName} Settings`,
+      description: `Configure settings in ${desc.globalSettingsHint}`,
       category: "config",
       engine: "all",
     });
@@ -252,9 +260,7 @@
       label: "/setup",
       insertText: "/setup",
       title: "Engine & Auth Setup",
-      description: isAgy
-        ? "Configure Antigravity CLI binary, updates, and environment"
-        : "Configure Gemini CLI, Google Cloud Vertex AI, and API key",
+      description: `Configure ${desc.shortName} binary, updates, and credentials`,
       category: "config",
       engine: "all",
     });
@@ -268,6 +274,22 @@
       category: "action",
       engine: "all",
     });
+
+    // Merge dynamically discovered ACP slash commands from the active agent
+    for (const dyn of dynamicCommands || []) {
+      const cmdName = (dyn.name || "").replace(/^\//, "").trim();
+      if (!cmdName) continue;
+      if (commands.some((c) => c.id === cmdName || c.label === `/${cmdName}`)) continue;
+      commands.push({
+        id: `acp-${cmdName}`,
+        label: `/${cmdName}`,
+        insertText: `/${cmdName}${dyn.inputHint ? " " : ""}`,
+        title: cmdName,
+        description: dyn.description || `Run /${cmdName} on active CLI runtime`,
+        category: "tool",
+        engine: activeEngine,
+      });
+    }
 
     return commands;
   });
@@ -661,6 +683,27 @@
     }
   }
 
+  function handleQueue() {
+    const trimmed = inputPrompt.trim();
+    if (!trimmed && attachments.length === 0) return;
+    const submitAttachments = [...attachments];
+    let finalPrompt = trimmed;
+    if (submitAttachments.length > 0) {
+      const unmentioned = submitAttachments.filter((att) => {
+        const ref = `@${att.path}`;
+        return !finalPrompt.includes(ref) && !finalPrompt.includes(att.path);
+      });
+      if (unmentioned.length > 0) {
+        const refsText = unmentioned.map((att) => `@${att.path}`).join(" ");
+        finalPrompt = finalPrompt ? `${finalPrompt}\n\n${refsText}` : refsText;
+      }
+    }
+    inputPrompt = "";
+    attachments = [];
+    showMentionPopover = false;
+    onQueuePrompt?.(finalPrompt, submitAttachments);
+  }
+
   function handleKeyDown(e: KeyboardEvent) {
     if (showSlashPopover && filteredSlashOptions.length > 0) {
       if (e.key === "ArrowDown") {
@@ -750,7 +793,11 @@
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (isStreaming) {
-        handleSteer();
+        if (e.altKey || e.ctrlKey) {
+          handleQueue();
+        } else {
+          handleSteer();
+        }
       } else {
         handleSubmit();
       }
@@ -791,11 +838,12 @@
       }
     }
 
+    const submitAttachments = [...attachments];
     let finalPrompt = trimmed;
 
     // Append attached context chips if not already present in the prompt
-    if (attachments.length > 0) {
-      const unmentioned = attachments.filter((att) => {
+    if (submitAttachments.length > 0) {
+      const unmentioned = submitAttachments.filter((att) => {
         const ref = `@${att.path}`;
         return !finalPrompt.includes(ref) && !finalPrompt.includes(att.path);
       });
@@ -809,7 +857,7 @@
     inputPrompt = "";
     attachments = [];
     showMentionPopover = false;
-    onSendPrompt(finalPrompt);
+    onSendPrompt(finalPrompt, submitAttachments);
   }
   function handleImagePaste(file: File): Promise<void> {
     if (isSavingImage) return Promise.resolve();
@@ -941,6 +989,31 @@
       onDismiss={dismissSlashPopover}
       onSelectIndex={(idx) => (slashSelectedIndex = idx)}
     />
+
+    <!-- Queued Prompts Strip (Next Turns Waiting Behind Active Generation) -->
+    {#if queuedPrompts && queuedPrompts.length > 0}
+      <div class="px-3.5 py-2 flex flex-wrap items-center gap-1.5 border-b border-subtle/60 bg-amber-500/5 rounded-t-xl">
+        <span class="text-[10px] uppercase font-bold tracking-wider text-amber-400 mr-1 flex items-center gap-1">
+          <Clock size={10} />
+          <span>Queued ({queuedPrompts.length}):</span>
+        </span>
+        {#each queuedPrompts as q (q.id)}
+          <div class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-surface-elevated border border-amber-500/30 text-xs text-primary-theme shadow-xs max-w-[260px]">
+            <span class="truncate text-[11px]">{q.displayText || q.prompt}</span>
+            {#if onRemoveQueuedPrompt}
+              <button
+                type="button"
+                onclick={() => onRemoveQueuedPrompt(q.id)}
+                class="text-muted-theme hover:text-rose-400 p-0.5 rounded transition-colors cursor-pointer shrink-0"
+                title="Remove queued prompt"
+              >
+                <X size={11} />
+              </button>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
 
     <!-- Visual Attachment Chips Row -->
     {#if attachments.length > 0}
@@ -1134,22 +1207,40 @@
 
       <div class="flex items-center gap-2 shrink-0 ml-auto">
         {#if isStreaming}
-          {#if inputPrompt.trim()}
+          {#if inputPrompt.trim() || attachments.length > 0}
             <Tooltip
               text="Steer Active Agent"
-              subtext="Inject guidance or instruction into the active turn"
+              subtext="Inject guidance into the active turn immediately"
               shortcut="Enter"
               position="top"
             >
               <button
                 onclick={handleSteer}
-                class="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-white font-semibold text-xs transition-colors shadow-xs cursor-pointer"
+                disabled={!inputPrompt.trim()}
+                class="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-white font-semibold text-xs transition-colors shadow-xs cursor-pointer"
               >
                 <Compass size={12} />
                 <span>Steer</span>
                 <span class="text-[10px] opacity-75 font-mono">Enter</span>
               </button>
             </Tooltip>
+            {#if onQueuePrompt}
+              <Tooltip
+                text="Queue Next Turn"
+                subtext="Send automatically right after the current turn completes"
+                shortcut="Alt+Enter"
+                position="top"
+              >
+                <button
+                  type="button"
+                  onclick={handleQueue}
+                  class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-surface-elevated hover:bg-surface-hover border border-accent-theme/40 text-accent-theme font-semibold text-xs transition-colors shadow-xs cursor-pointer"
+                >
+                  <Clock size={12} />
+                  <span>Queue</span>
+                </button>
+              </Tooltip>
+            {/if}
           {/if}
           <Tooltip
             text="Cancel Generation"

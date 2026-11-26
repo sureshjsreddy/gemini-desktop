@@ -15,6 +15,14 @@ pub struct Workspace {
     pub system_prompt: Option<String>,
     pub approval_mode: Option<String>,
     pub track_file_changes: Option<bool>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub sandbox_enabled: Option<bool>,
+    #[serde(default)]
+    pub agent_name: Option<String>,
+    #[serde(default)]
+    pub additional_dirs: Option<String>,
     pub created_at: String,
 }
 
@@ -23,6 +31,10 @@ pub struct Session {
     pub id: String,
     pub workspace_id: String,
     pub title: String,
+    #[serde(default)]
+    pub acp_session_id: Option<String>,
+    #[serde(default)]
+    pub acp_engine: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -150,6 +162,14 @@ impl DbManager {
         // Migration: add approval_mode to workspaces table if upgrading from older schema
         let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN approval_mode TEXT DEFAULT 'default'", []);
         let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN track_file_changes INTEGER DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN reasoning_effort TEXT", []);
+        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN sandbox_enabled INTEGER DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN agent_name TEXT", []);
+        let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN additional_dirs TEXT", []);
+
+        // Migration: add ACP session binding columns to sessions table for native session/resume
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN acp_session_id TEXT", []);
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN acp_engine TEXT", []);
 
         Ok(())
     }
@@ -203,11 +223,12 @@ impl DbManager {
 
     pub fn list_workspaces(&self) -> Result<Vec<Workspace>, String> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, path, model, system_prompt, approval_mode, track_file_changes, created_at FROM workspaces ORDER BY name ASC")
+        let mut stmt = conn.prepare("SELECT id, name, path, model, system_prompt, approval_mode, track_file_changes, reasoning_effort, sandbox_enabled, agent_name, additional_dirs, created_at FROM workspaces ORDER BY name ASC")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt.query_map([], |row| {
             let track_int: Option<i64> = row.get(6)?;
+            let sandbox_int: Option<i64> = row.get(8)?;
             Ok(Workspace {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -216,7 +237,11 @@ impl DbManager {
                 system_prompt: row.get(4)?,
                 approval_mode: row.get(5)?,
                 track_file_changes: track_int.map(|v| v != 0),
-                created_at: row.get(7)?,
+                reasoning_effort: row.get(7)?,
+                sandbox_enabled: sandbox_int.map(|v| v != 0),
+                agent_name: row.get(9)?,
+                additional_dirs: row.get(10)?,
+                created_at: row.get(11)?,
             })
         }).map_err(|e| e.to_string())?;
 
@@ -230,15 +255,19 @@ impl DbManager {
     pub fn save_workspace(&self, ws: Workspace) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO workspaces (id, name, path, model, system_prompt, approval_mode, track_file_changes, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO workspaces (id, name, path, model, system_prompt, approval_mode, track_file_changes, reasoning_effort, sandbox_enabled, agent_name, additional_dirs, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 path = excluded.path,
                 model = excluded.model,
                 system_prompt = excluded.system_prompt,
                 approval_mode = excluded.approval_mode,
-                track_file_changes = excluded.track_file_changes",
+                track_file_changes = excluded.track_file_changes,
+                reasoning_effort = excluded.reasoning_effort,
+                sandbox_enabled = excluded.sandbox_enabled,
+                agent_name = excluded.agent_name,
+                additional_dirs = excluded.additional_dirs",
             params![
                 ws.id,
                 ws.name,
@@ -247,6 +276,10 @@ impl DbManager {
                 ws.system_prompt,
                 ws.approval_mode.as_deref().unwrap_or("default"),
                 ws.track_file_changes.map(|b| if b { 1 } else { 0 }).unwrap_or(0),
+                ws.reasoning_effort,
+                ws.sandbox_enabled.map(|b| if b { 1 } else { 0 }).unwrap_or(0),
+                ws.agent_name,
+                ws.additional_dirs,
                 ws.created_at
             ],
         ).map_err(|e| e.to_string())?;
@@ -261,7 +294,7 @@ impl DbManager {
 
     pub fn get_session(&self, session_id: &str) -> Result<Option<Session>, String> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, workspace_id, title, created_at, updated_at FROM sessions WHERE id = ?1")
+        let mut stmt = conn.prepare("SELECT id, workspace_id, title, acp_session_id, acp_engine, created_at, updated_at FROM sessions WHERE id = ?1")
             .map_err(|e| e.to_string())?;
 
         let mut rows = stmt.query_map(params![session_id], |row| {
@@ -269,8 +302,10 @@ impl DbManager {
                 id: row.get(0)?,
                 workspace_id: row.get(1)?,
                 title: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
+                acp_session_id: row.get(3)?,
+                acp_engine: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
             })
         }).map_err(|e| e.to_string())?;
 
@@ -283,7 +318,7 @@ impl DbManager {
 
     pub fn list_sessions(&self, workspace_id: &str) -> Result<Vec<Session>, String> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, workspace_id, title, created_at, updated_at FROM sessions WHERE workspace_id = ?1 ORDER BY updated_at DESC")
+        let mut stmt = conn.prepare("SELECT id, workspace_id, title, acp_session_id, acp_engine, created_at, updated_at FROM sessions WHERE workspace_id = ?1 ORDER BY updated_at DESC")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt.query_map(params![workspace_id], |row| {
@@ -291,8 +326,10 @@ impl DbManager {
                 id: row.get(0)?,
                 workspace_id: row.get(1)?,
                 title: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
+                acp_session_id: row.get(3)?,
+                acp_engine: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
             })
         }).map_err(|e| e.to_string())?;
 
@@ -317,6 +354,8 @@ impl DbManager {
             id,
             workspace_id: workspace_id.to_string(),
             title: title.to_string(),
+            acp_session_id: None,
+            acp_engine: None,
             created_at: now.clone(),
             updated_at: now,
         })
@@ -328,6 +367,21 @@ impl DbManager {
         conn.execute(
             "UPDATE sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
             params![title, now, session_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Binds or clears the persisted ACP engine session identifier used for `session/resume`.
+    pub fn update_session_acp_binding(
+        &self,
+        session_id: &str,
+        acp_session_id: Option<&str>,
+        acp_engine: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE sessions SET acp_session_id = ?1, acp_engine = ?2 WHERE id = ?3",
+            params![acp_session_id, acp_engine, session_id],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -410,6 +464,8 @@ impl DbManager {
             id: new_id,
             workspace_id,
             title: new_title,
+            acp_session_id: None,
+            acp_engine: None,
             created_at: now.clone(),
             updated_at: now,
         })
@@ -661,6 +717,10 @@ mod tests {
             system_prompt: None,
             approval_mode: Some("default".to_string()),
             track_file_changes: None,
+            reasoning_effort: None,
+            sandbox_enabled: None,
+            agent_name: None,
+            additional_dirs: None,
             created_at: Utc::now().to_rfc3339(),
         }).unwrap();
 
@@ -784,6 +844,10 @@ mod tests {
             system_prompt: Some("Custom system instruction".to_string()),
             approval_mode: None,
             track_file_changes: None,
+            reasoning_effort: None,
+            sandbox_enabled: None,
+            agent_name: None,
+            additional_dirs: None,
             created_at: now.clone(),
         };
         db.save_workspace(ws).expect("failed to save workspace");
@@ -806,6 +870,10 @@ mod tests {
             system_prompt: None,
             approval_mode: Some("yolo".to_string()),
             track_file_changes: Some(true),
+            reasoning_effort: Some("high".to_string()),
+            sandbox_enabled: Some(true),
+            agent_name: Some("reviewer".to_string()),
+            additional_dirs: Some("../shared".to_string()),
             created_at: now,
         };
         db.save_workspace(updated_ws).expect("failed to update workspace");
@@ -1021,5 +1089,52 @@ mod tests {
         // Forking with an unknown target message ID should return an error
         let err_fork = db.fork_session(&session.id, Some("msg-unknown"), None);
         assert!(err_fork.is_err());
+    }
+
+    #[test]
+    fn test_workspace_extended_fields_and_session_acp_binding() {
+        let db = DbManager::new_in_memory().expect("in-memory db initialization failed");
+        let ws = Workspace {
+            id: "ws-ext".to_string(),
+            name: "Extended WS".to_string(),
+            path: "C:\\Ext".to_string(),
+            model: "gemini-4-hydrogen-high".to_string(),
+            system_prompt: Some("Follow strict patterns".to_string()),
+            approval_mode: Some("auto".to_string()),
+            track_file_changes: Some(true),
+            reasoning_effort: Some("xhigh".to_string()),
+            sandbox_enabled: Some(true),
+            agent_name: Some("architect".to_string()),
+            additional_dirs: Some("C:\\Shared;../common".to_string()),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        db.save_workspace(ws).expect("save extended workspace failed");
+
+        let found = db.list_workspaces().unwrap().into_iter().find(|w| w.id == "ws-ext").unwrap();
+        assert_eq!(found.approval_mode.as_deref(), Some("auto"));
+        assert_eq!(found.reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(found.sandbox_enabled, Some(true));
+        assert_eq!(found.agent_name.as_deref(), Some("architect"));
+        assert_eq!(found.additional_dirs.as_deref(), Some("C:\\Shared;../common"));
+
+        let session = db.create_session("ws-ext", "ACP Resume Test").unwrap();
+        assert!(session.acp_session_id.is_none());
+        assert!(session.acp_engine.is_none());
+
+        db.update_session_acp_binding(&session.id, Some("acp-uuid-123"), Some("agy")).unwrap();
+        let reloaded = db.get_session(&session.id).unwrap().unwrap();
+        assert_eq!(reloaded.acp_session_id.as_deref(), Some("acp-uuid-123"));
+        assert_eq!(reloaded.acp_engine.as_deref(), Some("agy"));
+
+        // Forked sessions must start with clean ACP bindings
+        let forked = db.fork_session(&session.id, None, None).unwrap();
+        assert!(forked.acp_session_id.is_none());
+        assert!(forked.acp_engine.is_none());
+
+        // Clearing binding sets both back to None
+        db.update_session_acp_binding(&session.id, None, None).unwrap();
+        let cleared = db.get_session(&session.id).unwrap().unwrap();
+        assert!(cleared.acp_session_id.is_none());
+        assert!(cleared.acp_engine.is_none());
     }
 }

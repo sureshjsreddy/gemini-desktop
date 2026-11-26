@@ -62,6 +62,16 @@ pub struct GlobalCliSettings {
     pub file_filtering: FileFilteringConfig,
     pub session_retention: SessionRetentionConfig,
     pub raw_json: String,
+    #[serde(default)]
+    pub agy_agent_mode: Option<String>,
+    #[serde(default)]
+    pub show_thinking: Option<bool>,
+    #[serde(default)]
+    pub orchestrator: Option<serde_json::Value>,
+    #[serde(default)]
+    pub agy_auto_compact_override: Option<String>,
+    #[serde(default)]
+    pub agy_disable_embedded_ripgrep: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -72,18 +82,20 @@ pub struct SaveGlobalCliSettingsPayload {
     pub file_filtering: Option<FileFilteringConfig>,
     pub session_retention: Option<SessionRetentionConfig>,
     pub raw_json: Option<String>,
+    #[serde(default)]
+    pub agy_agent_mode: Option<String>,
+    #[serde(default)]
+    pub show_thinking: Option<bool>,
+    #[serde(default)]
+    pub orchestrator: Option<serde_json::Value>,
+    #[serde(default)]
+    pub agy_auto_compact_override: Option<String>,
+    #[serde(default)]
+    pub agy_disable_embedded_ripgrep: Option<bool>,
 }
 
 pub fn get_global_settings_path(engine: Option<&str>) -> Result<PathBuf, String> {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map_err(|_| "Could not determine user home directory".to_string())?;
-    if let Some(eng) = engine {
-        if eng.trim().eq_ignore_ascii_case("agy") {
-            return Ok(PathBuf::from(home).join(".gemini").join("antigravity-cli").join("settings.json"));
-        }
-    }
-    Ok(PathBuf::from(home).join(".gemini").join("settings.json"))
+    crate::engines::get_adapter(engine.unwrap_or("gemini")).resolve_settings_path()
 }
 
 #[tauri::command]
@@ -94,21 +106,42 @@ pub async fn get_global_cli_settings(
     let file_path = get_global_settings_path(Some(&engine))?;
     let path_str = file_path.to_string_lossy().to_string();
 
+    let agy_auto_compact_override = state
+        .db
+        .get_setting("agy_auto_compact_override")
+        .ok()
+        .flatten()
+        .filter(|s| !s.trim().is_empty());
+    let agy_disable_embedded_ripgrep = state
+        .db
+        .get_setting("agy_disable_embedded_ripgrep")
+        .ok()
+        .flatten()
+        .map(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"));
+
     if !file_path.exists() {
+        let default_raw = crate::engines::get_adapter(&engine)
+            .default_global_settings_json()
+            .to_string();
         return Ok(GlobalCliSettings {
             file_path: path_str,
             chat_compression: ChatCompressionConfig::default(),
             max_session_turns: -1,
             file_filtering: FileFilteringConfig::default(),
             session_retention: SessionRetentionConfig::default(),
-            raw_json: "{\n  \"model\": {\n    \"maxSessionTurns\": -1\n  }\n}".to_string(),
+            raw_json: default_raw,
+            agy_agent_mode: if engine == "agy" { Some("auto".to_string()) } else { None },
+            show_thinking: if engine == "agy" { Some(true) } else { None },
+            orchestrator: None,
+            agy_auto_compact_override,
+            agy_disable_embedded_ripgrep,
         });
     }
 
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| format!("Failed to read settings file {}: {}", path_str, e))?;
 
-    let parsed: serde_json::Value = serde_json::from_str(&content)
+    let parsed: serde_json::Value = serde_json::from_str(crate::commands::strip_utf8_bom(&content))
         .unwrap_or_else(|_| serde_json::json!({}));
 
     // Extract chatCompression
@@ -159,6 +192,13 @@ pub async fn get_global_cli_settings(
             .and_then(|v| v.as_u64()),
     };
 
+    let agy_agent_mode = parsed
+        .get("agentMode")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let show_thinking = parsed.get("showThinking").and_then(|v| v.as_bool());
+    let orchestrator = parsed.get("orchestrator").cloned();
+
     Ok(GlobalCliSettings {
         file_path: path_str,
         chat_compression,
@@ -166,6 +206,11 @@ pub async fn get_global_cli_settings(
         file_filtering,
         session_retention,
         raw_json: content,
+        agy_agent_mode,
+        show_thinking,
+        orchestrator,
+        agy_auto_compact_override,
+        agy_disable_embedded_ripgrep,
     })
 }
 
@@ -186,7 +231,7 @@ pub async fn save_global_cli_settings(
     }
 
     let mut target_json: serde_json::Value = if let Some(raw) = payload.raw_json {
-        let trimmed = raw.trim();
+        let trimmed = crate::commands::strip_utf8_bom(&raw).trim();
         if !trimmed.is_empty() {
             serde_json::from_str(trimmed)
                 .map_err(|e| format!("Invalid JSON syntax in raw settings: {}", e))?
@@ -245,6 +290,41 @@ pub async fn save_global_cli_settings(
         }
     }
 
+    if engine == "agy" {
+        if let Some(mode) = payload.agy_agent_mode {
+            let trimmed = mode.trim();
+            if !trimmed.is_empty() {
+                if let Some(obj) = target_json.as_object_mut() {
+                    obj.insert("agentMode".to_string(), serde_json::Value::String(trimmed.to_string()));
+                }
+            }
+        }
+        if let Some(show) = payload.show_thinking {
+            if let Some(obj) = target_json.as_object_mut() {
+                obj.insert("showThinking".to_string(), serde_json::Value::Bool(show));
+            }
+        }
+        if let Some(orch) = payload.orchestrator {
+            if let Some(obj) = target_json.as_object_mut() {
+                if orch.is_null() {
+                    obj.remove("orchestrator");
+                } else {
+                    obj.insert("orchestrator".to_string(), orch);
+                }
+            }
+        }
+    }
+
+    if let Some(compact_override) = payload.agy_auto_compact_override {
+        let _ = state.db.set_setting("agy_auto_compact_override", compact_override.trim());
+    }
+    if let Some(disable_rg) = payload.agy_disable_embedded_ripgrep {
+        let _ = state.db.set_setting(
+            "agy_disable_embedded_ripgrep",
+            if disable_rg { "true" } else { "false" },
+        );
+    }
+
     let formatted = serde_json::to_string_pretty(&target_json)
         .map_err(|e| format!("Failed to format settings JSON: {}", e))?;
 
@@ -278,10 +358,7 @@ pub async fn set_active_cli_engine(
     state: State<'_, AppState>,
     engine: String,
 ) -> Result<String, String> {
-    let normalized = match engine.trim().to_lowercase().as_str() {
-        "agy" => "agy",
-        _ => "gemini",
-    };
+    let normalized = crate::engines::normalize_engine_id(&engine);
 
     state.db.set_setting("active_cli_engine", normalized)
         .map_err(|e| e.to_string())?;
@@ -297,6 +374,13 @@ pub async fn set_active_cli_engine(
     crate::process_manager::invalidate_cli_path_cache();
 
     Ok(normalized.to_string())
+}
+
+#[tauri::command]
+pub async fn get_engines_catalog() -> Result<Vec<crate::engines::EngineDescriptor>, String> {
+    tokio::task::spawn_blocking(|| crate::engines::build_engines_catalog(true, false))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -322,7 +406,7 @@ fn read_or_create_base_json(path: &std::path::Path) -> Result<serde_json::Value,
     if path.exists() {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read existing settings: {}", e))?;
-        serde_json::from_str(&content)
+        serde_json::from_str(crate::commands::strip_utf8_bom(&content))
             .map_err(|e| format!("Failed to parse existing settings JSON: {}", e))
     } else {
         Ok(serde_json::json!({}))
@@ -397,5 +481,15 @@ mod tests {
         let p_agy = get_global_settings_path(Some("agy")).unwrap();
         let s_agy = p_agy.to_string_lossy().to_lowercase().replace('/', "\\");
         assert!(s_agy.ends_with("antigravity-cli\\settings.json"));
+    }
+
+    #[test]
+    fn test_global_settings_bom_and_agy_keys_parsing() {
+        let bom_raw = "\u{FEFF}{\"agentMode\":\"auto\",\"showThinking\":true,\"orchestrator\":{\"plannerModel\":\"orchestrator\",\"effort\":\"high\"}}";
+        let stripped = crate::commands::strip_utf8_bom(bom_raw);
+        let parsed: serde_json::Value = serde_json::from_str(stripped).unwrap();
+        assert_eq!(parsed["agentMode"], "auto");
+        assert_eq!(parsed["showThinking"], true);
+        assert_eq!(parsed["orchestrator"]["effort"], "high");
     }
 }

@@ -30,12 +30,13 @@ use crate::acp_client::AcpSession;
 use crate::database::DbManager;
 use crate::process_manager::ProcessSupervisor;
 use serde::{Deserialize, Serialize};
-use std::process::Command;
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::sync::Mutex;
+
+pub fn strip_utf8_bom(s: &str) -> &str {
+    s.trim_start_matches('\u{feff}')
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GeminiEnvStatus {
@@ -55,30 +56,21 @@ pub struct AppState {
 }
 
 #[tauri::command]
-pub async fn check_gemini_env() -> Result<GeminiEnvStatus, String> {
-    match crate::process_manager::find_gemini_executable() {
+pub async fn check_gemini_env(state: tauri::State<'_, AppState>) -> Result<GeminiEnvStatus, String> {
+    let active_engine = state
+        .db
+        .get_setting("active_cli_engine")
+        .ok()
+        .flatten()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "gemini".to_string());
+    let adapter = crate::engines::get_adapter(&active_engine);
+    let desc = adapter.static_descriptor();
+
+    match adapter.find_executable() {
         Some(bin_path) => {
             let path_str = bin_path.to_string_lossy().to_string();
-            let is_batch = path_str.to_lowercase().ends_with(".cmd")
-                        || path_str.to_lowercase().ends_with(".bat");
-
-            #[cfg(target_os = "windows")]
-            let ver_check = if is_batch {
-                Command::new("cmd.exe")
-                    .args(["/c", &path_str, "--version"])
-                    .creation_flags(0x08000000)
-                    .output()
-            } else {
-                Command::new(&path_str)
-                    .arg("--version")
-                    .creation_flags(0x08000000)
-                    .output()
-            };
-
-            #[cfg(not(target_os = "windows"))]
-            let ver_check = Command::new(&path_str)
-                .arg("--version")
-                .output();
+            let ver_check = ProcessSupervisor::build_cli_command(&bin_path, &["--version"]).output();
 
             let version = if let Ok(ver_out) = ver_check {
                 if ver_out.status.success() {
@@ -99,14 +91,14 @@ pub async fn check_gemini_env() -> Result<GeminiEnvStatus, String> {
                 installed: true,
                 path: Some(path_str),
                 version: Some(version),
-                details: "Gemini CLI found and verified on system.".to_string(),
+                details: format!("{} found and verified on system.", desc.display_name),
             })
         }
         None => Ok(GeminiEnvStatus {
             installed: false,
             path: None,
             version: None,
-            details: "Gemini CLI not found in PATH or standard npm/pnpm locations.".to_string(),
+            details: format!("{} not found in PATH or standard installation directories.", desc.display_name),
         }),
     }
 }

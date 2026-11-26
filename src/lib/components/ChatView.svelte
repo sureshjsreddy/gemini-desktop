@@ -12,6 +12,10 @@
     PlanTaskItem,
     SessionFileChange,
     CliEngine,
+    AttachmentItem,
+    DynamicAcpCommand,
+    ContextUsageStats,
+    QueuedPromptItem,
   } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -24,6 +28,9 @@
   import PlanWorkbench from "$lib/components/PlanWorkbench.svelte";
   import { extractTasksFromMarkdown, syncTasksCompletionFromMarkdown } from "$lib/utils/planParser";
   import { modalManager } from "$lib/modal.svelte";
+  import EngineSwitcher from "$lib/components/EngineSwitcher.svelte";
+  import { engineStore } from "$lib/stores/engineStore.svelte";
+  import { getEffectiveModel } from "$lib/utils/engineModels";
   import TerminalDrawer from "$lib/components/TerminalDrawer.svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { renderMarkdown } from "$lib/markdown";
@@ -41,6 +48,7 @@
     Compass,
     Edit3,
     ArrowDown,
+    ArrowUp,
     PanelLeftClose,
     PanelLeftOpen,
     FileText,
@@ -49,6 +57,9 @@
     Minimize2,
     GitFork,
     Upload,
+    Brain,
+    ChevronRight,
+    Quote,
   } from "lucide-svelte";
   import { tick, onMount, onDestroy } from "svelte";
 
@@ -59,10 +70,17 @@
     messages = [],
     isStreaming = false,
     streamingText = "",
+    streamingThoughtText = "",
+    streamingThinkingStartedAt = undefined,
+    messageThoughts = {},
     streamingToolCalls = [],
     streamingSteeringHints = [],
     streamingStartedAt = undefined,
     toolPermission = null,
+    pendingPermissionCount = 0,
+    contextUsage = null,
+    dynamicCommands = [],
+    queuedPrompts = [],
     showSidebar = false,
     onToggleSidebar,
     showTerminalDrawer = $bindable(false),
@@ -72,10 +90,13 @@
     onSendPrompt,
     onCancelPrompt,
     onSteerPrompt,
+    onQueuePrompt,
+    onRemoveQueuedPrompt,
     onExecutePlan,
     onToolResponse,
     onExport,
     onOpenMcpModal,
+    onSwitchEngine,
     onOpenRewindModal,
     onForkSession,
     activeDebugError = null,
@@ -92,23 +113,33 @@
     messages: Message[];
     isStreaming: boolean;
     streamingText: string;
+    streamingThoughtText?: string;
+    streamingThinkingStartedAt?: number;
+    messageThoughts?: Record<string, { text: string; durationMs?: number }>;
     streamingToolCalls?: ToolExecutionStep[];
     streamingSteeringHints?: string[];
     streamingStartedAt?: number;
     toolPermission: ToolPermissionPayload | null;
+    pendingPermissionCount?: number;
+    contextUsage?: ContextUsageStats | null;
+    dynamicCommands?: DynamicAcpCommand[];
+    queuedPrompts?: QueuedPromptItem[];
     showSidebar?: boolean;
     onToggleSidebar?: () => void;
     showTerminalDrawer?: boolean;
     showSolutionExplorer?: boolean;
     approvalMode?: ApprovalMode;
     activeEngine?: CliEngine;
-    onSendPrompt: (prompt: string) => void;
+    onSendPrompt: (prompt: string, attachments?: AttachmentItem[]) => void;
     onCancelPrompt: () => void;
     onSteerPrompt?: (hint: string) => void;
+    onQueuePrompt?: (prompt: string, attachments?: AttachmentItem[]) => void;
+    onRemoveQueuedPrompt?: (id: string) => void;
     onExecutePlan?: (mode: "auto_edit" | "default", tasks: PlanTaskItem[]) => void;
-    onToolResponse: (requestId: number | string, optionId?: string, allowed?: boolean) => void;
+    onToolResponse: (requestId: number | string, optionId?: string, allowed?: boolean, answer?: string) => void;
     onExport: (format: string) => void;
     onOpenMcpModal?: () => void;
+    onSwitchEngine?: (engine: CliEngine) => void | Promise<void>;
     onOpenRewindModal?: (targetId?: string) => void;
     onForkSession?: (messageId: string) => void;
     activeDebugError?: ParsedDebugError | null;
@@ -125,6 +156,16 @@
   let showExportMenu = $state(false);
   let isUserScrolledUp = $state(false);
   let copiedMessageId = $state<string | null>(null);
+  let expandedThinkingMap = $state<Record<string, boolean>>({});
+  let currentPromptJumpIdx = $state(-1);
+
+  const INITIAL_VISIBLE_MESSAGES = 60;
+  let visibleMessageCount = $state(INITIAL_VISIBLE_MESSAGES);
+  let msgWindowOffset = $derived(Math.max(0, messages.length - visibleMessageCount));
+  let hiddenMessageCount = $derived(msgWindowOffset);
+  let visibleMessages = $derived(
+    msgWindowOffset > 0 ? messages.slice(msgWindowOffset) : messages
+  );
 
   let isPlanWorkbenchOpen = $state(false);
   let wasExecutingPlan = $state(false);
@@ -149,6 +190,13 @@
     messages.reduce((acc, m) => acc + (m.token_count || 0), 0)
   );
 
+  let displayedUsedTokens = $derived(
+    contextUsage && contextUsage.usedTokens > 0 ? contextUsage.usedTokens : totalSessionTokens
+  );
+  let displayedContextWindow = $derived(
+    contextUsage && contextUsage.contextWindow > 0 ? contextUsage.contextWindow : 1_000_000
+  );
+
   function formatTokenCount(num: number): string {
     if (num >= 1_000_000) {
       return (num / 1_000_000).toFixed(1) + "M";
@@ -159,8 +207,10 @@
     return num.toString();
   }
 
-  let contextUsageRatio = $derived(Math.min(1, totalSessionTokens / 1_000_000));
-  let isNearContextCeiling = $derived(totalSessionTokens >= 750_000);
+  let contextUsageRatio = $derived(
+    Math.min(1, displayedContextWindow > 0 ? displayedUsedTokens / displayedContextWindow : 0)
+  );
+  let isNearContextCeiling = $derived(contextUsageRatio >= 0.75);
 
   async function loadSessionChanges() {
     if (!workspace?.track_file_changes || !currentSessionId || !workspace?.path) {
@@ -193,8 +243,52 @@
     handleChatClick(e);
   }
 
+  function handleAcpPlanEntries(e: Event) {
+    const detail = (e as CustomEvent<{ sessionId: string; entries: any[] }>).detail;
+    if (!detail || !detail.sessionId || detail.sessionId !== currentSessionId) return;
+    if (!Array.isArray(detail.entries) || detail.entries.length === 0) return;
+
+    const mapped: PlanTaskItem[] = detail.entries.map((entry, idx) => ({
+      id: entry.id ? String(entry.id) : `acp-plan-${idx}`,
+      text: String(entry.content || entry.title || entry.text || "").trim(),
+      completed: entry.status === "completed" || entry.completed === true,
+      category: entry.priority || undefined,
+    })).filter((t) => t.text.length > 0);
+
+    if (mapped.length > 0) {
+      sessionPlanTasks[detail.sessionId] = mapped;
+      try {
+        localStorage.setItem(`gemini_plan_tasks_${detail.sessionId}`, JSON.stringify(mapped));
+      } catch {}
+    }
+  }
+
+  function jumpUserPrompt(direction: -1 | 1) {
+    if (!chatViewport) return;
+    const nodes = Array.from(chatViewport.querySelectorAll<HTMLElement>("[data-user-turn-idx]"));
+    if (nodes.length === 0) return;
+    if (currentPromptJumpIdx < 0 || currentPromptJumpIdx >= nodes.length) {
+      currentPromptJumpIdx = direction === -1 ? nodes.length - 1 : 0;
+    } else {
+      currentPromptJumpIdx = Math.max(0, Math.min(nodes.length - 1, currentPromptJumpIdx + direction));
+    }
+    nodes[currentPromptJumpIdx]?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  function handleQuoteSelectionOrText(rawText: string) {
+    const selected = typeof window !== "undefined" ? window.getSelection()?.toString().trim() : "";
+    const snippet = selected || rawText.trim().slice(0, 600);
+    if (!snippet) return;
+    const quoted = snippet
+      .split("\n")
+      .map((l) => `> ${l}`)
+      .join("\n") + "\n\n";
+    window.dispatchEvent(new CustomEvent("gemini-prefill-prompt", { detail: quoted }));
+  }
+
   onMount(async () => {
     document.addEventListener("click", handleDocClick);
+    window.addEventListener("acp-plan-entries", handleAcpPlanEntries);
     try {
       unlistenFileUpdates = await listen<{ session_id: string }>("session-files-updated", (event: { payload: { session_id: string } }) => {
         if (workspace?.track_file_changes && (!event.payload?.session_id || event.payload.session_id === currentSessionId)) {
@@ -208,6 +302,7 @@
 
   onDestroy(() => {
     document.removeEventListener("click", handleDocClick);
+    window.removeEventListener("acp-plan-entries", handleAcpPlanEntries);
     if (unlistenFileUpdates) {
       unlistenFileUpdates();
     }
@@ -240,31 +335,6 @@
     }
   }
 
-  function getEffectiveModel(m: string | undefined, engine: string | undefined): string {
-    const raw = (m || "").trim();
-    if (!raw || raw.toLowerCase() === "auto") return "auto";
-    const lower = raw.toLowerCase();
-    if (engine === "agy") {
-      const isGeminiCliSpecific =
-        lower.startsWith("gemini-2.5") ||
-        lower.startsWith("gemini-1.5") ||
-        lower.startsWith("gemini-3.5") ||
-        lower.startsWith("gemini-3.1") ||
-        lower.startsWith("gemini-3-") ||
-        lower === "gemini-3.8-flash";
-      return isGeminiCliSpecific ? "auto (fallback)" : raw;
-    } else {
-      const isAgySpecific =
-        lower.startsWith("claude-") ||
-        lower.startsWith("gpt-oss-") ||
-        lower.startsWith("gemini-4-") ||
-        lower.endsWith("-high") ||
-        lower.endsWith("-medium") ||
-        lower.endsWith("-low");
-      return isAgySpecific ? "auto (fallback)" : raw;
-    }
-  }
-
   let lastPlanContent = $derived.by(() => {
     if (isStreaming && streamingText && (streamingText.includes("- [ ]") || streamingText.includes("- [x]") || streamingText.includes("Step 1:"))) {
       return streamingText;
@@ -285,6 +355,7 @@
     const sid = currentSessionId;
     if (sid !== prevSessionId) {
       prevSessionId = sid;
+      visibleMessageCount = INITIAL_VISIBLE_MESSAGES;
       isPlanWorkbenchOpen = false;
       hasAutoOpenedForStreamingPlan = false;
 
@@ -704,9 +775,10 @@
       <h2 class="font-medium text-sm text-primary-theme truncate">
         {session?.title || "Select or start a new session"}
       </h2>
+      <EngineSwitcher variant="compact-pill" onSwitch={onSwitchEngine} />
       {#if workspace}
         <span class="text-[11px] px-2 py-0.5 rounded-full bg-surface-elevated text-accent-theme font-mono border border-subtle shrink-0 hidden sm:inline-block">
-          {activeEngine === 'agy' ? '🚀 agy' : '♊ gemini'} &bull; {workspace.name} &bull; {getEffectiveModel(workspace.model, activeEngine)}
+          {workspace.name} &bull; {getEffectiveModel(workspace.model, activeEngine)}
         </span>
       {/if}
     </div>
@@ -771,13 +843,42 @@
         </Tooltip>
       {/if}
 
-      <!-- Context Window / Cumulative Token Meter Gauge -->
-      {#if totalSessionTokens > 0}
+      <!-- Prompt Turn Jump Controls -->
+      {#if messages.some((m) => m.role === "user")}
+        <div class="hidden md:flex items-center rounded-lg border border-subtle bg-surface overflow-hidden text-xs">
+          <Tooltip text="Jump to Previous User Prompt" position="bottom">
+            <button
+              type="button"
+              onclick={() => jumpUserPrompt(-1)}
+              class="p-1.5 text-secondary-theme hover:text-primary-theme hover:bg-surface-hover transition-colors cursor-pointer"
+              aria-label="Previous user prompt"
+            >
+              <ArrowUp size={13} />
+            </button>
+          </Tooltip>
+          <div class="w-px h-4 bg-subtle"></div>
+          <Tooltip text="Jump to Next User Prompt" position="bottom">
+            <button
+              type="button"
+              onclick={() => jumpUserPrompt(1)}
+              class="p-1.5 text-secondary-theme hover:text-primary-theme hover:bg-surface-hover transition-colors cursor-pointer"
+              aria-label="Next user prompt"
+            >
+              <ArrowDown size={13} />
+            </button>
+          </Tooltip>
+        </div>
+      {/if}
+
+      <!-- Context Window / Token Meter Gauge (Live ACP Telemetry + Fallback Estimate) -->
+      {#if displayedUsedTokens > 0}
         <Tooltip
-          text={`Session Context Usage: ${totalSessionTokens.toLocaleString()} tokens (~${(contextUsageRatio * 100).toFixed(1)}% of 1M limit)`}
+          text={`Context Usage: ${displayedUsedTokens.toLocaleString()} / ${displayedContextWindow.toLocaleString()} tokens (${(contextUsageRatio * 100).toFixed(1)}%)`}
           subtext={isNearContextCeiling
-            ? "⚠️ Approaching 1M token ceiling. Consider clicking Export > Compress Context (/compact) to summarize."
-            : "Cumulative tokens consumed across active conversation turns."}
+            ? "⚠️ Approaching context window ceiling. Consider running /compact or Export > Compress Context."
+            : contextUsage && contextUsage.usedTokens > 0
+              ? "Live token telemetry reported by active ACP runtime."
+              : "Estimated cumulative tokens across active conversation turns."}
           position="bottom"
         >
           <div
@@ -785,9 +886,9 @@
           >
             <span class="inline-block w-2 h-2 rounded-full {isNearContextCeiling ? 'bg-amber-400 animate-pulse' : 'bg-accent-theme/70'}"></span>
             <span class="text-[11px] {isNearContextCeiling ? 'text-amber-300 font-bold' : 'text-primary-theme'}">
-              {formatTokenCount(totalSessionTokens)}
+              {formatTokenCount(displayedUsedTokens)}
             </span>
-            <span class="text-[10px] text-muted-theme">/ 1M</span>
+            <span class="text-[10px] text-muted-theme">/ {formatTokenCount(displayedContextWindow)}</span>
           </div>
         </Tooltip>
       {/if}
@@ -879,7 +980,7 @@
         </div>
         <h3 class="text-base font-semibold text-primary-theme mb-1">What would you like to build?</h3>
         <p class="text-xs text-secondary-theme leading-relaxed mb-6">
-          Start a conversation in the <span class="text-accent-theme font-medium">{workspace?.name || "active"}</span> workspace. {activeEngine === 'agy' ? 'Antigravity CLI (agy)' : 'Gemini CLI'} will automatically use this directory's files and context.
+          Start a conversation in the <span class="text-accent-theme font-medium">{workspace?.name || "active"}</span> workspace. {engineStore.getDescriptor(activeEngine).displayName} will automatically use this directory's files and context.
         </p>
 
         <!-- Quick Starter Action Cards -->
@@ -926,8 +1027,31 @@
       </div>
     {:else}
       <div class="w-full max-w-4xl lg:max-w-5xl xl:max-w-6xl 2xl:max-w-7xl mx-auto space-y-6">
-        {#each messages as msg, i (msg.id)}
-          <div class="flex gap-3.5 {msg.role === 'user' ? 'justify-end' : 'justify-start'}">
+        {#if hiddenMessageCount > 0}
+          <div class="flex items-center justify-center gap-2 py-1">
+            <button
+              type="button"
+              onclick={() => (visibleMessageCount += 60)}
+              class="px-3 py-1 rounded-full bg-surface-elevated hover:bg-surface-hover border border-subtle text-[11px] text-secondary-theme hover:text-primary-theme transition-colors cursor-pointer"
+            >
+              Show earlier messages ({hiddenMessageCount} hidden)
+            </button>
+            <button
+              type="button"
+              onclick={() => (visibleMessageCount = messages.length)}
+              class="px-2.5 py-1 rounded-full bg-surface hover:bg-surface-hover border border-subtle text-[11px] text-accent-theme transition-colors cursor-pointer"
+            >
+              Load all ({messages.length})
+            </button>
+          </div>
+        {/if}
+
+        {#each visibleMessages as msg, i (msg.id)}
+          {@const absIdx = msgWindowOffset + i}
+          <div
+            data-user-turn-idx={msg.role === "user" ? absIdx : undefined}
+            class="flex gap-3.5 {msg.role === 'user' ? 'justify-end' : 'justify-start'}"
+          >
             {#if msg.role !== 'user'}
               <div class="w-7 h-7 rounded-lg bg-accent-subtle text-accent-theme border border-accent-subtle flex items-center justify-center shrink-0 mt-1">
                 <Sparkles size={14} />
@@ -941,6 +1065,16 @@
               {#if msg.created_at}
                 <span class="mr-1">{formatTime(msg.created_at)}</span>
               {/if}
+              <Tooltip text="Quote in reply" position="top">
+                <button
+                  type="button"
+                  onclick={() => handleQuoteSelectionOrText(msg.content)}
+                  class="p-1 rounded hover:bg-surface-elevated text-secondary-theme hover:text-primary-theme transition-colors cursor-pointer flex items-center gap-1"
+                  aria-label="Quote prompt"
+                >
+                  <Quote size={11} />
+                </button>
+              </Tooltip>
               <Tooltip text={copiedMessageId === msg.id ? "Copied!" : "Copy prompt"} position="top">
                 <button
                   type="button"
@@ -980,7 +1114,31 @@
           {:else}
             {@const toolSteps = parseToolSteps(msg)}
             {@const cleanContent = cleanMessageContent(msg.content, toolSteps.length > 0)}
-            {@const turnDurationMs = getTurnDurationMs(i, msg)}
+            {@const turnDurationMs = getTurnDurationMs(absIdx, msg)}
+            {@const msgThought = messageThoughts?.[msg.id]}
+
+            {#if msgThought && msgThought.text}
+              <div class="mb-3 rounded-lg border border-subtle/80 bg-surface/60 overflow-hidden text-xs">
+                <button
+                  type="button"
+                  onclick={() => {
+                    expandedThinkingMap = { ...expandedThinkingMap, [msg.id]: !expandedThinkingMap[msg.id] };
+                  }}
+                  class="w-full px-3 py-1.5 flex items-center gap-2 text-left text-[11px] text-secondary-theme hover:text-primary-theme hover:bg-surface-hover/60 transition-colors cursor-pointer"
+                >
+                  <ChevronRight size={13} class="transition-transform {expandedThinkingMap[msg.id] ? 'rotate-90' : ''}" />
+                  <Brain size={12} class="text-purple-400" />
+                  <span class="font-medium">
+                    Thought{msgThought.durationMs ? ` for ${formatDuration(msgThought.durationMs)}` : ""}
+                  </span>
+                </button>
+                {#if expandedThinkingMap[msg.id]}
+                  <div class="px-3 pb-2.5 pt-1 border-t border-subtle/60 text-[11px] text-muted-theme whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto">
+                    {msgThought.text}
+                  </div>
+                {/if}
+              </div>
+            {/if}
 
             {#if toolSteps.length > 0}
               <div class="mb-3">
@@ -1007,6 +1165,17 @@
                 {/if}
               </div>
               <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <Tooltip text="Quote selection or message into composer" position="top">
+                  <button
+                    type="button"
+                    onclick={() => handleQuoteSelectionOrText(cleanContent || msg.content)}
+                    class="p-1 rounded hover:bg-surface-hover text-secondary-theme hover:text-primary-theme transition-colors cursor-pointer flex items-center gap-1 text-[11px]"
+                    aria-label="Quote response"
+                  >
+                    <Quote size={13} />
+                    <span>Quote</span>
+                  </button>
+                </Tooltip>
                 <Tooltip text="Rewind to this turn (Esc Esc)" position="top">
                   <button
                     type="button"
@@ -1048,7 +1217,7 @@
                   </button>
                 </Tooltip>
 
-                {#if !messages.slice(i + 1).some(m => m.role === 'assistant') && !isStreaming}
+                {#if !messages.slice(absIdx + 1).some(m => m.role === 'assistant') && !isStreaming}
                   <Tooltip text="Regenerate this response" position="top">
                     <button
                       type="button"
@@ -1093,6 +1262,33 @@
             </div>
           {/if}
 
+          {#if streamingThoughtText}
+            {@const liveExpanded = expandedThinkingMap["__live__"] ?? false}
+            <div class="mb-3 rounded-lg border border-purple-500/30 bg-purple-500/5 overflow-hidden text-xs">
+              <button
+                type="button"
+                onclick={() => {
+                  expandedThinkingMap = { ...expandedThinkingMap, __live__: !liveExpanded };
+                }}
+                class="w-full px-3 py-1.5 flex items-center justify-between gap-2 text-left text-[11px] text-purple-300 hover:bg-purple-500/10 transition-colors cursor-pointer"
+              >
+                <div class="flex items-center gap-2">
+                  <ChevronRight size={13} class="transition-transform {liveExpanded ? 'rotate-90' : ''}" />
+                  <Brain size={12} class="text-purple-400 animate-pulse" />
+                  <span class="font-medium">Reasoning / Thinking...</span>
+                </div>
+                {#if streamingThinkingStartedAt}
+                  <span class="font-mono text-[10px] opacity-80">live</span>
+                {/if}
+              </button>
+              {#if liveExpanded}
+                <div class="px-3 pb-2.5 pt-1 border-t border-purple-500/20 text-[11px] text-secondary-theme whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto">
+                  {streamingThoughtText}
+                </div>
+              {/if}
+            </div>
+          {/if}
+
           {#if streamingToolCalls && streamingToolCalls.length > 0}
             <div class="mb-3">
               <ToolCallGroup steps={streamingToolCalls} isStreaming={true} {streamingStartedAt} />
@@ -1103,7 +1299,7 @@
             <div class="markdown-body">
               {@html renderMarkdown(streamingText)}
             </div>
-          {:else if !streamingToolCalls || streamingToolCalls.length === 0}
+          {:else if (!streamingToolCalls || streamingToolCalls.length === 0) && !streamingThoughtText}
             <div class="flex items-center gap-2 text-muted-theme italic">
               <span class="inline-block w-2 h-2 rounded-full bg-accent-theme animate-ping"></span>
               Thinking...
@@ -1136,7 +1332,7 @@
   <!-- Tool Permission Confirmation Banner (ACP) -->
   {#if toolPermission}
     <div class="px-4 sm:px-6">
-      <ToolPermissionCard {toolPermission} onRespond={onToolResponse} />
+      <ToolPermissionCard {toolPermission} pendingCount={pendingPermissionCount} onRespond={onToolResponse} />
     </div>
   {/if}
 
@@ -1178,6 +1374,10 @@
     {isStreaming}
     {approvalMode}
     {activeEngine}
+    {dynamicCommands}
+    {queuedPrompts}
+    {onQueuePrompt}
+    {onRemoveQueuedPrompt}
     {onTriggerDebugDoctor}
     {onDebugErrorDetected}
     {onSteerPrompt}
@@ -1186,10 +1386,10 @@
     onTogglePlanWorkbench={() => (isPlanWorkbenchOpen = true)}
     onOpenMcpModal={onOpenMcpModal}
     onOpenRewindModal={onOpenRewindModal}
-    onSendPrompt={(prompt) => {
+    onSendPrompt={(prompt, atts) => {
       isUserScrolledUp = false;
       tick().then(() => scrollToBottom(true));
-      onSendPrompt(prompt);
+      onSendPrompt(prompt, atts);
     }}
     onCancelPrompt={() => {
       wasExecutingPlan = false;

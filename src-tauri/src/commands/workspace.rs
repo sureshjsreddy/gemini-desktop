@@ -266,6 +266,35 @@ pub struct WorkspacePathValidation {
     pub error_message: Option<String>,
 }
 
+/// Returns true when a path targets a Windows UNC network share (`\\server\share` / `//server/share`),
+/// Win32 device namespace (`\\.\...`, `\\?\...`), or NT object namespace (`\??\...`).
+/// Rejecting these before touching the filesystem prevents SMB/NTLM credential leaks.
+pub fn is_unsafe_windows_unc_or_device_path(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    let without_file = lower.strip_prefix("file://").unwrap_or(&lower);
+    // file://server/share (not file:///C:/) has a non-empty authority host before '/'
+    if lower.starts_with("file://") && !lower.starts_with("file:///") {
+        let after = &lower["file://".len()..];
+        let host = after.split(['/', '\\']).next().unwrap_or("");
+        if !host.is_empty()
+            && !host.eq_ignore_ascii_case("localhost")
+            && !(host.len() == 2 && host.ends_with(':') && host.chars().next().map_or(false, |c| c.is_ascii_alphabetic()))
+        {
+            return true;
+        }
+    }
+    trimmed.starts_with("\\\\")
+        || trimmed.starts_with("//")
+        || trimmed.starts_with("\\??\\")
+        || trimmed.starts_with("/??/")
+        || without_file.starts_with("\\\\")
+        || without_file.starts_with("\\??\\")
+}
+
 #[tauri::command]
 pub fn validate_workspace_path(path: String) -> Result<WorkspacePathValidation, String> {
     let trimmed = path.trim();
@@ -274,6 +303,14 @@ pub fn validate_workspace_path(path: String) -> Result<WorkspacePathValidation, 
             is_valid: false,
             exists: false,
             error_message: Some("Workspace folder path cannot be empty.".to_string()),
+        });
+    }
+
+    if is_unsafe_windows_unc_or_device_path(trimmed) {
+        return Ok(WorkspacePathValidation {
+            is_valid: false,
+            exists: false,
+            error_message: Some("Network (UNC), device, and NT object paths are blocked for Windows credential security. Please select a local directory.".to_string()),
         });
     }
 
@@ -558,6 +595,10 @@ pub fn normalize_open_target(target: &str, workspace_dir: Option<&Path>) -> Resu
     let trimmed = target.trim();
     if trimmed.is_empty() {
         return Err("Target path or URL is empty".to_string());
+    }
+
+    if is_unsafe_windows_unc_or_device_path(trimmed) {
+        return Err("Blocked unsafe network (UNC), device, or NT object path".to_string());
     }
 
     // 1. Web URLs: http, https, mailto
@@ -1303,6 +1344,20 @@ mod tests {
             assert!(home_val.is_valid);
             assert!(home_val.exists);
         }
+
+        // UNC / device / NT object paths must be rejected without touching network
+        let unc_res = validate_workspace_path(r"\\evil-server\share\repo".to_string()).unwrap();
+        assert!(!unc_res.is_valid);
+        assert!(unc_res.error_message.unwrap().contains("UNC"));
+
+        let dev_res = validate_workspace_path(r"\\.\PhysicalDrive0".to_string()).unwrap();
+        assert!(!dev_res.is_valid);
+
+        let nt_res = validate_workspace_path(r"\??\C:\Users".to_string()).unwrap();
+        assert!(!nt_res.is_valid);
+
+        assert!(normalize_open_target(r"\\10.0.0.5\share\secret.txt", None).is_err());
+        assert!(normalize_open_target("file://evil-host/share/doc.md", None).is_err());
     }
 
     #[test]

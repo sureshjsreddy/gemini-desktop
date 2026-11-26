@@ -1,6 +1,8 @@
 mod process_manager;
 mod acp_client;
 mod database;
+mod engines;
+mod transports;
 mod commands;
 
 use commands::*;
@@ -76,6 +78,8 @@ pub fn run() {
             detect_importable_gemini_mcp,
             import_mcp_from_gemini,
             import_gemini_plugins_via_agy,
+            import_claude_plugins_via_agy,
+            validate_agy_plugin,
             sync_workspace_skills_for_agy,
             run_terminal_command,
             restart_gemini_session,
@@ -101,7 +105,9 @@ pub fn run() {
             get_active_cli_engine,
             set_active_cli_engine,
             get_cli_engines_status,
+            get_engines_catalog,
             test_agy_cli,
+            launch_agy_login,
             update_or_install_agy_cli,
             check_cli_path_status,
             add_cli_to_user_path,

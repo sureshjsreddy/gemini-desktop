@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AgyPluginInfo {
@@ -79,26 +77,11 @@ pub fn list_agy_plugins_internal() -> Result<Vec<AgyPluginInfo>, String> {
         None => return Ok(Vec::new()),
     };
 
-    let bin_path_str = bin.to_string_lossy().to_string();
-    let is_batch = bin_path_str.to_lowercase().ends_with(".cmd") || bin_path_str.to_lowercase().ends_with(".bat");
-
-    #[cfg(target_os = "windows")]
-    let output = if is_batch {
-        Command::new("cmd.exe")
-            .args(["/c", &bin_path_str, "plugin", "list", "--json"])
-            .creation_flags(0x08000000)
-            .output()
-    } else {
-        Command::new(&bin_path_str)
-            .args(["plugin", "list", "--json"])
-            .creation_flags(0x08000000)
-            .output()
-    };
-
-    #[cfg(not(target_os = "windows"))]
-    let output = Command::new(&bin_path_str)
-        .args(["plugin", "list", "--json"])
-        .output();
+    let output = crate::process_manager::ProcessSupervisor::build_cli_command(
+        &bin,
+        &["plugin", "list", "--json"],
+    )
+    .output();
 
     let out = output.map_err(|e| format!("Failed to execute agy plugin list: {}", e))?;
 
@@ -108,7 +91,7 @@ pub fn list_agy_plugins_internal() -> Result<Vec<AgyPluginInfo>, String> {
     }
 
     let json_text = String::from_utf8_lossy(&out.stdout);
-    let mut plugins: Vec<AgyPluginInfo> = serde_json::from_str(json_text.trim())
+    let mut plugins: Vec<AgyPluginInfo> = serde_json::from_str(crate::commands::strip_utf8_bom(json_text.trim()))
         .map_err(|e| format!("Failed to parse agy plugin list JSON: {}", e))?;
 
     // Enrich each plugin with metadata from its local plugin.json if present
@@ -117,7 +100,7 @@ pub fn list_agy_plugins_internal() -> Result<Vec<AgyPluginInfo>, String> {
             let manifest_path = PathBuf::from(path_str).join("plugin.json");
             if manifest_path.exists() {
                 if let Ok(manifest_content) = std::fs::read_to_string(&manifest_path) {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&manifest_content) {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(crate::commands::strip_utf8_bom(&manifest_content)) {
                         if plugin.display_name.is_none() {
                             plugin.display_name = val.get("displayName")
                                 .and_then(|v| v.as_str())
@@ -158,27 +141,12 @@ pub fn toggle_agy_plugin_internal(name: &str, enabled: bool) -> Result<AgyPlugin
         }
     };
 
-    let bin_path_str = bin.to_string_lossy().to_string();
-    let is_batch = bin_path_str.to_lowercase().ends_with(".cmd") || bin_path_str.to_lowercase().ends_with(".bat");
     let action = if enabled { "enable" } else { "disable" };
-
-    #[cfg(target_os = "windows")]
-    let output = if is_batch {
-        Command::new("cmd.exe")
-            .args(["/c", &bin_path_str, "plugin", action, name])
-            .creation_flags(0x08000000)
-            .output()
-    } else {
-        Command::new(&bin_path_str)
-            .args(["plugin", action, name])
-            .creation_flags(0x08000000)
-            .output()
-    };
-
-    #[cfg(not(target_os = "windows"))]
-    let output = Command::new(&bin_path_str)
-        .args(["plugin", action, name])
-        .output();
+    let output = crate::process_manager::ProcessSupervisor::build_cli_command(
+        &bin,
+        &["plugin", action, name],
+    )
+    .output();
 
     let out = output.map_err(|e| format!("Failed to execute agy plugin {}: {}", action, e))?;
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -260,6 +228,252 @@ pub fn save_akbo_pool_config_internal(config: &AkboPoolConfig) -> Result<AgyPlug
     })
 }
 
+fn akbo_manifest_json() -> serde_json::Value {
+    serde_json::json!({
+        "name": "akbo",
+        "displayName": "AKBO Knowledge Oracle & Central Memory Pool",
+        "version": "3.0.0",
+        "description": "Hybrid AST Codebase Knowledge Graph (TS Compiler + WASM tree-sitter), centralized cross-project knowledge pooling, AST-backed convention guardrails, and staged post-conversation memory consolidation ('dreaming')."
+    })
+}
+
+fn akbo_on_stop_script() -> &'static str {
+    r#"#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+
+function allowStop() {
+  // Antigravity CLI parses hook stdout via protojson; emit an empty JSON object when allowing stop.
+  process.stdout.write('{}');
+}
+
+function main() {
+  let rawInput = '';
+  try {
+    rawInput = fs.readFileSync(0, 'utf-8');
+  } catch {
+    allowStop();
+    return;
+  }
+
+  if (!rawInput.trim()) {
+    allowStop();
+    return;
+  }
+
+  let payload = {};
+  try {
+    payload = JSON.parse(rawInput);
+  } catch {
+    allowStop();
+    return;
+  }
+
+  // Prevent recursive stop-hook firing during continuation turns (agy uses camelCase continuationActive)
+  if (payload && (payload.continuationActive || payload.continuation_active)) {
+    allowStop();
+    return;
+  }
+
+  const workspacePath = (payload.workspacePaths && payload.workspacePaths[0]) || payload.cwd || process.cwd();
+  const userHome = process.env.USERPROFILE || process.env.HOME || '';
+  const configFile = path.join(userHome, '.gemini', 'config', 'akbo_pool.json');
+
+  let centralPoolRoot = process.env.AKBO_CENTRAL_POOL_DIR || process.env.AKBO_POOL_DIR;
+  let stageOnly = true;
+
+  if (fs.existsSync(configFile)) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+      if (cfg.centralPoolDir && cfg.centralPoolDir.trim()) {
+        centralPoolRoot = cfg.centralPoolDir.trim();
+      }
+      if (cfg.stageOnly !== undefined) {
+        stageOnly = Boolean(cfg.stageOnly);
+      }
+    } catch {}
+  }
+
+  if (!centralPoolRoot) {
+    centralPoolRoot = path.join(userHome, '.akb', 'central-pool');
+  }
+
+  let projectName = path.basename(path.resolve(workspacePath));
+  try {
+    const gitRemote = execSync('git config --get remote.origin.url', {
+      cwd: workspacePath,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000
+    }).toString().trim();
+
+    if (gitRemote) {
+      const match = gitRemote.match(/\/([^\/]+?)(\.git)?$/);
+      if (match && match[1]) {
+        projectName = match[1];
+      }
+    }
+  } catch {}
+
+  const targetProjectPool = path.join(centralPoolRoot, 'projects', projectName);
+  try {
+    fs.mkdirSync(targetProjectPool, { recursive: true });
+  } catch {}
+
+  // Migrate any leftover workspace session files into central pool and purge workspace .akb
+  try {
+    const wsAkb = path.join(workspacePath, '.akb');
+    if (fs.existsSync(wsAkb)) {
+      const wsSessions = path.join(wsAkb, 'sessions');
+      const poolSessions = path.join(targetProjectPool, '.akb', 'sessions');
+      if (fs.existsSync(wsSessions)) {
+        fs.mkdirSync(poolSessions, { recursive: true });
+        for (const agent of fs.readdirSync(wsSessions)) {
+          const srcAgent = path.join(wsSessions, agent);
+          const destAgent = path.join(poolSessions, agent);
+          if (!fs.statSync(srcAgent).isDirectory()) continue;
+          fs.mkdirSync(destAgent, { recursive: true });
+          const srcObs = path.join(srcAgent, 'observations.jsonl');
+          const destObs = path.join(destAgent, 'observations.jsonl');
+          if (fs.existsSync(srcObs)) {
+            const srcLines = fs.readFileSync(srcObs, 'utf-8').split('\n').filter(Boolean);
+            let destLines = [];
+            if (fs.existsSync(destObs)) {
+              destLines = fs.readFileSync(destObs, 'utf-8').split('\n').filter(Boolean);
+            }
+            const existingIds = new Set(destLines.map(l => {
+              try { return JSON.parse(l).id; } catch { return null; }
+            }).filter(Boolean));
+            for (const line of srcLines) {
+              try {
+                const parsed = JSON.parse(line);
+                if (!existingIds.has(parsed.id)) {
+                  destLines.push(line);
+                }
+              } catch {}
+            }
+            fs.writeFileSync(destObs, destLines.join('\n') + '\n', 'utf8');
+          }
+        }
+      }
+      fs.rmSync(wsAkb, { recursive: true, force: true });
+    }
+  } catch {}
+
+  // Skip spawning CLI entirely if there are no pending unconsolidated observations
+  let hasPendingObservations = false;
+  try {
+    const poolSessions = path.join(targetProjectPool, '.akb', 'sessions');
+    if (fs.existsSync(poolSessions)) {
+      for (const agent of fs.readdirSync(poolSessions)) {
+        const obsFile = path.join(poolSessions, agent, 'observations.jsonl');
+        if (!fs.existsSync(obsFile)) continue;
+        const lines = fs.readFileSync(obsFile, 'utf-8').split('\n').filter(Boolean);
+        for (const line of lines) {
+          try {
+            const parsed = JSON.parse(line);
+            if (!parsed.status || parsed.status === 'recorded') {
+              hasPendingObservations = true;
+              break;
+            }
+          } catch {}
+        }
+        if (hasPendingObservations) break;
+      }
+    }
+  } catch {}
+
+  if (!hasPendingObservations) {
+    allowStop();
+    return;
+  }
+
+  // Run dreaming exclusively in targetProjectPool
+  try {
+    const stageArg = stageOnly ? ' --stage-only' : ' --auto-approve';
+    const PINNED_PKG = 'akbo-cli@3.0.0';
+    let runner = `npx -y ${PINNED_PKG}`;
+
+    try {
+      const pkgJsonPath = path.join(workspacePath, 'package.json');
+      const localCli = path.join(workspacePath, 'dist', 'cli.js');
+      if (fs.existsSync(pkgJsonPath) && fs.existsSync(localCli)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8'));
+        if (pkg && pkg.name === 'akbo-cli') {
+          runner = `"${process.execPath}" "${localCli}"`;
+        }
+      }
+    } catch {}
+
+    if (runner.startsWith('npx')) {
+      try {
+        const checkCmd = process.platform === 'win32' ? 'where akbo' : 'which akbo';
+        execSync(checkCmd, { stdio: 'ignore', timeout: 2000 });
+        runner = 'akbo';
+      } catch {}
+    }
+
+    const cmd = `${runner} dream "${workspacePath}" --pool "${targetProjectPool}"${stageArg} --json`;
+
+    execSync(cmd, {
+      cwd: workspacePath,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 30000,
+      env: { ...process.env, AKBO_POOL_DIR: targetProjectPool }
+    });
+
+    // Ensure workspace remains unpolluted (clean any stray .akb created during dream)
+    try {
+      const wsAkb = path.join(workspacePath, '.akb');
+      if (fs.existsSync(wsAkb)) {
+        fs.rmSync(wsAkb, { recursive: true, force: true });
+      }
+    } catch {}
+  } catch (err) {
+    console.error('[akbo-central-pool-sync] dream deferred:', err && err.message ? err.message : String(err));
+  }
+
+  allowStop();
+}
+
+main();
+"#
+}
+
+fn akbo_rules_markdown() -> &'static str {
+    r#"---
+trigger: always_on
+---
+
+# 🧠 AKBO Centralized Knowledge & Memory Rules
+
+## 1. Pre-Execution Grounding
+- Before proposing code modifications, investigating unfamiliar project architectures, or querying dependencies, invoke `akbo_context`, `akbo_search`, or `akbo_list_invariants` to retrieve the project's Codebase Knowledge Graph (CKG) and approved architectural constraints with 0 token waste.
+- Never perform speculative raw file grepping if high-level architectural standards exist in the central knowledge pool.
+
+## 2. Project Analysis & Baseline Knowledge Onboarding
+- `akbo_harvest` only scans deterministic code topology into `.akb/caches/` (0 LLM tokens); it does **not** create Knowledge Units (`knowledge/*.yaml`, `index.yaml`).
+- When analyzing, documenting, or onboarding a project—especially when `akbo_list_invariants` returns empty (`[]`) or no `knowledge/index.yaml` exists yet—run `akbo_harvest`, inspect key manifests/modules, and persist baseline Knowledge Units into the central pool via `akbo_upsert_units`:
+  - Standard units (`architecture_standard`, `development_standard`, `product_rule`): require `id` (e.g. `ARCH-SYS-001`), `type`, `title`, `domain` (`architecture` | `development` | `product`), `status` (`"approved"`), `applies_to` (`string[]`), `rule`, `do` (`string[]`, min 1), `dont` (`string[]`, min 1), `reason`.
+  - Decision units (`architecture_decision`): require `id` (e.g. `ADR-001`), `type` (`"architecture_decision"`), `title`, `domain` (`"decisions"`), `status` (`"approved"`), `decision`, `context`, `applies_to` (`string[]`).
+
+## 3. Out-of-Band Observation Recording
+- Whenever you encounter an undocumented convention, resolve a tricky bug, or identify a runtime trap, immediately call `akbo_record_observation` using its exact schema parameters:
+  - `topic`: Target subsystem, endpoint, file, or library (required)
+  - `finding`: Concrete technical insight, trap, or bug workaround (required)
+  - `reproducible_fix`: Actionable do/dont solution or pattern to adhere to (optional)
+  - `associated_files`: Relevant relative file paths involved (optional)
+- Do not write extensive runbooks into conversation replies; the Stop hook runs `akbo dream` in the central pool (`--stage-only` writes proposals to `.akb/staged/` unless `stageOnly: false` is enabled or approved via `akbo_dream`).
+
+## 4. Runtime Guardrails
+- Before making significant modifications to core files or schemas, call `akbo_guard` to verify that proposed changes do not violate active `dont:` directives or deprecated standards.
+
+## 5. Central Pool Isolation (Zero Workspace Pollution)
+- All session observations (`.akb/sessions/`), Codebase Knowledge Graph caches (`.akb/caches/`), and durable knowledge units (`knowledge/`, `ADR-xxx.yaml`, `index.yaml`) reside exclusively in the external Central Knowledge Pool (`~/.akb/central-pool/projects/<project>/`).
+- Never create or write `.akb/` folders or ephemeral session caches directly into the active project workspace.
+"#
+}
+
 pub fn install_builtin_akbo_plugin() -> Result<AgyPluginOpResult, String> {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
@@ -274,16 +488,8 @@ pub fn install_builtin_akbo_plugin() -> Result<AgyPluginOpResult, String> {
     std::fs::create_dir_all(&plugin_dir)
         .map_err(|e| format!("Failed to create plugin directory {:?}: {}", plugin_dir, e))?;
 
-    // 1. plugin.json
-    let manifest = serde_json::json!({
-        "name": "akbo",
-        "displayName": "AKBO Knowledge Oracle & Central Memory Pool",
-        "version": "3.0.0",
-        "description": "Hybrid AST Codebase Knowledge Graph (TS Compiler + WASM tree-sitter), centralized cross-project knowledge pooling, AST-backed convention guardrails, and staged post-conversation memory consolidation ('dreaming').",
-        "skills": ["akbo"],
-        "rules": ["AGENTS.md"],
-        "mcpServers": ["akbo"]
-    });
+    // 1. plugin.json (metadata only; skills, rules, hooks, and mcp_config are auto-discovered by agy)
+    let manifest = akbo_manifest_json();
     let manifest_str = serde_json::to_string_pretty(&manifest)
         .map_err(|e| format!("Failed to serialize plugin.json: {}", e))?;
     std::fs::write(plugin_dir.join("plugin.json"), manifest_str)
@@ -464,237 +670,17 @@ child.on('exit', (code, signal) => {
     let hooks_dir = plugin_dir.join("hooks");
     std::fs::create_dir_all(&hooks_dir)
         .map_err(|e| format!("Failed to create hooks directory: {}", e))?;
-    let on_stop_script = r#"#!/usr/bin/env node
-const fs = require('fs');
-const path = require('path');
-const { execSync } = require('child_process');
-
-function main() {
-  let rawInput = '';
-  try {
-    rawInput = fs.readFileSync(0, 'utf-8');
-  } catch {
-    process.stdout.write(JSON.stringify({ status: 'no_input' }));
-    return;
-  }
-
-  if (!rawInput.trim()) {
-    process.stdout.write(JSON.stringify({ status: 'empty_input' }));
-    return;
-  }
-
-  let payload = {};
-  try {
-    payload = JSON.parse(rawInput);
-  } catch {
-    process.stdout.write(JSON.stringify({ status: 'invalid_json' }));
-    return;
-  }
-
-  const workspacePath = (payload.workspacePaths && payload.workspacePaths[0]) || process.cwd();
-  const userHome = process.env.USERPROFILE || process.env.HOME || '';
-  const configFile = path.join(userHome, '.gemini', 'config', 'akbo_pool.json');
-
-  let centralPoolRoot = process.env.AKBO_CENTRAL_POOL_DIR || process.env.AKBO_POOL_DIR;
-  let stageOnly = true;
-
-  if (fs.existsSync(configFile)) {
-    try {
-      const cfg = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
-      if (cfg.centralPoolDir && cfg.centralPoolDir.trim()) {
-        centralPoolRoot = cfg.centralPoolDir.trim();
-      }
-      if (cfg.stageOnly !== undefined) {
-        stageOnly = Boolean(cfg.stageOnly);
-      }
-    } catch {}
-  }
-
-  if (!centralPoolRoot) {
-    centralPoolRoot = path.join(userHome, '.akb', 'central-pool');
-  }
-
-  let projectName = path.basename(path.resolve(workspacePath));
-  try {
-    const gitRemote = execSync('git config --get remote.origin.url', {
-      cwd: workspacePath,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 3000
-    }).toString().trim();
-
-    if (gitRemote) {
-      const match = gitRemote.match(/\/([^\/]+?)(\.git)?$/);
-      if (match && match[1]) {
-        projectName = match[1];
-      }
-    }
-  } catch {}
-
-  const targetProjectPool = path.join(centralPoolRoot, 'projects', projectName);
-  try {
-    fs.mkdirSync(targetProjectPool, { recursive: true });
-  } catch {}
-
-  // Migrate any leftover workspace session files into central pool and purge workspace .akb
-  try {
-    const wsAkb = path.join(workspacePath, '.akb');
-    if (fs.existsSync(wsAkb)) {
-      const wsSessions = path.join(wsAkb, 'sessions');
-      const poolSessions = path.join(targetProjectPool, '.akb', 'sessions');
-      if (fs.existsSync(wsSessions)) {
-        fs.mkdirSync(poolSessions, { recursive: true });
-        for (const agent of fs.readdirSync(wsSessions)) {
-          const srcAgent = path.join(wsSessions, agent);
-          const destAgent = path.join(poolSessions, agent);
-          if (!fs.statSync(srcAgent).isDirectory()) continue;
-          fs.mkdirSync(destAgent, { recursive: true });
-          const srcObs = path.join(srcAgent, 'observations.jsonl');
-          const destObs = path.join(destAgent, 'observations.jsonl');
-          if (fs.existsSync(srcObs)) {
-            const srcLines = fs.readFileSync(srcObs, 'utf-8').split('\n').filter(Boolean);
-            let destLines = [];
-            if (fs.existsSync(destObs)) {
-              destLines = fs.readFileSync(destObs, 'utf-8').split('\n').filter(Boolean);
-            }
-            const existingIds = new Set(destLines.map(l => {
-              try { return JSON.parse(l).id; } catch { return null; }
-            }).filter(Boolean));
-            for (const line of srcLines) {
-              try {
-                const parsed = JSON.parse(line);
-                if (!existingIds.has(parsed.id)) {
-                  destLines.push(line);
-                }
-              } catch {}
-            }
-            fs.writeFileSync(destObs, destLines.join('\n') + '\n', 'utf8');
-          }
-        }
-      }
-      fs.rmSync(wsAkb, { recursive: true, force: true });
-    }
-  } catch {}
-
-  // Skip spawning CLI entirely if there are no pending unconsolidated observations
-  let hasPendingObservations = false;
-  try {
-    const poolSessions = path.join(targetProjectPool, '.akb', 'sessions');
-    if (fs.existsSync(poolSessions)) {
-      for (const agent of fs.readdirSync(poolSessions)) {
-        const obsFile = path.join(poolSessions, agent, 'observations.jsonl');
-        if (!fs.existsSync(obsFile)) continue;
-        const lines = fs.readFileSync(obsFile, 'utf-8').split('\n').filter(Boolean);
-        for (const line of lines) {
-          try {
-            const parsed = JSON.parse(line);
-            if (!parsed.status || parsed.status === 'recorded') {
-              hasPendingObservations = true;
-              break;
-            }
-          } catch {}
-        }
-        if (hasPendingObservations) break;
-      }
-    }
-  } catch {}
-
-  if (!hasPendingObservations) {
-    process.stdout.write(JSON.stringify({
-      status: 'no_pending_observations',
-      project: projectName,
-      poolPath: targetProjectPool
-    }));
-    return;
-  }
-
-  // Run dreaming exclusively in targetProjectPool
-  try {
-    const stageArg = stageOnly ? ' --stage-only' : ' --auto-approve';
-    const PINNED_PKG = 'akbo-cli@3.0.0';
-    let runner = `npx -y ${PINNED_PKG}`;
-
-    try {
-      const pkgJsonPath = path.join(workspacePath, 'package.json');
-      const localCli = path.join(workspacePath, 'dist', 'cli.js');
-      if (fs.existsSync(pkgJsonPath) && fs.existsSync(localCli)) {
-        const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8'));
-        if (pkg && pkg.name === 'akbo-cli') {
-          runner = `"${process.execPath}" "${localCli}"`;
-        }
-      }
-    } catch {}
-
-    if (runner.startsWith('npx')) {
-      try {
-        const checkCmd = process.platform === 'win32' ? 'where akbo' : 'which akbo';
-        execSync(checkCmd, { stdio: 'ignore', timeout: 2000 });
-        runner = 'akbo';
-      } catch {}
-    }
-
-    const cmd = `${runner} dream "${workspacePath}" --pool "${targetProjectPool}"${stageArg} --json`;
-
-    execSync(cmd, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 30000,
-      env: { ...process.env, AKBO_POOL_DIR: targetProjectPool }
-    });
-
-    // Ensure workspace remains unpolluted (clean any stray .akb created during dream)
-    try {
-      const wsAkb = path.join(workspacePath, '.akb');
-      if (fs.existsSync(wsAkb)) {
-        fs.rmSync(wsAkb, { recursive: true, force: true });
-      }
-    } catch {}
-
-    process.stdout.write(JSON.stringify({
-      status: 'pooled',
-      project: projectName,
-      poolPath: targetProjectPool
-    }));
-  } catch (err) {
-    process.stdout.write(JSON.stringify({
-      status: 'dream_deferred',
-      project: projectName,
-      error: err.message
-    }));
-  }
-}
-
-main();
-"#;
-    std::fs::write(hooks_dir.join("on-stop.cjs"), on_stop_script)
+    std::fs::write(hooks_dir.join("on-stop.cjs"), akbo_on_stop_script())
         .map_err(|e| format!("Failed to write on-stop.cjs: {}", e))?;
 
-    // 5. rules/AGENTS.md
+    // 6. rules/AGENTS.md
     let rules_dir = plugin_dir.join("rules");
     std::fs::create_dir_all(&rules_dir)
         .map_err(|e| format!("Failed to create rules directory: {}", e))?;
-    let rules_md = r#"# 🧠 AKBO Centralized Knowledge & Memory Rules
-
-## 1. Pre-Execution Grounding
-- Before proposing code modifications, investigating unfamiliar project architectures, or querying dependencies, invoke `akbo_context`, `akbo_search`, or `akbo_list_invariants` to retrieve the project's Codebase Knowledge Graph (CKG) and approved architectural constraints with 0 token waste.
-- Never perform speculative raw file grepping if high-level architectural standards exist in the central knowledge pool.
-
-## 2. Out-of-Band Observation Recording
-- Whenever you encounter an undocumented convention, resolve a tricky bug, establish a design pattern, or identify a technical constraint, immediately call `akbo_record_observation`:
-  - `type`: 'pattern' | 'gotcha' | 'convention' | 'architecture_decision'
-  - `title`: Short descriptive title (e.g. 'Svelte 5 runes buffer reactivity')
-  - `content`: Concrete technical description and lesson learned
-- **Do not** write extensive runbooks or notes into the main conversation response; the out-of-band memory consolidator will synthesize your observations into permanent Architecture Decision Records (`ADR-xxx.yaml`) automatically.
-
-## 3. Runtime Guardrails
-- Before making significant modifications to core files or schemas, call `akbo_guard` to verify that proposed changes do not violate active `dont:` directives or deprecated standards.
-
-## 4. Central Pool Isolation (Zero Workspace Pollution)
-- All session observations (`.akb/sessions/`), Codebase Knowledge Graph caches (`.akb/caches/`), and durable knowledge units (`knowledge/`, `ADR-xxx.yaml`, `index.yaml`) reside exclusively in the external Central Knowledge Pool (`~/.akb/central-pool/projects/<project>/`).
-- Never create or write `.akb/` folders or ephemeral session caches directly into the active project workspace.
-"#;
-    std::fs::write(rules_dir.join("AGENTS.md"), rules_md)
+    std::fs::write(rules_dir.join("AGENTS.md"), akbo_rules_markdown())
         .map_err(|e| format!("Failed to write rules/AGENTS.md: {}", e))?;
 
-    // 6. skills/akbo/SKILL.md
+    // 7. skills/akbo/SKILL.md
     let skill_dir = plugin_dir.join("skills").join("akbo");
     std::fs::create_dir_all(&skill_dir)
         .map_err(|e| format!("Failed to create skills directory: {}", e))?;
@@ -782,26 +768,11 @@ pub fn install_agy_plugin_internal(target: &str) -> Result<AgyPluginOpResult, St
         }
     };
 
-    let bin_path_str = bin.to_string_lossy().to_string();
-    let is_batch = bin_path_str.to_lowercase().ends_with(".cmd") || bin_path_str.to_lowercase().ends_with(".bat");
-
-    #[cfg(target_os = "windows")]
-    let output = if is_batch {
-        Command::new("cmd.exe")
-            .args(["/c", &bin_path_str, "plugin", "install", target])
-            .creation_flags(0x08000000)
-            .output()
-    } else {
-        Command::new(&bin_path_str)
-            .args(["plugin", "install", target])
-            .creation_flags(0x08000000)
-            .output()
-    };
-
-    #[cfg(not(target_os = "windows"))]
-    let output = Command::new(&bin_path_str)
-        .args(["plugin", "install", target])
-        .output();
+    let output = crate::process_manager::ProcessSupervisor::build_cli_command(
+        &bin,
+        &["plugin", "install", target],
+    )
+    .output();
 
     let out = output.map_err(|e| format!("Failed to execute agy plugin install: {}", e))?;
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -839,26 +810,11 @@ pub fn uninstall_agy_plugin_internal(name: &str) -> Result<AgyPluginOpResult, St
         }
     };
 
-    let bin_path_str = bin.to_string_lossy().to_string();
-    let is_batch = bin_path_str.to_lowercase().ends_with(".cmd") || bin_path_str.to_lowercase().ends_with(".bat");
-
-    #[cfg(target_os = "windows")]
-    let output = if is_batch {
-        Command::new("cmd.exe")
-            .args(["/c", &bin_path_str, "plugin", "uninstall", name])
-            .creation_flags(0x08000000)
-            .output()
-    } else {
-        Command::new(&bin_path_str)
-            .args(["plugin", "uninstall", name])
-            .creation_flags(0x08000000)
-            .output()
-    };
-
-    #[cfg(not(target_os = "windows"))]
-    let output = Command::new(&bin_path_str)
-        .args(["plugin", "uninstall", name])
-        .output();
+    let output = crate::process_manager::ProcessSupervisor::build_cli_command(
+        &bin,
+        &["plugin", "uninstall", name],
+    )
+    .output();
 
     let out = output.map_err(|e| format!("Failed to execute agy plugin uninstall: {}", e))?;
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -967,7 +923,7 @@ pub fn create_custom_plugin_internal(req: &CreateCustomPluginRequest) -> Result<
         let rules_dir = plugin_dir.join("rules");
         let _ = std::fs::create_dir_all(&rules_dir);
         let rules_content = format!(
-            "# Directives & Rules for {}\n\n- Adhere to project guidelines and security standards.\n",
+            "---\ntrigger: always_on\n---\n\n# Directives & Rules for {}\n\n- Adhere to project guidelines and security standards.\n",
             display_name
         );
         let _ = std::fs::write(rules_dir.join("AGENTS.md"), rules_content);
@@ -997,6 +953,131 @@ pub fn create_custom_plugin_internal(req: &CreateCustomPluginRequest) -> Result<
 }
 
 // Tauri IPC Command wrappers
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgyPluginValidationResult {
+    pub success: bool,
+    pub target: String,
+    pub strict: bool,
+    pub issues: Vec<String>,
+    pub raw_output: String,
+}
+
+pub fn parse_plugin_validation_output(
+    target: &str,
+    strict: bool,
+    exit_success: bool,
+    stdout: &str,
+    stderr: &str,
+) -> AgyPluginValidationResult {
+    let trimmed_out = crate::commands::strip_utf8_bom(stdout).trim();
+    let trimmed_err = stderr.trim();
+
+    if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed_out) {
+        let mut issues = Vec::new();
+        if let Some(arr) = json_val
+            .get("issues")
+            .or_else(|| json_val.get("errors"))
+            .or_else(|| json_val.get("warnings"))
+            .and_then(|v| v.as_array())
+        {
+            for item in arr {
+                if let Some(s) = item.as_str() {
+                    issues.push(s.to_string());
+                } else if let Some(msg) = item.get("message").and_then(|v| v.as_str()) {
+                    let sev = item.get("severity").or_else(|| item.get("level")).and_then(|v| v.as_str()).unwrap_or("issue");
+                    issues.push(format!("[{}] {}", sev, msg));
+                }
+            }
+        }
+        let valid = json_val
+            .get("valid")
+            .or_else(|| json_val.get("success"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(exit_success && issues.is_empty());
+        return AgyPluginValidationResult {
+            success: valid,
+            target: target.to_string(),
+            strict,
+            issues,
+            raw_output: trimmed_out.to_string(),
+        };
+    }
+
+    let combined = match (trimmed_out.is_empty(), trimmed_err.is_empty()) {
+        (false, false) => format!("{}\n{}", trimmed_out, trimmed_err),
+        (false, true) => trimmed_out.to_string(),
+        (true, false) => trimmed_err.to_string(),
+        (true, true) => if exit_success { "Plugin validation passed.".to_string() } else { "Validation failed.".to_string() },
+    };
+
+    let mut issues = Vec::new();
+    if !exit_success {
+        for line in combined.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            issues.push(line.to_string());
+        }
+    }
+
+    AgyPluginValidationResult {
+        success: exit_success,
+        target: target.to_string(),
+        strict,
+        issues,
+        raw_output: combined,
+    }
+}
+
+fn find_agy_bin() -> Result<PathBuf, String> {
+    crate::process_manager::find_agy_executable()
+        .ok_or_else(|| "Antigravity CLI (agy) executable not found on PATH.".to_string())
+}
+
+pub fn validate_agy_plugin_internal(target: &str, strict: bool) -> Result<AgyPluginValidationResult, String> {
+    let trimmed_target = target.trim();
+    if trimmed_target.is_empty() {
+        return Err("Plugin name or path cannot be empty.".to_string());
+    }
+    let agy_bin = find_agy_bin()?;
+    let mut args = vec!["plugin", "validate", trimmed_target, "--json"];
+    if strict {
+        args.push("--strict");
+    }
+
+    let out = crate::process_manager::ProcessSupervisor::build_cli_command(&agy_bin, &args)
+        .output()
+        .map_err(|e| format!("Failed to execute agy plugin validate: {}", e))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    Ok(parse_plugin_validation_output(trimmed_target, strict, out.status.success(), &stdout, &stderr))
+}
+
+pub fn import_claude_plugins_via_agy_internal() -> Result<AgyPluginOpResult, String> {
+    let agy_bin = find_agy_bin()?;
+    let out = crate::process_manager::ProcessSupervisor::build_cli_command(
+        &agy_bin,
+        &["plugin", "import", "claude"],
+    )
+    .output()
+    .map_err(|e| format!("Failed to execute agy plugin import claude: {}", e))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if out.status.success() {
+        Ok(AgyPluginOpResult {
+            success: true,
+            message: if stdout.is_empty() {
+                "Claude Code plugins imported successfully.".to_string()
+            } else {
+                stdout
+            },
+        })
+    } else {
+        Ok(AgyPluginOpResult {
+            success: false,
+            message: if !stderr.is_empty() { stderr } else { format!("Import exited with code {:?}", out.status.code()) },
+        })
+    }
+}
 
 #[tauri::command]
 pub async fn list_agy_plugins() -> Result<Vec<AgyPluginInfo>, String> {
@@ -1029,6 +1110,21 @@ pub async fn uninstall_agy_plugin(name: String) -> Result<AgyPluginOpResult, Str
 #[tauri::command]
 pub async fn create_custom_plugin(req: CreateCustomPluginRequest) -> Result<AgyPluginOpResult, String> {
     tokio::task::spawn_blocking(move || create_custom_plugin_internal(&req))
+        .await
+        .map_err(|e| format!("Task execution error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn validate_agy_plugin(target: String, strict: Option<bool>) -> Result<AgyPluginValidationResult, String> {
+    let is_strict = strict.unwrap_or(false);
+    tokio::task::spawn_blocking(move || validate_agy_plugin_internal(&target, is_strict))
+        .await
+        .map_err(|e| format!("Task execution error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn import_claude_plugins_via_agy() -> Result<AgyPluginOpResult, String> {
+    tokio::task::spawn_blocking(import_claude_plugins_via_agy_internal)
         .await
         .map_err(|e| format!("Task execution error: {}", e))?
 }
@@ -1154,11 +1250,29 @@ mod tests {
 
     #[test]
     fn test_akbo_on_stop_script_syntax() {
-        let sample_script = r#"const cmd = `${runner} dream "${workspacePath}" --pool "${targetProjectPool}"${stageArg} --json`;"#;
-        assert!(sample_script.contains("dream \"${workspacePath}\""));
-        assert!(!sample_script.contains("--targetDir"));
-        assert!(!sample_script.contains("--transcriptFiles"));
-        assert!(!sample_script.contains("akbo-cli@latest"));
+        let on_stop = akbo_on_stop_script();
+        assert!(on_stop.contains("dream \"${workspacePath}\""));
+        assert!(on_stop.contains("payload.continuationActive || payload.continuation_active"));
+        assert!(on_stop.contains("process.stdout.write('{}')"));
+        assert!(!on_stop.contains("status:"));
+        assert!(!on_stop.contains("--targetDir"));
+        assert!(!on_stop.contains("--transcriptFiles"));
+        assert!(!on_stop.contains("akbo-cli@latest"));
+    }
+
+    #[test]
+    fn test_akbo_manifest_and_rules_contracts() {
+        let manifest = akbo_manifest_json();
+        assert_eq!(manifest.get("name").and_then(|v| v.as_str()), Some("akbo"));
+        assert!(manifest.get("skills").is_none(), "skills should be auto-discovered by agy");
+        assert!(manifest.get("rules").is_none(), "rules should be auto-discovered by agy");
+        assert!(manifest.get("mcpServers").is_none(), "mcpServers should be auto-discovered by agy");
+
+        let rules = akbo_rules_markdown();
+        assert!(rules.contains("akbo_upsert_units"));
+        assert!(rules.contains("`topic`"));
+        assert!(rules.contains("`finding`"));
+        assert!(!rules.contains("`content`: Concrete technical description"));
     }
 
     #[test]
@@ -1169,5 +1283,19 @@ mod tests {
         assert!(sample_mcp.contains("akbo-cli@3.0.0"));
         assert!(!sample_mcp.contains("@latest"));
         assert!(sample_mcp.contains("mcp"));
+    }
+
+    #[test]
+    fn test_parse_plugin_validation_output() {
+        let ok_json = r#"{"valid": true, "issues": []}"#;
+        let ok_res = parse_plugin_validation_output("akbo", true, true, ok_json, "");
+        assert!(ok_res.success);
+        assert!(ok_res.issues.is_empty());
+
+        let bad_json = "\u{FEFF}{\"valid\": false, \"issues\": [{\"severity\": \"error\", \"message\": \"plugin name must be kebab-case\"}]}";
+        let bad_res = parse_plugin_validation_output("bad_name", false, false, bad_json, "");
+        assert!(!bad_res.success);
+        assert_eq!(bad_res.issues.len(), 1);
+        assert!(bad_res.issues[0].contains("kebab-case"));
     }
 }

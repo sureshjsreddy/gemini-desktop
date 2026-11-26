@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.0] - 2026-11-26
+
+### Added & Architectural
+- **Pluggable Multi-CLI Engine Registry & Transport Abstraction (`src-tauri/src/engines/`, `src-tauri/src/transports/`, `engineStore.svelte.ts`)**:
+  - Replaced hardcoded `activeEngine === "agy"` branching across Rust backend and Svelte frontend with a centralized `CliEngineAdapter` trait (`GeminiEngineAdapter`, `AgyEngineAdapter`), `EngineCapabilities` flags, and `TransportProtocol` (`Acp`, `StreamJson`, `CodexRpc`) + `AgentTransport` abstractions so future CLIs (e.g., Claude Code, Codex) require only registering a new adapter.
+  - Added unified `ProcessSupervisor::build_cli_command` helper for Windows `.cmd`/native CLI spawning across session, setup, git, and plugin commands.
+  - Added reactive frontend `engineStore` (`src/lib/stores/engineStore.svelte.ts`), reusable `<EngineSwitcher />` (`compact-pill`, `toggle-bar`, `cards`), and `<CliPathStatusBanner />` for 1-click header/settings engine switching and user `PATH` repair.
+  - Added `engineModels.ts` (`sanitizeModelForEngine`, `getEffectiveModel`, per-(workspace, engine) remembered model storage in `localStorage`) and synchronized effective fallback labels (`auto (fallback)`) consistently across `ChatView` header, `Sidebar` footer & workspace dropdown, and `WorkspaceModal` list.
+- **Antigravity CLI v0.1.33+ & Gemini CLI v0.71.1 Alignment**:
+  - Added Antigravity `orchestrator` mode, `gemini-4-hydrogen-*` / `carbon` / `neon` / `argon` catalog presets, `--effort` / `--agent` / `--sandbox` / `--add-dir` flags, live turn steering (`steer_active_turn`) and prompt queuing, native `--compress` / `/compact` support, and active-engine routing for AI commit message generation (`generate_commit_message_with_llm_for_engine`).
+  - Aligned Gemini CLI v0.71.1 runtime compatibility (`settings.json` schema handling, `--include-directories`, ACP `_meta` permission reset pointer preservation, and nested context-window token parsing in `setup.rs`).
+- **Performance & Rendering**:
+  - Added message windowing ("Show earlier messages" pagination) in `ChatView.svelte` and bounded LRU caching (`MAX_MARKDOWN_CACHE = 300`) in `markdown.ts`.
+
+### Fixed
+- **Sidebar Footer & Cross-Engine Model Display (`Sidebar.svelte`, `WorkspaceModal.svelte`, `engineModels.ts`, `gemini.rs`)**:
+  - Fixed the sidebar footer near the version display still showing `agy`-specific models (such as `gemini-4` / `gemini-4-argon`) after switching engines to `gemini`; all workspace model displays now resolve through `getEffectiveModel`.
+- **AKBO Plugin Installer, Hook Contract & Onboarding Rules (`plugins.rs`, `PluginsModal.svelte`)**:
+  - Removed non-manifest `"skills"`, `"rules"`, `"mcpServers"` fields from generated `plugin.json` (eliminating `agy plugin validate` warnings and runtime `customization.go` path errors; `agy` auto-discovers directories automatically).
+  - Fixed `hooks/on-stop.cjs` to emit valid empty `protojson` `{}` on `stdout` instead of `{"status": ...}` (resolving `unknown field "status"` hook failures in `agy`) and check camelCase `payload.continuationActive || payload.continuation_active`.
+  - Updated generated `rules/AGENTS.md` with initial codebase analysis onboarding (`akbo_harvest` + `akbo_upsert_units`) and corrected `akbo_record_observation` schema fields (`topic`, `finding`, `reproducible_fix`, `associated_files`).
+  - Added 1-click **Repair / Update** action on the installed AKBO card in `PluginsModal.svelte` (preserving `akbo_pool.json`) and clarified `--stage-only` staging behavior.
+- **Knowledge Base & Automated Verification**:
+  - Fixed existing YAML syntax errors in `ARCH-ENGINE-001.yaml` and `PROD-EXPLORER-001.yaml`, added `ADR-005.yaml`, and updated `ARCH-ENGINE-001`, `PROD-MODEL-001`, `PROD-PLUGIN-001`, `DEV-SVELTE-001`, `DEV-TEST-001`, and `knowledge/index.yaml` (verified via `npx -y akbo-cli@3.0.0 validate .`).
+  - Added `tests/pure-utils.test.mjs` (`npm test`) and Rust unit tests in `transports/mod.rs`, `engines/agy.rs`, `engines/gemini.rs`, `engines/mod.rs`, `plugins.rs`, `session.rs`, `settings.rs`, `setup.rs`, `acp_client.rs`, and `database.rs`.
+
+---
+
 ## [0.10.2] - 2026-11-25
 
 ### Fixed & Enhanced

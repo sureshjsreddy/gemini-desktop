@@ -6,6 +6,10 @@ export interface Workspace {
   system_prompt?: string;
   approval_mode?: ApprovalMode;
   track_file_changes?: boolean;
+  reasoning_effort?: string;
+  sandbox_enabled?: boolean;
+  agent_name?: string;
+  additional_dirs?: string;
   created_at: string;
 }
 
@@ -13,6 +17,8 @@ export interface Session {
   id: string;
   workspace_id: string;
   title: string;
+  acp_session_id?: string;
+  acp_engine?: string;
   created_at: string;
   updated_at: string;
 }
@@ -49,6 +55,14 @@ export interface PermissionOption {
   kind: string;
 }
 
+export interface AskQuestionItem {
+  id?: string;
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options?: { label: string; description?: string }[];
+}
+
 export interface ToolPermissionPayload {
   request_id: number | string;
   session_id: string;
@@ -62,6 +76,7 @@ export interface ToolPermissionPayload {
   reason?: string;
   options: PermissionOption[];
   mcp_server?: string;
+  questions?: AskQuestionItem[];
 }
 
 export interface CliModelInfo {
@@ -106,14 +121,40 @@ export interface ToolCallPayload {
   raw_output?: string;
 }
 
+export interface ContextUsageStats {
+  usedTokens: number;
+  contextWindow: number;
+  percentage: number;
+}
+
+export interface DynamicAcpCommand {
+  name: string;
+  description?: string;
+  inputHint?: string;
+}
+
+export interface QueuedPromptItem {
+  id: string;
+  prompt: string;
+  displayText?: string;
+  attachments?: AttachmentItem[];
+  createdAt: number;
+}
+
 export interface SessionStreamState {
   streamingText: string;
+  thoughtText?: string;
+  thinkingStartedAt?: number;
+  thinkingDurationMs?: number;
   isStreaming: boolean;
   toolPermission: ToolPermissionPayload | null;
+  toolPermissionQueue?: ToolPermissionPayload[];
   toolCalls?: ToolExecutionStep[];
   steeringHints?: string[];
   isSteering?: boolean;
   started_at?: number;
+  contextUsage?: ContextUsageStats;
+  queuedPrompts?: QueuedPromptItem[];
 }
 
 export interface GeminiEnvStatus {
@@ -164,14 +205,18 @@ export interface SlashCommandOption {
   title: string;
   description: string;
   category: "action" | "tool" | "mode" | "config";
-  engine?: "gemini" | "agy" | "all";
+  engine?: CliEngine | "all";
 }
 
 export interface McpServerConfig {
-  command: string;
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
+  url?: string;
+  serverUrl?: string;
+  headers?: Record<string, string>;
+  eager?: boolean;
   disabled?: boolean;
 }
 
@@ -195,7 +240,7 @@ export interface UpdateInfo {
   release_url?: string;
 }
 
-export type ApprovalMode = "default" | "auto_edit" | "yolo" | "plan";
+export type ApprovalMode = "default" | "auto_edit" | "auto" | "yolo" | "plan";
 
 export type GeminiAuthMode = "api_key" | "vertex_ai";
 
@@ -321,6 +366,11 @@ export interface GlobalCliSettings {
   fileFiltering: FileFilteringConfig;
   sessionRetention: SessionRetentionConfig;
   rawJson: string;
+  agyAgentMode?: string;
+  showThinking?: boolean;
+  orchestrator?: Record<string, any> | null;
+  agyAutoCompactOverride?: string;
+  agyDisableEmbeddedRipgrep?: boolean;
 }
 
 export interface SaveGlobalCliSettingsPayload {
@@ -329,6 +379,27 @@ export interface SaveGlobalCliSettingsPayload {
   fileFiltering?: FileFilteringConfig;
   sessionRetention?: SessionRetentionConfig;
   rawJson?: string;
+  agyAgentMode?: string;
+  showThinking?: boolean;
+  orchestrator?: Record<string, any> | null;
+  agyAutoCompactOverride?: string;
+  agyDisableEmbeddedRipgrep?: boolean;
+}
+
+export interface AgyPluginValidationResult {
+  success: boolean;
+  target: string;
+  strict: boolean;
+  issues: string[];
+  rawOutput: string;
+}
+
+export interface AgentCapabilitiesState {
+  supportsResume: boolean;
+  supportsImage: boolean;
+  supportsEmbeddedContext: boolean;
+  supportsAdditionalDirs: boolean;
+  supportsSystemPromptAppend: boolean;
 }
 
 export interface ContinuationResult {
@@ -336,7 +407,63 @@ export interface ContinuationResult {
   continuationMessage: Message;
 }
 
-export type CliEngine = "gemini" | "agy";
+export type CliEngine = string;
+
+export interface EngineCapabilities {
+  transport: string;
+  supportsPlugins: boolean;
+  supportsLiveModelDiscovery: boolean;
+  supportsMcpConfig: boolean;
+  supportsMcpImportFromGemini: boolean;
+  supportsSkillSync: boolean;
+  supportsReasoningEffort: boolean;
+  supportsAgentPersona: boolean;
+  supportsOrchestratorSettings: boolean;
+  supportsNativeCompress: boolean;
+  supportsCliInstall: boolean;
+  supportsLoginLaunch: boolean;
+  supportsSystemPromptAppend: boolean;
+  supportsConcurrentSteer: boolean;
+}
+
+export interface ModelOptionDto {
+  value: string;
+  label: string;
+}
+
+export interface ModelOptionGroupDto {
+  group: string;
+  options: ModelOptionDto[];
+}
+
+export interface EngineSlashCommandMeta {
+  id: string;
+  label: string;
+  title: string;
+  description: string;
+  category: string;
+}
+
+export interface EngineDescriptor {
+  id: string;
+  displayName: string;
+  shortName: string;
+  badgeIcon: string;
+  description: string;
+  defaultModel: string;
+  fallbackTestModel: string;
+  globalSettingsHint: string;
+  workspaceInstructionsHint: string;
+  installHint: string;
+  installed: boolean;
+  binaryPath?: string | null;
+  binaryDir?: string | null;
+  inUserPath: boolean;
+  cliVersion?: string | null;
+  capabilities: EngineCapabilities;
+  modelGroups: ModelOptionGroupDto[];
+  extraSlashCommands: EngineSlashCommandMeta[];
+}
 
 export interface CliEnginesStatus {
   activeEngine: CliEngine;

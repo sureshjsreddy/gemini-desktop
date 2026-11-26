@@ -995,7 +995,17 @@ pub fn is_valid_commit_message(msg: &str) -> bool {
     has_conventional_prefix || has_imperative_prefix
 }
 
+#[allow(dead_code)]
 pub fn generate_commit_message_with_llm(
+    ws_path: &Path,
+    full_diff: &str,
+    context_hint: Option<&str>,
+) -> Result<String, String> {
+    generate_commit_message_with_llm_for_engine("gemini", ws_path, full_diff, context_hint)
+}
+
+pub fn generate_commit_message_with_llm_for_engine(
+    engine: &str,
     ws_path: &Path,
     full_diff: &str,
     context_hint: Option<&str>,
@@ -1008,8 +1018,13 @@ pub fn generate_commit_message_with_llm(
         return Err("No git diff available to generate LLM commit message".to_string());
     }
 
-    let bin = crate::process_manager::find_gemini_executable()
-        .ok_or_else(|| "Gemini CLI executable not found".to_string())?;
+    let adapter = crate::engines::get_adapter(engine);
+    let engine_desc = adapter.static_descriptor();
+    let is_gemini = adapter.id() == "gemini";
+
+    let bin = adapter
+        .find_executable()
+        .ok_or_else(|| format!("{} executable not found", engine_desc.short_name))?;
 
     let bin_path_str = bin.to_string_lossy().to_string();
     let is_batch = bin_path_str.to_lowercase().ends_with(".cmd") || bin_path_str.to_lowercase().ends_with(".bat");
@@ -1037,21 +1052,21 @@ Git Diff:\n{}",
         trimmed_diff
     );
 
-    // On Windows, if bin is a .cmd wrapper from npm, check if we can run node with gemini.js directly
-    #[cfg(target_os = "windows")]
-    let mut cmd = {
+    let mut uses_stdin_prompt = false;
+    let mut cmd = if is_gemini {
+        uses_stdin_prompt = true;
+        // On Windows, if bin is a .cmd wrapper from npm, prefer invoking node + gemini.js directly to avoid cmd.exe
+        #[cfg(target_os = "windows")]
         let direct_js = if is_batch {
             bin.parent().and_then(|p| {
                 let js = p.join("node_modules").join("@google").join("gemini-cli").join("bundle").join("gemini.js");
-                if js.is_file() {
-                    Some(js)
-                } else {
-                    None
-                }
+                if js.is_file() { Some(js) } else { None }
             })
         } else {
             None
         };
+        #[cfg(not(target_os = "windows"))]
+        let direct_js: Option<PathBuf> = None;
 
         if let Some(js_path) = direct_js {
             let mut c = Command::new("node");
@@ -1065,53 +1080,33 @@ Git Diff:\n{}",
                 "--output-format",
                 "text",
             ]);
-            c
-        } else if is_batch {
-            let mut c = Command::new("cmd.exe");
-            c.args([
-                "/c",
-                &bin_path_str,
-                "--skip-trust",
-                "-p",
-                "Generate a concise Conventional Commit message based on the input git diff.",
-                "--model",
-                "gemini-3.8-flash",
-                "--output-format",
-                "text",
-            ]);
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                c.creation_flags(0x08000000);
+            }
             c
         } else {
-            let mut c = Command::new(&bin_path_str);
-            c.args([
-                "--skip-trust",
-                "-p",
+            let args = adapter.build_headless_prompt_args(
+                Some("gemini-3.8-flash"),
                 "Generate a concise Conventional Commit message based on the input git diff.",
-                "--model",
-                "gemini-3.8-flash",
-                "--output-format",
                 "text",
-            ]);
-            c
+            );
+            crate::process_manager::ProcessSupervisor::build_cli_command(&bin, &args)
         }
-    };
-
-    #[cfg(not(target_os = "windows"))]
-    let mut cmd = {
-        let mut c = Command::new(&bin_path_str);
-        c.args([
-            "--skip-trust",
-            "-p",
-            "Generate a concise Conventional Commit message based on the input git diff.",
-            "--model",
-            "gemini-3.8-flash",
-            "--output-format",
-            "text",
-        ]);
-        c
+    } else {
+        // Keep CLI argument size safely below Windows CreateProcess limits
+        let mut arg_prompt = prompt.clone();
+        if arg_prompt.len() > 6000 {
+            arg_prompt.truncate(6000);
+            arg_prompt.push_str("\n... [diff truncated]");
+        }
+        let args = adapter.build_headless_prompt_args(None, &arg_prompt, "text");
+        crate::process_manager::ProcessSupervisor::build_cli_command(&bin, &args)
     };
 
     cmd.current_dir(ws_path);
-    cmd.stdin(Stdio::piped());
+    cmd.stdin(if uses_stdin_prompt { Stdio::piped() } else { Stdio::null() });
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.env("CI", "true");
@@ -1119,19 +1114,17 @@ Git Diff:\n{}",
     cmd.env("GIT_PAGER", "cat");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
 
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn {}: {}", engine_desc.short_name, e))?;
 
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn Gemini CLI: {}", e))?;
-
-    // Pipe the full prompt (including rules, context, and diff) safely over stdin
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(prompt.as_bytes());
-        let _ = stdin.flush();
-        drop(stdin); // Send EOF so gemini-cli's readStdin() resolves
+    // Pipe the full prompt safely over stdin for Gemini CLI
+    if uses_stdin_prompt {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(prompt.as_bytes());
+            let _ = stdin.flush();
+            drop(stdin); // Send EOF so gemini-cli's readStdin() resolves
+        }
     }
 
     // Wait with a 12-second timeout to prevent hanging on network stalls or 429 retries
@@ -1143,11 +1136,11 @@ Git Diff:\n{}",
             Ok(None) => {
                 if start_time.elapsed() >= timeout {
                     let _ = child.kill();
-                    break Err("Gemini CLI timed out generating commit message".to_string());
+                    break Err(format!("{} timed out generating commit message", engine_desc.short_name));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
-            Err(e) => break Err(format!("Failed to wait on Gemini CLI: {}", e)),
+            Err(e) => break Err(format!("Failed to wait on {}: {}", engine_desc.short_name, e)),
         }
     }?;
 
@@ -1162,13 +1155,13 @@ Git Diff:\n{}",
 
     if !status.success() {
         let err = String::from_utf8_lossy(&stderr_buf);
-        return Err(format!("Gemini CLI exited with status {}: {}", status, err));
+        return Err(format!("{} exited with status {}: {}", engine_desc.short_name, status, err));
     }
 
     let stdout_str = String::from_utf8_lossy(&stdout_buf);
     let cleaned = clean_commit_output(&stdout_str);
     if !is_valid_commit_message(&cleaned) {
-        return Err(format!("Gemini CLI output failed commit validation: {}", cleaned));
+        return Err(format!("{} output failed commit validation: {}", engine_desc.short_name, cleaned));
     }
 
     Ok(cleaned)
@@ -1305,9 +1298,18 @@ pub fn synthesize_heuristic_commit_message(
 /// Generates an AI commit message based on staged (or unstaged) diff, enriched by optional chat/prompt context
 #[tauri::command]
 pub async fn git_generate_commit_message(
+    state: tauri::State<'_, crate::AppState>,
     workspace_dir: String,
     context_hint: Option<String>,
 ) -> Result<String, String> {
+    let active_engine = state
+        .db
+        .get_setting("active_cli_engine")
+        .ok()
+        .flatten()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "gemini".to_string());
+
     tokio::task::spawn_blocking(move || {
         let ws_path = PathBuf::from(&workspace_dir);
         if !ws_path.exists() {
@@ -1425,8 +1427,13 @@ pub async fn git_generate_commit_message(
             full_diff_str.push_str("\n... [diff truncated]");
         }
 
-        // 2. PRIMARY: Try calling the underlying Gemini CLI LLM for true generative understanding
-        if let Ok(llm_msg) = generate_commit_message_with_llm(&ws_path, &full_diff_str, context_hint.as_deref()) {
+        // 2. PRIMARY: Try calling the active CLI engine LLM for true generative understanding
+        if let Ok(llm_msg) = generate_commit_message_with_llm_for_engine(
+            &active_engine,
+            &ws_path,
+            &full_diff_str,
+            context_hint.as_deref(),
+        ) {
             if is_valid_commit_message(&llm_msg) {
                 return Ok(llm_msg);
             }

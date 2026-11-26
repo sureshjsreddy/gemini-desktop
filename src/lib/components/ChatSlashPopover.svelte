@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { SlashCommandOption, CliEngine } from "$lib/types";
+  import { engineStore } from "$lib/stores/engineStore.svelte";
   import {
     X,
     ListTodo,
@@ -66,7 +67,7 @@
         <span class="inline-flex items-center justify-center w-4 h-4 rounded bg-accent-theme/15 text-accent-theme font-mono font-bold text-xs">/</span>
         <span class="text-primary-theme font-medium tracking-normal text-xs">Slash Commands & Tools</span>
         <span class="px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider font-medium border {activeEngine === 'agy' ? 'bg-purple-500/10 text-purple-400 border-purple-500/30' : 'bg-blue-500/10 text-blue-400 border-blue-500/30'}">
-          {activeEngine === 'agy' ? 'Antigravity agy' : 'Gemini CLI'}
+          {engineStore.getDescriptor(activeEngine).shortName}
         </span>
       </div>
       <div class="flex items-center gap-2">

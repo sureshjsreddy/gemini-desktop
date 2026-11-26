@@ -3,7 +3,7 @@ type: development_standard
 title: Svelte 5 Runes State Management & Tailwind CSS v4 Component Standard
 domain: development
 status: approved
-version: 1.10.0
+version: 1.11.0
 authority:
   level: official
   confidence: high
@@ -31,7 +31,8 @@ do:
   - "Use `modalManager` (`src/lib/modal.svelte.ts`) to govern dialog modals (`search`, `workspace`, `templates`, `theme`, `mcp`, `palette`) with `isOpen(type)`, `open(type)`, `close()`, and `toggle(type)`, preventing multiple competing open modals and eliminating scattered boolean flags."
   - "Provide a global Command Palette (`Ctrl+P` / `Ctrl+Shift+P` via `CommandPaletteModal.svelte`) for instant fuzzy discovery and keyboard navigation of workspace actions, active sessions, and theme modes."
   - "Enable session forking (`fork_session`) from any conversation turn in `ChatView.svelte` to branch discussions into independent sessions without altering the original history."
-  - "Decompose high-complexity views into focused subcomponents (e.g. `ToolPermissionCard.svelte`, `ToolCallNode.svelte`, `ChatPromptComposer.svelte`, `ChatMentionPopover.svelte`, `ChatSlashPopover.svelte`, `ExplorerContextMenu.svelte`, `ExplorerTreeRow.svelte`) and extract reusable domain logic into pure utility modules (`approvalModes.ts`, `toolSteps.ts`, `fileIcons.ts`, `fileFilters.ts`)."
+  - "Decompose high-complexity views into focused subcomponents (e.g. `ToolPermissionCard.svelte`, `ToolCallNode.svelte`, `ChatPromptComposer.svelte`, `ChatMentionPopover.svelte`, `ChatSlashPopover.svelte`, `ExplorerContextMenu.svelte`, `ExplorerTreeRow.svelte`, `EngineSwitcher.svelte`, `CliPathStatusBanner.svelte`) and extract reusable domain logic into shared stores and pure utility modules (`engineStore.svelte.ts`, `engineModels.ts`, `approvalModes.ts`, `toolSteps.ts`, `fileIcons.ts`, `fileFilters.ts`)."
+  - "Bound markdown rendering cost and chat DOM growth via LRU caching in `markdown.ts` and message windowing ('Show earlier messages') in `ChatView.svelte`."
   - "Group multi-step agent tool executions into a hierarchical progress tree via `ToolCallGroup.svelte` with wall-clock turn duration tracking (`formatDuration`) and live elapsed timing during streaming: while the agent is executing, tuck completed steps into an expandable accordion header (`[▶] Executing tasks (N/M completed)... Xm Ys`) and display only the currently active working step underneath; once all steps complete, tuck the entire sequence into a single compact header (`[▶] N steps completed • Xm Ys`) with a toggleable tree view, keeping the assistant's final response clean and fully readable without terminal clutter."
   - "Enforce strict CSS stacking context hierarchy: header has `relative z-30`, chat message viewport has `z-0`, bottom prompt bar has `relative z-20`, tooltips elevate dynamically to `z-50` on hover, and dropdown menus (Export, Workspace profile) use `z-40` with outside-click dismissal backdrops so chat messages never occlude menus or tooltips."
   - "Design collateral navigation panels (Sidebar, SolutionExplorer) with dual-state layouts: full-width drawer when open, and a compact vertical icon strip (`w-12` on left, `w-7` on right) when collapsed to maximize chat and code viewing space while retaining 1-click access to core actions."

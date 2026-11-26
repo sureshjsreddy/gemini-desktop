@@ -1,9 +1,9 @@
 id: ARCH-ENGINE-001
 type: architecture_standard
-title: Dual Engine Runtime Architecture: Gemini CLI and Antigravity CLI (agy)
+title: "Dual Engine Runtime Architecture: Gemini CLI and Antigravity CLI (agy)"
 domain: architecture
 status: approved
-version: 1.2.0
+version: 2.0.0
 authority:
   level: official
   confidence: high
@@ -23,6 +23,8 @@ rule:
 
 do:
   - "Store the active CLI engine choice at application level in SQLite `app_settings` under key `active_cli_engine` ('gemini' or 'agy'); when no engine has been selected and persisted by the user, strictly default to official Gemini CLI (`gemini`)."
+  - "Encapsulate each CLI engine behind a `CliEngineAdapter` implementation in `src-tauri/src/engines/` (`GeminiEngineAdapter`, `AgyEngineAdapter`) exposing static metadata, `EngineCapabilities`, `TransportProtocol`, CLI argument builders, model sanitization, and config path resolution; expose the live catalog via `get_engines_catalog` and `engineStore.svelte.ts`."
+  - "Provide unified batch/native Windows CLI invocation via `ProcessSupervisor::build_cli_command` across plugin, git, setup, and session commands, and route AI commit message generation (`generate_commit_message_with_llm_for_engine`) through the active engine adapter."
   - "Resolve binary paths dynamically via `find_cli_executable(engine)`: use `find_gemini_executable()` for Gemini CLI and `find_agy_executable()` for Antigravity CLI, scanning `%LOCALAPPDATA%\\agy\\bin\\agy.exe`, `%USERPROFILE%\\.antigravity\\bin\\agy.exe`, and system PATH."
   - "Supervise child processes spawned for both engines under Windows Job Objects with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` to prevent orphaned background processes."
   - "Communicate with both CLI engines via standard Agent Client Protocol (ACP) JSON-RPC over `stdin`/`stdout`."

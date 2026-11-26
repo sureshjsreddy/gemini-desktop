@@ -20,6 +20,10 @@
     PlanTaskItem,
     ContinuationResult,
     CliEngine,
+    AttachmentItem,
+    DynamicAcpCommand,
+    ContextUsageStats,
+    QueuedPromptItem,
   } from "$lib/types";
   import { parseDebugError } from "$lib/utils/debugParser";
   import { notifyBackgroundTaskComplete, setupNotificationActionListener } from "$lib/utils/notifications";
@@ -40,6 +44,7 @@
   import { themeManager } from "$lib/theme.svelte";
   import { dialogManager } from "$lib/dialog.svelte";
   import { modalManager } from "$lib/modal.svelte";
+  import { engineStore } from "$lib/stores/engineStore.svelte";
   import { getAppVersion, APP_VERSION_FALLBACK } from "$lib/version";
 
   const LAST_WORKSPACE_KEY = "gemini_desktop_last_workspace_id";
@@ -79,8 +84,25 @@
 
   let isStreaming = $derived(activeStreamState.isStreaming);
   let streamingText = $derived(activeStreamState.streamingText);
+  let streamingThoughtText = $derived(activeStreamState.thoughtText || "");
+  let streamingThinkingStartedAt = $derived(activeStreamState.thinkingStartedAt);
   let toolPermission = $derived(activeStreamState.toolPermission);
+  let pendingPermissionCount = $derived(
+    (activeStreamState.toolPermissionQueue?.length || 0) || (activeStreamState.toolPermission ? 1 : 0)
+  );
   let streamingToolCalls = $derived(activeStreamState.toolCalls || []);
+
+  let dynamicCommands = $state<DynamicAcpCommand[]>([]);
+  let sessionContextUsage = $state<Record<string, ContextUsageStats>>({});
+  let sessionQueuedPrompts = $state<Record<string, QueuedPromptItem[]>>({});
+  let messageThoughts = $state<Record<string, { text: string; durationMs?: number }>>({});
+
+  let activeContextUsage = $derived<ContextUsageStats | null>(
+    activeSessionId ? sessionContextUsage[activeSessionId] || null : null
+  );
+  let activeQueuedPrompts = $derived<QueuedPromptItem[]>(
+    activeSessionId ? sessionQueuedPrompts[activeSessionId] || [] : []
+  );
 
   let generatingSessionIds = $derived(
     new Set(
@@ -153,6 +175,11 @@
   let unlistenDebugDoctor: UnlistenFn | null = null;
   let unlistenSteer: UnlistenFn | null = null;
   let unlistenRewind: UnlistenFn | null = null;
+  let unlistenAvailableCommands: UnlistenFn | null = null;
+  let unlistenThought: UnlistenFn | null = null;
+  let unlistenUsage: UnlistenFn | null = null;
+  let unlistenSessionInfo: UnlistenFn | null = null;
+  let unlistenPlanUpdate: UnlistenFn | null = null;
 
   // Instant Debug Doctor State
   let activeDebugError = $state<ParsedDebugError | null>(null);
@@ -162,15 +189,25 @@
 
   async function refreshActiveEngine() {
     try {
-      const eng = await invoke<string>("get_active_cli_engine");
-      if (eng === "agy" || eng === "gemini") {
-        activeEngine = eng;
-        if (typeof window !== "undefined") {
-          localStorage.setItem(ACTIVE_ENGINE_STORAGE_KEY, eng);
-        }
+      await engineStore.refresh();
+      activeEngine = engineStore.activeEngine;
+      if (engineStore.envStatus) {
+        envStatus = engineStore.envStatus;
       }
     } catch (e) {
       console.warn("Could not fetch active CLI engine:", e);
+    }
+  }
+
+  async function handleSwitchEngine(eng: CliEngine) {
+    try {
+      const updated = await engineStore.switchEngine(eng);
+      activeEngine = updated;
+      if (engineStore.envStatus) {
+        envStatus = engineStore.envStatus;
+      }
+    } catch (err) {
+      console.error("Failed to switch engine:", err);
     }
   }
 
@@ -218,10 +255,10 @@
     }
 
     // 4. Listen to Tauri backend ACP events
-    unlistenChunk = await listen<{ session_id: string; delta: string; is_done: boolean }>(
+    unlistenChunk = await listen<{ session_id: string; delta: string; is_done: boolean; reset?: boolean }>(
       "acp-chunk",
       (event) => {
-        const { session_id, delta, is_done } = event.payload;
+        const { session_id, delta, is_done, reset } = event.payload;
         if (!session_id) return;
 
         if (!streamStates[session_id]) {
@@ -252,7 +289,9 @@
           cleanDelta = cleanDelta.replace(/\[MODE_UPDATE\]\s*[a-zA-Z0-9_]*/g, "");
         }
 
-        if (cleanDelta) {
+        if (reset) {
+          streamStates[session_id].streamingText = cleanDelta;
+        } else if (cleanDelta) {
           const current = streamStates[session_id].streamingText;
           if (!current) {
             streamStates[session_id].streamingText = cleanDelta;
@@ -277,7 +316,8 @@
         const mode = event.payload?.mode;
         if (mode && activeWorkspace) {
           const normalizedMode: ApprovalMode =
-            mode === "autoEdit" ? "auto_edit" :
+            mode === "autoEdit" || mode === "accept-edits" ? "auto_edit" :
+            mode === "auto" ? "auto" :
             mode === "yolo" ? "yolo" :
             mode === "plan" ? "plan" : "default";
           if (activeWorkspace.approval_mode !== normalizedMode) {
@@ -292,6 +332,11 @@
       async (event) => {
         const payload = event.payload;
         const sessionId = payload.session_id;
+        const toolNameLower = (payload.tool_name || "").toLowerCase();
+        const isAskQuestion =
+          toolNameLower.includes("askquestion") ||
+          toolNameLower.includes("ask_question") ||
+          (Array.isArray(payload.questions) && payload.questions.length > 0);
 
         // Resolve effective approval mode specifically for the target session's workspace
         const targetSession = sessions.find((s) => s.id === sessionId);
@@ -300,8 +345,8 @@
           : activeWorkspace;
         const targetApprovalMode: ApprovalMode = targetWorkspace?.approval_mode || approvalMode || "default";
 
-        // 1. YOLO Mode: Auto-approve all tools immediately without showing permission prompt
-        if (targetApprovalMode === "yolo") {
+        // 1. YOLO Mode: Auto-approve all tools immediately without showing permission prompt (except AskQuestion)
+        if (targetApprovalMode === "yolo" && !isAskQuestion) {
           try {
             await invoke("respond_tool_permission", {
               requestId: payload.request_id,
@@ -314,7 +359,7 @@
         }
 
         // 2. Auto-Edit Mode: Auto-approve file edits and safe inspection tools (reads, searches)
-        if (targetApprovalMode === "auto_edit") {
+        if (targetApprovalMode === "auto_edit" && !isAskQuestion) {
           const kind = (payload.kind || "").toLowerCase();
           const name = (payload.tool_name || "").toLowerCase();
           const isSafe =
@@ -353,19 +398,28 @@
           }
         }
 
-        // 3. Ask Mode (default) or unsafe terminal command in Auto-Edit mode: Present interactive confirmation UI for the target session
+        // 3. Ask Mode (default), Sandboxed Auto escalations, AskQuestion, or unsafe command: queue interactive UI prompt
         if (sessionId) {
           if (!streamStates[sessionId]) {
             streamStates[sessionId] = {
               streamingText: "",
               isStreaming: true,
               toolPermission: null,
+              toolPermissionQueue: [],
             };
           }
-          streamStates[sessionId].toolPermission = payload;
+          const existingQueue =
+            streamStates[sessionId].toolPermissionQueue ||
+            (streamStates[sessionId].toolPermission ? [streamStates[sessionId].toolPermission!] : []);
+          const nextQueue = [...existingQueue, payload];
+          streamStates[sessionId].toolPermissionQueue = nextQueue;
+          streamStates[sessionId].toolPermission = nextQueue[0];
+          streamStates = { ...streamStates };
           notifyBackgroundTaskComplete(
-            "Action Required",
-            `Gemini is requesting permission for: ${payload.tool_name || "Tool execution"}`
+            isAskQuestion ? "Agent Question" : "Action Required",
+            isAskQuestion
+              ? `Agent has a question: ${payload.title || payload.tool_name}`
+              : `Agent is requesting permission for: ${payload.tool_name || "Tool execution"}`
           );
         }
       }
@@ -454,26 +508,31 @@
     );
 
     unlistenError = await listen<any>("acp-error", (event) => {
-      const payloadStr = JSON.stringify(event.payload || "");
+      const payload = event.payload;
+      const friendlyMsg =
+        payload?.friendlyMessage ||
+        payload?.error?.message ||
+        payload?.message ||
+        JSON.stringify(payload || "");
       const targetSid =
-        event.payload?.sessionId ||
-        event.payload?.session_id ||
+        payload?.sessionId ||
+        payload?.session_id ||
         (activeSessionId && streamStates[activeSessionId]?.isStreaming
           ? activeSessionId
           : Object.keys(streamStates).find((id) => streamStates[id]?.isStreaming)) ||
         activeSessionId;
 
-      if (payloadStr.toLowerCase().includes("cancel")) {
-        console.warn("Ignored cancellation signal:", event.payload);
+      if (String(friendlyMsg).toLowerCase().includes("cancel")) {
+        console.warn("Ignored cancellation signal:", payload);
         if (targetSid) {
           finishStreamingForSession(targetSid);
         }
         return;
       }
-      console.error("ACP Error:", event.payload);
+      console.error("ACP Error:", payload);
       if (targetSid) {
         if (streamStates[targetSid]) {
-          streamStates[targetSid].streamingText += `\n\n**Error:** ${payloadStr}`;
+          streamStates[targetSid].streamingText += `\n\n> ⚠️ **Error:** ${friendlyMsg}`;
         }
         finishStreamingForSession(targetSid);
       }
@@ -513,6 +572,73 @@
         }
       }
     });
+
+    unlistenAvailableCommands = await listen<{ sessionId?: string; commands?: DynamicAcpCommand[] }>(
+      "acp-available-commands",
+      (event) => {
+        if (Array.isArray(event.payload?.commands)) {
+          dynamicCommands = event.payload.commands;
+        }
+      }
+    );
+
+    unlistenThought = await listen<{ sessionId: string; delta: string }>(
+      "acp-thought-chunk",
+      (event) => {
+        const sid = event.payload?.sessionId;
+        const delta = event.payload?.delta;
+        if (!sid || !delta) return;
+        if (!streamStates[sid]) {
+          streamStates[sid] = {
+            streamingText: "",
+            isStreaming: true,
+            toolPermission: null,
+          };
+        }
+        if (!streamStates[sid].thinkingStartedAt) {
+          streamStates[sid].thinkingStartedAt = Date.now();
+        }
+        streamStates[sid].thoughtText = (streamStates[sid].thoughtText || "") + delta;
+        streamStates = { ...streamStates };
+      }
+    );
+
+    unlistenUsage = await listen<{ sessionId: string; usedTokens: number; contextWindow: number; percentage: number }>(
+      "acp-usage-update",
+      (event) => {
+        const sid = event.payload?.sessionId;
+        if (!sid) return;
+        const stats: ContextUsageStats = {
+          usedTokens: event.payload.usedTokens || 0,
+          contextWindow: event.payload.contextWindow || 0,
+          percentage: event.payload.percentage || 0,
+        };
+        sessionContextUsage[sid] = stats;
+        sessionContextUsage = { ...sessionContextUsage };
+        if (streamStates[sid]) {
+          streamStates[sid].contextUsage = stats;
+        }
+      }
+    );
+
+    unlistenSessionInfo = await listen<{ sessionId: string; title?: string }>(
+      "acp-session-info-update",
+      (event) => {
+        const sid = event.payload?.sessionId;
+        const newTitle = event.payload?.title?.trim();
+        if (!sid || !newTitle) return;
+        sessions = sessions.map((s) => (s.id === sid ? { ...s, title: newTitle } : s));
+      }
+    );
+
+    unlistenPlanUpdate = await listen<{ sessionId: string; entries?: any[] }>(
+      "acp-plan-update",
+      (event) => {
+        if (typeof window !== "undefined" && event.payload?.sessionId) {
+          window.dispatchEvent(new CustomEvent("acp-plan-entries", { detail: event.payload }));
+        }
+      }
+    );
 
     // 4.4. ACP Session Limit Reached (1M Token Context Ceiling)
     try {
@@ -704,6 +830,11 @@
     if (unlistenLimitReached) unlistenLimitReached();
     if (unlistenSteer) (unlistenSteer as any)();
     if (unlistenRewind) (unlistenRewind as any)();
+    if (unlistenAvailableCommands) unlistenAvailableCommands();
+    if (unlistenThought) unlistenThought();
+    if (unlistenUsage) unlistenUsage();
+    if (unlistenSessionInfo) unlistenSessionInfo();
+    if (unlistenPlanUpdate) unlistenPlanUpdate();
     window.removeEventListener("focus", handleWindowFocus);
     window.removeEventListener("keydown", handleGlobalShortcuts);
     window.removeEventListener("message", handleVsMessage);
@@ -947,7 +1078,34 @@
     await handleSendPrompt(prompt);
   }
 
-  async function handleSendPrompt(prompt: string) {
+  function handleQueuePrompt(prompt: string, attachmentsList?: AttachmentItem[]) {
+    if (!activeSessionId) return;
+    const sid = activeSessionId;
+    const prev = sessionQueuedPrompts[sid] || [];
+    const item: QueuedPromptItem = {
+      id: "q-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+      prompt,
+      displayText: prompt.trim().split("\n")[0],
+      attachments: attachmentsList,
+      createdAt: Date.now(),
+    };
+    sessionQueuedPrompts = {
+      ...sessionQueuedPrompts,
+      [sid]: [...prev, item],
+    };
+  }
+
+  function handleRemoveQueuedPrompt(id: string) {
+    if (!activeSessionId) return;
+    const sid = activeSessionId;
+    const prev = sessionQueuedPrompts[sid] || [];
+    sessionQueuedPrompts = {
+      ...sessionQueuedPrompts,
+      [sid]: prev.filter((q) => q.id !== id),
+    };
+  }
+
+  async function handleSendPrompt(prompt: string, attachmentsList?: AttachmentItem[]) {
     if (!activeWorkspace) return;
 
     let targetSession = activeSession;
@@ -1011,6 +1169,20 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
       displayPrompt = "🧠 /model: Query active model capabilities";
     }
 
+    // Extract image attachments (resolved against workspace root when relative) for native ACP multimodal blocks
+    const wsRoot = (activeWorkspace.path || "").replace(/[\\/]+$/, "");
+    const imageAttachments = (attachmentsList || [])
+      .filter((att) => /\.(png|jpe?g|webp|gif)$/i.test(att.path || ""))
+      .map((att) => {
+        const rawPath = att.path || "";
+        const isAbs = /^[a-zA-Z]:[\\/]/.test(rawPath) || rawPath.startsWith("\\\\") || rawPath.startsWith("/");
+        const fullPath = isAbs || !wsRoot ? rawPath : `${wsRoot}/${rawPath.replace(/^[\\/]+/, "")}`;
+        return {
+          path: fullPath,
+          name: att.name,
+        };
+      });
+
     // Add user message to UI immediately
     const userMsg: Message = {
       id: "msg-" + (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2))),
@@ -1028,8 +1200,10 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
     // Initialize session stream state
     streamStates[targetSessionId] = {
       streamingText: "",
+      thoughtText: "",
       isStreaming: true,
       toolPermission: null,
+      toolPermissionQueue: [],
       started_at: Date.now(),
     };
 
@@ -1049,6 +1223,7 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
         model: targetModel,
         approvalMode,
         messageId: userMsg.id,
+        attachments: imageAttachments.length > 0 ? imageAttachments : undefined,
       });
     } catch (err: any) {
       if (streamStates[targetSessionId]) {
@@ -1065,6 +1240,11 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
     if (!stream) return;
 
     let finalText = stream.streamingText.trim();
+    const finalThoughtText = (stream.thoughtText || "").trim();
+    const thinkingDurationMs = stream.thinkingStartedAt
+      ? Math.max(0, Date.now() - stream.thinkingStartedAt)
+      : stream.thinkingDurationMs;
+
     // Auto-finalize any dangling tool calls: turns that have finished must never persist in_progress/pending states
     const toolCalls = stream.toolCalls && stream.toolCalls.length > 0
       ? stream.toolCalls.map((step) => {
@@ -1087,8 +1267,16 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
       finalText = "*(Completed with no additional text response)*";
     }
 
+    const assistantId = "msg-" + (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2)));
+    if (finalThoughtText) {
+      messageThoughts = {
+        ...messageThoughts,
+        [assistantId]: { text: finalThoughtText, durationMs: thinkingDurationMs },
+      };
+    }
+
     const assistantMsg: Message = {
-      id: "msg-" + (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : (Date.now() + "-" + Math.random().toString(36).slice(2))),
+      id: assistantId,
       session_id: sessionId,
       role: "assistant",
       content: finalText,
@@ -1121,6 +1309,21 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
     // Refresh workspace files & git changes count
     refreshWorkspaceFiles();
     solutionExplorerRef?.refreshGitStatus();
+
+    // Auto-dispatch next queued prompt for this session if present
+    const pendingQueue = sessionQueuedPrompts[sessionId];
+    if (pendingQueue && pendingQueue.length > 0) {
+      const [nextItem, ...remaining] = pendingQueue;
+      sessionQueuedPrompts = {
+        ...sessionQueuedPrompts,
+        [sessionId]: remaining,
+      };
+      setTimeout(() => {
+        if (activeWorkspace && activeSessionId === sessionId) {
+          handleSendPrompt(nextItem.prompt, nextItem.attachments);
+        }
+      }, 60);
+    }
   }
 
   async function handleCancelPrompt() {
@@ -1128,6 +1331,7 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
     const sid = activeSessionId;
     if (streamStates[sid]) {
       streamStates[sid].toolPermission = null;
+      streamStates[sid].toolPermissionQueue = [];
     }
     try {
       await invoke("cancel_prompt", { requestId: 1, sessionId: sid });
@@ -1137,12 +1341,26 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
     finishStreamingForSession(sid);
   }
 
-  async function handleToolResponse(requestId: number | string, optionId?: string, allowed: boolean = true) {
+  async function handleToolResponse(
+    requestId: number | string,
+    optionId?: string,
+    allowed: boolean = true,
+    answer?: string
+  ) {
     if (activeSessionId && streamStates[activeSessionId]) {
-      streamStates[activeSessionId].toolPermission = null;
+      const prevQueue = streamStates[activeSessionId].toolPermissionQueue || [];
+      const nextQueue = prevQueue.filter((item) => String(item.request_id) !== String(requestId));
+      streamStates[activeSessionId].toolPermissionQueue = nextQueue;
+      streamStates[activeSessionId].toolPermission = nextQueue[0] || null;
+      streamStates = { ...streamStates };
     }
     try {
-      await invoke("respond_tool_permission", { requestId, optionId, allowed });
+      await invoke("respond_tool_permission", {
+        requestId,
+        optionId,
+        allowed,
+        answer: answer || null,
+      });
     } catch (e) {
       console.error("Failed to send tool response:", e);
     }
@@ -1269,10 +1487,17 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
       {messages}
       {isStreaming}
       {streamingText}
+      {streamingThoughtText}
+      {streamingThinkingStartedAt}
+      {messageThoughts}
       {streamingToolCalls}
       streamingStartedAt={activeStreamState?.started_at}
       streamingSteeringHints={activeStreamState.steeringHints || []}
       {toolPermission}
+      {pendingPermissionCount}
+      contextUsage={activeContextUsage}
+      {dynamicCommands}
+      queuedPrompts={activeQueuedPrompts}
       {showSidebar}
       {approvalMode}
       onToggleSidebar={() => (showSidebar = !showSidebar)}
@@ -1288,10 +1513,13 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
       onSendPrompt={handleSendPrompt}
       onCancelPrompt={handleCancelPrompt}
       onSteerPrompt={handleSteerPrompt}
+      onQueuePrompt={handleQueuePrompt}
+      onRemoveQueuedPrompt={handleRemoveQueuedPrompt}
       onExecutePlan={handleExecutePlan}
       onToolResponse={handleToolResponse}
       onExport={handleExport}
       onOpenMcpModal={() => modalManager.open("mcp")}
+      onSwitchEngine={handleSwitchEngine}
       onOpenRewindModal={(targetId?: string) => {
         rewindTargetMessageId = targetId ?? null;
         modalManager.open("rewind");
@@ -1421,17 +1649,7 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
     onSelectWorkspace={selectWorkspace}
     onSelectSession={selectSession}
     onNewSession={handleNewSession}
-    onSwitchEngine={async (eng) => {
-      try {
-        await invoke("set_active_cli_engine", { engine: eng });
-        activeEngine = eng;
-        if (typeof window !== "undefined") {
-          localStorage.setItem(ACTIVE_ENGINE_STORAGE_KEY, eng);
-        }
-      } catch (err) {
-        console.error("Failed to switch engine:", err);
-      }
-    }}
+    onSwitchEngine={handleSwitchEngine}
     onOpenTerminal={() => (showTerminalDrawer = true)}
     onOpenGitChanges={() => {
       showSolutionExplorer = true;

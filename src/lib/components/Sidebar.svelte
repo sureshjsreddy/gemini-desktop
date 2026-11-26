@@ -25,6 +25,7 @@
     Package,
   } from "lucide-svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
+  import { engineStore } from "$lib/stores/engineStore.svelte";
   import { APP_VERSION_FALLBACK } from "$lib/version";
 
   let {
@@ -89,6 +90,9 @@
 
   let showWorkspaceMenu = $state(false);
   let showToolsMenu = $state(false);
+  let footerEffectiveModel = $derived(
+    activeWorkspace ? engineStore.getEffectiveModel(activeWorkspace.model, activeEngine) : ""
+  );
 </script>
 
 {#if !isOpen}
@@ -202,7 +206,7 @@
       {/if}
 
       <!-- Plugins & Extensions Hub -->
-      {#if onOpenPluginsModal}
+      {#if onOpenPluginsModal && engineStore.getDescriptor(activeEngine).capabilities.supportsPlugins}
         <Tooltip text="Plugins & Extensions" position="right">
           <button
             type="button"
@@ -333,10 +337,12 @@
           Gemini Desktop
         </h1>
         <Tooltip
-          text={envStatus?.installed ? "Gemini CLI Connected" : "Mock / Standby Mode"}
-          subtext={envStatus?.installed
-            ? "Gemini CLI is installed and communicating via ACP JSON-RPC. Click to manage CLI & Auth."
-            : "Gemini CLI not detected in system PATH. Click to setup CLI & credentials."}
+          text={(envStatus?.installed || engineStore.getDescriptor(activeEngine).installed)
+            ? `${engineStore.getDescriptor(activeEngine).shortName} Connected`
+            : "Mock / Standby Mode"}
+          subtext={(envStatus?.installed || engineStore.getDescriptor(activeEngine).installed)
+            ? `${engineStore.getDescriptor(activeEngine).displayName} is installed and ready. Click to manage CLI & Auth.`
+            : `${engineStore.getDescriptor(activeEngine).displayName} not detected in PATH. Click to setup CLI & credentials.`}
           position="right"
         >
           <button
@@ -344,8 +350,8 @@
             onclick={onOpenCliSetup}
             class="flex items-center gap-1.5 text-[11px] text-muted-theme hover:text-primary-theme transition-colors cursor-pointer text-left"
           >
-            <span class="inline-block w-1.5 h-1.5 rounded-full {envStatus?.installed ? 'bg-emerald-400' : 'bg-amber-400'}"></span>
-            <span>{envStatus?.installed ? 'CLI Connected' : 'Setup CLI'}</span>
+            <span class="inline-block w-1.5 h-1.5 rounded-full {(envStatus?.installed || engineStore.getDescriptor(activeEngine).installed) ? 'bg-emerald-400' : 'bg-amber-400'}"></span>
+            <span>{(envStatus?.installed || engineStore.getDescriptor(activeEngine).installed) ? 'CLI Connected' : 'Setup CLI'}</span>
           </button>
         </Tooltip>
       </div>
@@ -399,7 +405,7 @@
               class="w-full px-3 py-1.5 text-xs text-left flex items-center justify-between hover:bg-surface-hover transition-colors {activeWorkspace?.id === ws.id ? 'text-accent-theme font-medium' : 'text-secondary-theme'}"
             >
               <span class="truncate">{ws.name}</span>
-              <span class="text-[10px] text-muted-theme font-mono">{ws.model}</span>
+              <span class="text-[10px] text-muted-theme font-mono">{engineStore.getEffectiveModel(ws.model, activeEngine)}</span>
             </button>
           {/each}
           <div class="border-t border-subtle my-1"></div>
@@ -656,7 +662,7 @@
           {/if}
 
           <!-- Plugins & Extensions -->
-          {#if onOpenPluginsModal}
+          {#if onOpenPluginsModal && engineStore.getDescriptor(activeEngine).capabilities.supportsPlugins}
             <button
               type="button"
               onclick={() => {
@@ -754,7 +760,7 @@
           class="px-1.5 py-0.5 rounded text-[10px] font-mono flex items-center gap-1 cursor-pointer bg-surface-elevated border border-subtle hover:border-theme-default text-primary-theme transition-colors"
           title="Active CLI Agent Engine (Click to switch)"
         >
-          <span>{activeEngine === 'agy' ? '🚀 agy' : '♊ gemini'}</span>
+          <span>{engineStore.getDescriptor(activeEngine).badgeIcon} {engineStore.getDescriptor(activeEngine).id}</span>
         </button>
       </div>
       {#if onCheckUpdate}
@@ -778,7 +784,12 @@
     >
       <div class="px-3 pb-2 pt-0.5 text-[11px] text-muted-theme flex items-center justify-between cursor-help">
         <span class="truncate">{activeWorkspace?.path || "C:\\"}</span>
-        <span class="text-accent-theme font-mono shrink-0 ml-2">{activeWorkspace?.model}</span>
+        <span
+          class="text-accent-theme font-mono shrink-0 ml-2"
+          title={activeWorkspace?.model && footerEffectiveModel !== activeWorkspace.model
+            ? `Workspace model: ${activeWorkspace.model} (running as ${footerEffectiveModel} on ${activeEngine})`
+            : undefined}
+        >{footerEffectiveModel}</span>
       </div>
     </Tooltip>
   </div>

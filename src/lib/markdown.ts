@@ -1,6 +1,8 @@
 import { marked } from "marked";
 import hljs from "highlight.js";
 import DOMPurify from "dompurify";
+import katex from "katex";
+import "katex/dist/katex.min.css";
 
 // Custom renderer to format code blocks with language pills and copy buttons, plus rich file/web links
 const renderer = new marked.Renderer();
@@ -65,6 +67,63 @@ marked.setOptions({
   breaks: true,
 });
 
+function renderKatexSegments(input: string): { processed: string; mathMap: Map<string, string> } {
+  const codeSegments: string[] = [];
+  let text = input.replace(/(```[\s\S]*?```|`[^`\n]+`)/g, (match) => {
+    const token = `@@GD_CODE_${codeSegments.length}@@`;
+    codeSegments.push(match);
+    return token;
+  });
+
+  const mathMap = new Map<string, string>();
+  let mathIdx = 0;
+
+  const storeMath = (expr: string, displayMode: boolean): string => {
+    const cleanExpr = expr.trim();
+    if (!cleanExpr) return expr;
+    try {
+      const rendered = katex.renderToString(cleanExpr, {
+        displayMode,
+        throwOnError: false,
+        trust: false,
+        output: "htmlAndMathml",
+      });
+      const token = `@@GD_MATH_${mathIdx++}@@`;
+      mathMap.set(
+        token,
+        displayMode ? `<div class="katex-display-block">${rendered}</div>` : rendered
+      );
+      return token;
+    } catch {
+      return expr;
+    }
+  };
+
+  // Display math: $$...$$ and \[...\]
+  text = text.replace(/\$\$([\s\S]+?)\$\$/g, (_, expr) => `\n${storeMath(expr, true)}\n`);
+  text = text.replace(/\\\[([\s\S]+?)\\\]/g, (_, expr) => `\n${storeMath(expr, true)}\n`);
+
+  // Inline math: \(...\) and valid non-currency $...$
+  text = text.replace(/\\\(([^\n]+?)\\\)/g, (_, expr) => storeMath(expr, false));
+  text = text.replace(
+    /(^|[^\\$\w])\$(?!\s)([^\n$]+?)(?<!\s)\$(?![\w\d])/g,
+    (full, prefix: string, expr: string) => {
+      const trimmed = expr.trim();
+      if (!trimmed || /^\d+(?:[.,]\d+)?$/.test(trimmed)) {
+        return full;
+      }
+      return `${prefix}${storeMath(trimmed, false)}`;
+    }
+  );
+
+  // Restore code blocks/spans before marked runs syntax highlighting
+  text = text.replace(/@@GD_CODE_(\d+)@@/g, (_, i) => codeSegments[Number(i)] ?? "");
+  return { processed: text, mathMap };
+}
+
+const MAX_MARKDOWN_CACHE = 300;
+const markdownCache = new Map<string, string>();
+
 export function renderMarkdown(content: string): string {
   if (!content) return "";
   // Strip any internal CLI control tags like [MODE_UPDATE] autoEdit
@@ -72,29 +131,50 @@ export function renderMarkdown(content: string): string {
   // Autolink standalone file references like "📄 filename.ext:line" if not already wrapped in markdown link
   sanitized = sanitized.replace(/(^|[\s\n])📄\s+([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9_]+(?::\d+(?::\d+)?)?)(?!\))/g, "$1[$2]($2)");
 
+  const cached = markdownCache.get(sanitized);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const { processed, mathMap } = renderKatexSegments(sanitized);
+
   try {
-    const rawHtml = marked.parse(sanitized) as string;
-    if (typeof window !== "undefined" && DOMPurify && typeof DOMPurify.sanitize === "function") {
-      return DOMPurify.sanitize(rawHtml, {
-        ADD_TAGS: ["button", "svg", "path", "span"],
-        ADD_ATTR: [
-          "data-code",
-          "data-path",
-          "target",
-          "rel",
-          "title",
-          "viewBox",
-          "fill",
-          "stroke",
-          "stroke-width",
-          "stroke-linecap",
-          "stroke-linejoin",
-        ],
-        ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|file):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$)|[a-zA-Z0-9_\-\.\/\\:]+)/i,
-      });
+    const rawHtml = marked.parse(processed) as string;
+    const cleaned =
+      typeof window !== "undefined" && DOMPurify && typeof DOMPurify.sanitize === "function"
+        ? DOMPurify.sanitize(rawHtml, {
+            ADD_TAGS: ["button", "svg", "path", "span"],
+            ADD_ATTR: [
+              "data-code",
+              "data-path",
+              "target",
+              "rel",
+              "title",
+              "viewBox",
+              "fill",
+              "stroke",
+              "stroke-width",
+              "stroke-linecap",
+              "stroke-linejoin",
+            ],
+            ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|file):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$)|[a-zA-Z0-9_\-\.\/\\:]+)/i,
+          })
+        : rawHtml;
+
+    const finalHtml =
+      mathMap.size === 0
+        ? cleaned
+        : cleaned.replace(/@@GD_MATH_\d+@@/g, (token) => mathMap.get(token) ?? token);
+
+    if (markdownCache.size >= MAX_MARKDOWN_CACHE) {
+      const oldestKey = markdownCache.keys().next().value;
+      if (oldestKey !== undefined) {
+        markdownCache.delete(oldestKey);
+      }
     }
-    return rawHtml;
-  } catch (e) {
+    markdownCache.set(sanitized, finalHtml);
+    return finalHtml;
+  } catch {
     return sanitized;
   }
 }

@@ -64,6 +64,68 @@ pub struct ToolPermissionPayload {
     pub reason: Option<String>,
     pub options: Vec<PermissionOption>,
     pub mcp_server: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub questions: Option<Value>,
+}
+
+/// Capabilities advertised by an ACP agent during `initialize`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCapabilitiesState {
+    pub supports_resume: bool,
+    pub supports_image: bool,
+    pub supports_embedded_context: bool,
+    pub supports_additional_dirs: bool,
+    pub supports_system_prompt_append: bool,
+}
+
+/// Extracts typed capability flags from an ACP `initialize` result payload.
+pub fn parse_agent_capabilities(init_result: &Value) -> AgentCapabilitiesState {
+    let caps = init_result
+        .get("agentCapabilities")
+        .or_else(|| init_result.get("agent_capabilities"))
+        .unwrap_or(init_result);
+
+    let session_caps = caps
+        .get("sessionCapabilities")
+        .or_else(|| caps.get("session_capabilities"));
+
+    let supports_resume = session_caps
+        .and_then(|s| s.get("resume"))
+        .map(|v| !v.is_null() && v.as_bool() != Some(false))
+        .unwrap_or(false);
+
+    let prompt_caps = caps
+        .get("promptCapabilities")
+        .or_else(|| caps.get("prompt_capabilities"));
+
+    let supports_image = prompt_caps
+        .and_then(|p| p.get("image"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let supports_embedded_context = prompt_caps
+        .and_then(|p| p.get("embeddedContext").or_else(|| p.get("embedded_context")))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let supports_additional_dirs = session_caps
+        .and_then(|s| s.get("additionalDirectories").or_else(|| s.get("additional_directories")))
+        .map(|v| !v.is_null() && v.as_bool() != Some(false))
+        .unwrap_or(false);
+
+    let supports_system_prompt_append = caps
+        .pointer("/_meta/antigravity/systemPrompt/append")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    AgentCapabilitiesState {
+        supports_resume,
+        supports_image,
+        supports_embedded_context,
+        supports_additional_dirs,
+        supports_system_prompt_append,
+    }
 }
 
 pub struct AcpSession {
@@ -80,6 +142,7 @@ pub struct AcpSession {
     workspace_dir: Arc<StdMutex<Option<PathBuf>>>,
     terminal_results: Arc<StdMutex<HashMap<String, (String, i32)>>>,
     track_file_changes: Arc<std::sync::atomic::AtomicBool>,
+    agent_capabilities: Arc<StdMutex<AgentCapabilitiesState>>,
 }
 
 impl AcpSession {
@@ -98,6 +161,7 @@ impl AcpSession {
             workspace_dir: Arc::new(StdMutex::new(None)),
             terminal_results: Arc::new(StdMutex::new(HashMap::new())),
             track_file_changes: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            agent_capabilities: Arc::new(StdMutex::new(AgentCapabilitiesState::default())),
         }
     }
 
@@ -163,6 +227,24 @@ impl AcpSession {
         if let Ok(mut modes) = self.session_approval_modes.lock() {
             modes.clear();
         }
+        if let Ok(mut caps) = self.agent_capabilities.lock() {
+            *caps = AgentCapabilitiesState::default();
+        }
+    }
+
+    pub fn set_agent_capabilities_from_init(&self, init_result: &Value) -> AgentCapabilitiesState {
+        let parsed = parse_agent_capabilities(init_result);
+        if let Ok(mut caps) = self.agent_capabilities.lock() {
+            *caps = parsed.clone();
+        }
+        parsed
+    }
+
+    pub fn get_agent_capabilities(&self) -> AgentCapabilitiesState {
+        self.agent_capabilities
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     pub fn set_session_mode(&self, session_id: &str, mode: &str) {
@@ -449,14 +531,25 @@ impl AcpSession {
         self.store_permission_options_value(&Value::Number(request_id.into()), options);
     }
 
+    #[allow(dead_code)]
     pub async fn respond_permission(&self, request_id: Value, option_id: Option<String>, allowed: bool) -> Result<(), String> {
+        self.respond_permission_with_answer(request_id, option_id, allowed, None).await
+    }
+
+    pub async fn respond_permission_with_answer(
+        &self,
+        request_id: Value,
+        option_id: Option<String>,
+        allowed: bool,
+        custom_answer: Option<String>,
+    ) -> Result<(), String> {
         let key = match &request_id {
             Value::String(s) => s.clone(),
             Value::Number(n) => n.to_string(),
             _ => request_id.to_string(),
         };
         let stored_options = self.pending_permissions.lock().ok().and_then(|mut m| m.remove(&key));
-        let result = build_permission_response_payload(allowed, option_id, stored_options);
+        let result = build_permission_response_with_answer(allowed, option_id, stored_options, custom_answer);
         self.send_response_value(request_id, result).await
     }
 }
@@ -565,6 +658,17 @@ pub fn build_permission_response_payload(
     option_id: Option<String>,
     stored_options: Option<Vec<PermissionOption>>,
 ) -> Value {
+    build_permission_response_with_answer(allowed, option_id, stored_options, None)
+}
+
+/// Extends [`build_permission_response_payload`] with an optional free-form answer string
+/// for interactive `AskQuestion` tool prompts when provided.
+pub fn build_permission_response_with_answer(
+    allowed: bool,
+    option_id: Option<String>,
+    stored_options: Option<Vec<PermissionOption>>,
+    custom_answer: Option<String>,
+) -> Value {
     if !allowed {
         serde_json::json!({
             "outcome": {
@@ -603,11 +707,18 @@ pub fn build_permission_response_payload(
             "proceed_once".to_string()
         };
 
-        serde_json::json!({
-            "outcome": {
-                "outcome": "selected",
-                "optionId": chosen_id
+        let mut outcome = serde_json::Map::new();
+        outcome.insert("outcome".to_string(), Value::String("selected".to_string()));
+        outcome.insert("optionId".to_string(), Value::String(chosen_id));
+        if let Some(ans) = custom_answer {
+            let trimmed = ans.trim();
+            if !trimmed.is_empty() {
+                outcome.insert("answer".to_string(), Value::String(trimmed.to_string()));
             }
+        }
+
+        serde_json::json!({
+            "outcome": Value::Object(outcome)
         })
     }
 }
@@ -964,6 +1075,38 @@ pub fn generate_concise_tool_summary(
     format!("✅ Completed: {}", title_clean)
 }
 
+/// Extracts a concise human-readable error message from a JSON-RPC `error` payload,
+/// translating common Antigravity / Gemini auth, billing, and quota codes into guidance.
+pub fn format_acp_error_message(err_val: &Value) -> String {
+    let raw_msg = err_val
+        .get("message")
+        .or_else(|| err_val.pointer("/data/message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unknown ACP error")
+        .trim();
+    let details = err_val
+        .pointer("/data/details")
+        .or_else(|| err_val.get("data"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+
+    let combined = if !details.is_empty() && details != raw_msg {
+        format!("{} ({})", raw_msg, details)
+    } else {
+        raw_msg.to_string()
+    };
+
+    let lower = combined.to_lowercase();
+    if lower.contains("unauthenticated") || lower.contains("401") || lower.contains("invalid api key") {
+        format!("Authentication required: {}. Sign in via CLI Setup or configure your API key.", combined)
+    } else if lower.contains("prepaid") || lower.contains("402") || lower.contains("quota") || lower.contains("billing") {
+        format!("Quota or billing limit reached: {}. Check your account balance or switch models.", combined)
+    } else {
+        combined
+    }
+}
+
 pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<AcpSession>, active_session_id: &str) {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -1019,7 +1162,40 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     let code = err_val.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
                     let message = err_val.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");
                     if code != -32800 && !message.to_lowercase().contains("cancel") {
-                        let _ = app_handle.emit("acp-error", val.clone());
+                        let friendly = format_acp_error_message(err_val);
+                        let mut enriched = val.clone();
+                        if let Some(obj) = enriched.as_object_mut() {
+                            obj.insert("friendlyMessage".to_string(), serde_json::Value::String(friendly));
+                        }
+                        let _ = app_handle.emit("acp-error", enriched);
+                    }
+                }
+
+                // Emit token usage telemetry if included in final session/prompt response
+                if let Some(usage_obj) = val.pointer("/result/usage").or_else(|| val.pointer("/result/_meta/usage")) {
+                    let used_tokens = usage_obj.get("used")
+                        .or_else(|| usage_obj.get("usedTokens"))
+                        .or_else(|| usage_obj.get("totalTokens"))
+                        .or_else(|| usage_obj.get("inputTokens"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let context_window = usage_obj.get("size")
+                        .or_else(|| usage_obj.get("contextWindow"))
+                        .or_else(|| usage_obj.get("maxTokens"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    if used_tokens > 0 || context_window > 0 {
+                        let percentage = if context_window > 0 {
+                            ((used_tokens as f64 / context_window as f64) * 100.0).clamp(0.0, 100.0)
+                        } else {
+                            0.0
+                        };
+                        let _ = app_handle.emit("acp-usage-update", serde_json::json!({
+                            "sessionId": target_session,
+                            "usedTokens": used_tokens,
+                            "contextWindow": context_window,
+                            "percentage": percentage,
+                        }));
                     }
                 }
 
@@ -1227,16 +1403,84 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                             return;
                         }
                         Some("available_commands_update") | Some("commands_update") => {
-                            // Slash commands discovery telemetry; ignore
+                            let raw_cmds = val.pointer("/params/update/availableCommands")
+                                .or_else(|| val.pointer("/params/update/commands"))
+                                .or_else(|| val.pointer("/params/availableCommands"))
+                                .and_then(|c| c.as_array())
+                                .cloned()
+                                .unwrap_or_default();
+                            if !raw_cmds.is_empty() {
+                                let _ = app_handle.emit("acp-available-commands", serde_json::json!({
+                                    "sessionId": matched_session_id,
+                                    "commands": raw_cmds,
+                                }));
+                            }
                             return;
                         }
                         Some("session_info_update") => {
-                            // Session title/info update from agent; do not emit as delta
+                            if let Some(title) = val.pointer("/params/update/title").and_then(|t| t.as_str()).map(str::trim).filter(|t| !t.is_empty()) {
+                                let _ = app_handle.emit("acp-session-info-update", serde_json::json!({
+                                    "sessionId": matched_session_id,
+                                    "title": title,
+                                }));
+                            }
                             return;
                         }
                         Some("agent_thought_chunk") => {
-                            // Agent internal chain-of-thought tokens; do not contaminate conversational delta
+                            let thought_delta = val.pointer("/params/update/content")
+                                .map(extract_acp_text)
+                                .filter(|s| !s.is_empty())
+                                .or_else(|| val.pointer("/params/update").map(extract_acp_text))
+                                .filter(|s| !s.is_empty())
+                                .unwrap_or_default();
+                            if !thought_delta.is_empty() {
+                                let _ = app_handle.emit("acp-thought-chunk", serde_json::json!({
+                                    "sessionId": matched_session_id,
+                                    "delta": thought_delta,
+                                }));
+                            }
                             return;
+                        }
+                        Some("usage_update") => {
+                            let used_tokens = val.pointer("/params/update/used")
+                                .or_else(|| val.pointer("/params/update/usedTokens"))
+                                .or_else(|| val.pointer("/params/update/totalTokens"))
+                                .or_else(|| val.pointer("/params/used"))
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            let context_window = val.pointer("/params/update/size")
+                                .or_else(|| val.pointer("/params/update/contextWindow"))
+                                .or_else(|| val.pointer("/params/update/maxTokens"))
+                                .or_else(|| val.pointer("/params/size"))
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            let percentage = if context_window > 0 {
+                                ((used_tokens as f64 / context_window as f64) * 100.0).clamp(0.0, 100.0)
+                            } else {
+                                0.0
+                            };
+                            let _ = app_handle.emit("acp-usage-update", serde_json::json!({
+                                "sessionId": matched_session_id,
+                                "usedTokens": used_tokens,
+                                "contextWindow": context_window,
+                                "percentage": percentage,
+                            }));
+                            return;
+                        }
+                        Some("plan") => {
+                            if let Some(entries) = val.pointer("/params/update/entries")
+                                .or_else(|| val.pointer("/params/entries"))
+                                .and_then(|e| e.as_array())
+                            {
+                                let _ = app_handle.emit("acp-plan-update", serde_json::json!({
+                                    "sessionId": matched_session_id,
+                                    "entries": entries,
+                                }));
+                            }
+                            delta = val.pointer("/params/update/content")
+                                .map(extract_acp_text)
+                                .filter(|s| !s.is_empty())
+                                .unwrap_or_default();
                         }
                         _ => {
                             // Guard against updates with user role
@@ -1311,11 +1555,29 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                         return;
                     }
 
-                    let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
-                        session_id: matched_session_id,
-                        delta: clean_delta,
-                        is_done,
-                    });
+                    let is_retry_reset = matches!(update_type, Some("agent_message_chunk"))
+                        && val
+                            .pointer("/params/update/_meta/reset")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+
+                    if is_retry_reset {
+                        crate::transports::emit_normalized_event(
+                            app_handle,
+                            crate::transports::NormalizedAgentEvent::Chunk {
+                                session_id: matched_session_id,
+                                delta: clean_delta,
+                                is_done,
+                                reset: true,
+                            },
+                        );
+                    } else {
+                        let _ = app_handle.emit("acp-chunk", StreamChunkPayload {
+                            session_id: matched_session_id,
+                            delta: clean_delta,
+                            is_done,
+                        });
+                    }
                 }
                 // Interactive tool confirmation request
                 "permission/request" | "session/permission_request" | "session/request_permission"
@@ -1385,11 +1647,16 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     let mcp_server = val.pointer("/params/toolCall/server")
                         .or_else(|| val.pointer("/params/toolCall/serverName"))
                         .or_else(|| val.pointer("/params/toolCall/mcpServer"))
+                        .or_else(|| val.pointer("/params/toolCall/_meta/gemini-cli/mcp/server_name"))
                         .or_else(|| val.pointer("/params/server"))
                         .or_else(|| val.pointer("/params/serverName"))
                         .or_else(|| val.pointer("/params/mcpServer"))
                         .and_then(|s| s.as_str())
                         .map(|s| s.to_string());
+
+                    let questions = val.pointer("/params/toolCall/rawInput/questions")
+                        .or_else(|| val.pointer("/params/questions"))
+                        .cloned();
 
                     let mut options = Vec::new();
                     if let Some(opts_array) = val.pointer("/params/options").and_then(|o| o.as_array()) {
@@ -1423,9 +1690,13 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
 
                     // Check active approval mode for this session
                     let current_mode = acp_session.get_session_mode(&session_id);
+                    let is_ask_question = tool_name.to_lowercase().contains("askquestion")
+                        || tool_name.to_lowercase().contains("ask_question")
+                        || questions.is_some();
 
                     // 1. YOLO Mode: Backend immediately auto-approves over stdin (0ms latency, immune to WebView2 background throttling)
-                    if current_mode == "yolo" {
+                    // Never auto-approve interactive AskQuestion prompts so the user can actually answer.
+                    if current_mode == "yolo" && !is_ask_question {
                         let response_payload = build_permission_response_payload(true, None, Some(options.clone()));
                         let acp_clone = acp_session.clone();
                         let req_id_clone = req_id_val.clone();
@@ -1441,7 +1712,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     }
 
                     // 2. Auto-Edit Mode: Auto-approve safe workspace inspection (reads, searches, listings) and file edits
-                    if current_mode == "auto_edit" {
+                    if current_mode == "auto_edit" && !is_ask_question {
                         let is_safe = kind.as_deref() == Some("edit")
                             || kind.as_deref() == Some("read")
                             || kind.as_deref() == Some("search")
@@ -1479,7 +1750,8 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                         }
                     }
 
-                    // 3. Ask Mode (default) or unsafe terminal execution: Present interactive confirmation UI
+                    // 3. Ask Mode (default), Sandboxed Auto ("auto" escalations), AskQuestion, or unsafe execution:
+                    // Present interactive confirmation UI.
                     acp_session.store_permission_options_value(&req_id_val, options.clone());
 
                     let _ = app_handle.emit("acp-tool-permission", ToolPermissionPayload {
@@ -1495,6 +1767,7 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                         reason,
                         options,
                         mcp_server,
+                        questions,
                     });
                 }
                 _ => {
@@ -2250,6 +2523,83 @@ mod tests {
         assert_eq!(
             resolve_human_friendly_tool_title("read_file", "README.md", None),
             "README.md"
+        );
+    }
+
+    #[test]
+    fn test_parse_agent_capabilities_and_error_formatting() {
+        let agy_init = serde_json::json!({
+            "agentCapabilities": {
+                "promptCapabilities": { "image": true, "embeddedContext": true },
+                "sessionCapabilities": { "resume": {}, "additionalDirectories": {} },
+                "_meta": { "antigravity": { "systemPrompt": { "append": true } } }
+            }
+        });
+        let caps = parse_agent_capabilities(&agy_init);
+        assert!(caps.supports_resume);
+        assert!(caps.supports_image);
+        assert!(caps.supports_embedded_context);
+        assert!(caps.supports_additional_dirs);
+        assert!(caps.supports_system_prompt_append);
+
+        let gemini_init = serde_json::json!({
+            "agentCapabilities": {
+                "promptCapabilities": { "image": false }
+            }
+        });
+        let g_caps = parse_agent_capabilities(&gemini_init);
+        assert!(!g_caps.supports_resume);
+        assert!(!g_caps.supports_system_prompt_append);
+
+        let auth_err = serde_json::json!({ "code": -32000, "message": "401 UNAUTHENTICATED" });
+        assert!(format_acp_error_message(&auth_err).contains("Authentication required"));
+
+        let custom_resp = build_permission_response_with_answer(
+            true,
+            None,
+            None,
+            Some("Use PostgreSQL 16".to_string()),
+        );
+        assert_eq!(custom_resp["outcome"]["outcome"], "selected");
+        assert_eq!(custom_resp["outcome"]["answer"], "Use PostgreSQL 16");
+    }
+
+    #[test]
+    fn test_gemini_cli_mcp_permission_meta_and_reset_pointer() {
+        let perm_req = serde_json::json!({
+            "params": {
+                "toolCall": {
+                    "_meta": {
+                        "gemini-cli": {
+                            "mcp": {
+                                "server_name": "playwright",
+                                "tool_name": "browser_navigate"
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let extracted_server = perm_req
+            .pointer("/params/toolCall/server")
+            .or_else(|| perm_req.pointer("/params/toolCall/_meta/gemini-cli/mcp/server_name"))
+            .and_then(|s| s.as_str());
+        assert_eq!(extracted_server, Some("playwright"));
+
+        let reset_update = serde_json::json!({
+            "params": {
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": { "type": "text", "text": "Fresh retry response" },
+                    "_meta": { "retry": true, "reset": true }
+                }
+            }
+        });
+        assert_eq!(
+            reset_update
+                .pointer("/params/update/_meta/reset")
+                .and_then(|v| v.as_bool()),
+            Some(true)
         );
     }
 }

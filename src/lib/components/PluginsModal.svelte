@@ -1,7 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import type { AgyPluginInfo, AgyPluginOpResult, CreateCustomPluginRequest, AkboPoolConfig } from "$lib/types";
+  import type {
+    AgyPluginInfo,
+    AgyPluginOpResult,
+    AgyPluginValidationResult,
+    CreateCustomPluginRequest,
+    AkboPoolConfig,
+  } from "$lib/types";
   import { dialogManager } from "$lib/dialog.svelte";
   import {
     X,
@@ -44,6 +50,9 @@
 
   // Catalog custom install input
   let customInstallTarget = $state("");
+  let isValidating = $state(false);
+  let isImportingClaude = $state(false);
+  let validationResult = $state<AgyPluginValidationResult | null>(null);
 
   // AKBO Central Knowledge Pool Configuration state
   let isPoolConfigOpen = $state(false);
@@ -299,6 +308,45 @@
       isSubmitting = false;
     }
   }
+
+  async function handleValidatePlugin(plugin: AgyPluginInfo, strict = false) {
+    isValidating = true;
+    validationResult = null;
+    try {
+      const target = plugin.path?.trim() || plugin.name;
+      validationResult = await invoke<AgyPluginValidationResult>("validate_agy_plugin", {
+        target,
+        strict,
+      });
+    } catch (e: any) {
+      validationResult = {
+        success: false,
+        target: plugin.name,
+        strict,
+        issues: [e?.toString() || "Validation failed to execute."],
+        rawOutput: "",
+      };
+    } finally {
+      isValidating = false;
+    }
+  }
+
+  async function handleImportClaudePlugins() {
+    isImportingClaude = true;
+    statusMessage = { text: "Importing plugins from Claude Code...", type: "info" };
+    try {
+      const res = await invoke<AgyPluginOpResult>("import_claude_plugins_via_agy");
+      statusMessage = { text: res.message, type: res.success ? "success" : "error" };
+      if (res.success) {
+        await invoke("restart_gemini_session").catch(() => {});
+        await loadPlugins();
+      }
+    } catch (e: any) {
+      statusMessage = { text: `Claude Code import failed: ${e}`, type: "error" };
+    } finally {
+      isImportingClaude = false;
+    }
+  }
 </script>
 
 {#if isOpen}
@@ -413,14 +461,27 @@
           </div>
 
           {#if activeTab === "installed"}
-            <div class="relative w-64">
-              <Search size={13} class="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-theme" />
-              <input
-                type="text"
-                bind:value={searchQuery}
-                placeholder="Search plugins & skills..."
-                class="w-full pl-8 pr-3 py-1 rounded-lg bg-surface border border-theme-default text-xs text-primary-theme placeholder:text-muted-theme focus:outline-hidden focus:border-accent-theme/60 transition-colors"
-              />
+            <div class="flex items-center gap-2">
+              <div class="relative w-56">
+                <Search size={13} class="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-theme" />
+                <input
+                  type="text"
+                  bind:value={searchQuery}
+                  placeholder="Search plugins & skills..."
+                  class="w-full pl-8 pr-3 py-1 rounded-lg bg-surface border border-theme-default text-xs text-primary-theme placeholder:text-muted-theme focus:outline-hidden focus:border-accent-theme/60 transition-colors"
+                />
+              </div>
+              <Tooltip text="Import plugins previously configured for Claude Code (agy plugin import claude)" position="bottom">
+                <button
+                  type="button"
+                  onclick={handleImportClaudePlugins}
+                  disabled={isImportingClaude || isSubmitting}
+                  class="px-2.5 py-1 rounded-lg bg-surface hover:bg-surface-hover border border-theme-default text-[11px] font-medium text-secondary-theme hover:text-primary-theme transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1 shrink-0"
+                >
+                  <Download size={12} class={isImportingClaude ? "animate-spin text-accent-theme" : "text-accent-theme"} />
+                  <span>{isImportingClaude ? "Importing..." : "Import Claude Code"}</span>
+                </button>
+              </Tooltip>
             </div>
           {/if}
         </div>
@@ -434,6 +495,42 @@
             <button onclick={() => (statusMessage = null)} class="opacity-70 hover:opacity-100 cursor-pointer">
               <X size={12} />
             </button>
+          </div>
+        {/if}
+
+        <!-- Plugin Validation Report Banner -->
+        {#if validationResult}
+          <div
+            class="px-6 py-2.5 text-xs border-b space-y-1.5 {validationResult.success ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/25' : 'bg-amber-500/10 text-amber-200 border-amber-500/30'}"
+          >
+            <div class="flex items-center justify-between gap-2">
+              <div class="flex items-center gap-2 font-semibold">
+                {#if validationResult.success}
+                  <CheckCircle2 size={14} class="text-emerald-400 shrink-0" />
+                  <span>Validation Passed ({validationResult.target})</span>
+                {:else}
+                  <AlertCircle size={14} class="text-amber-400 shrink-0" />
+                  <span>Validation Issues Found ({validationResult.target})</span>
+                {/if}
+              </div>
+              <button
+                type="button"
+                onclick={() => (validationResult = null)}
+                class="opacity-70 hover:opacity-100 cursor-pointer"
+                aria-label="Dismiss validation report"
+              >
+                <X size={12} />
+              </button>
+            </div>
+            {#if validationResult.issues.length > 0}
+              <ul class="list-disc pl-5 space-y-0.5 text-[11px] font-mono">
+                {#each validationResult.issues as issue}
+                  <li>{issue}</li>
+                {/each}
+              </ul>
+            {:else if validationResult.rawOutput}
+              <p class="text-[11px] opacity-85 font-mono">{validationResult.rawOutput}</p>
+            {/if}
           </div>
         {/if}
 
@@ -544,6 +641,17 @@
 
                       <div class="flex items-center gap-1.5 ml-auto">
                         {#if plugin.name === "akbo"}
+                          <Tooltip text="Update / Repair AKBO scripts, rules, and hooks (keeps pool config)" position="top">
+                            <button
+                              type="button"
+                              onclick={() => handleInstallTarget("akbo")}
+                              disabled={isSubmitting}
+                              class="flex items-center gap-1 px-2 py-1 rounded hover:bg-surface-elevated text-secondary-theme hover:text-accent-theme transition-colors cursor-pointer disabled:opacity-50"
+                            >
+                              <RefreshCw size={12} />
+                              <span>Repair / Update</span>
+                            </button>
+                          </Tooltip>
                           <Tooltip text="Configure Central Knowledge Pool directory & dreaming" position="top">
                             <button
                               onclick={() => {
@@ -568,6 +676,17 @@
                             </button>
                           </Tooltip>
                         {/if}
+                        <Tooltip text="Validate plugin manifest, skills, and hooks (agy plugin validate)" position="top">
+                          <button
+                            type="button"
+                            onclick={() => handleValidatePlugin(plugin, false)}
+                            disabled={isValidating || isSubmitting}
+                            class="flex items-center gap-1 px-2 py-1 rounded hover:bg-surface-elevated text-secondary-theme hover:text-accent-theme transition-colors cursor-pointer disabled:opacity-50"
+                          >
+                            <CheckCircle2 size={12} class="text-sky-400" />
+                            <span>Validate</span>
+                          </button>
+                        </Tooltip>
                         {#if plugin.source !== "antigravity-plugins-official"}
                           <Tooltip text="Uninstall plugin" position="top">
                             <button
@@ -613,7 +732,7 @@
                         <div class="flex items-center justify-between pt-1">
                           <div class="text-[11px]">
                             <span class="font-medium text-primary-theme">Review Proposals (<code class="text-xs">--stage-only</code>)</span>
-                            <p class="text-muted-theme text-[10px]">Autonomous dreaming stages changes for your manual review before updating ADRs.</p>
+                            <p class="text-muted-theme text-[10px]">When ON, Stop-hook dreaming stages drafts into <code class="text-[10px]">.akb/staged/</code> instead of writing directly to <code class="text-[10px]">knowledge/*.yaml</code>.</p>
                           </div>
                           <button
                             type="button"

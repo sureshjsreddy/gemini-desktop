@@ -34,6 +34,16 @@ export const APPROVAL_MODES: ApprovalModeConfig[] = [
     tagClass: "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30",
   },
   {
+    id: "auto",
+    label: "Sandboxed Auto",
+    shortLabel: "Auto",
+    description: "Runs autonomously inside workspace sandbox; prompts only for escapes (Antigravity CLI)",
+    icon: Zap,
+    badgeClass: "bg-teal-500/15 hover:bg-teal-500/25 text-teal-600 dark:text-teal-400 border-teal-500/30",
+    iconClass: "text-teal-500",
+    tagClass: "bg-teal-500/15 text-teal-600 dark:text-teal-400 border border-teal-500/30",
+  },
+  {
     id: "yolo",
     label: "YOLO (Autonomous)",
     shortLabel: "YOLO",

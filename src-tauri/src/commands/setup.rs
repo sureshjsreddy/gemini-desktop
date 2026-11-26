@@ -236,27 +236,7 @@ pub async fn install_gemini_cli() -> Result<CliInstallResult, String> {
                 if out.status.success() {
                     crate::process_manager::invalidate_cli_path_cache();
                     let bin_path = crate::process_manager::find_gemini_executable();
-                    let ver = bin_path.as_ref().and_then(|p| {
-                        let path_str = p.to_string_lossy().to_string();
-                        let is_batch = path_str.to_lowercase().ends_with(".cmd") || path_str.to_lowercase().ends_with(".bat");
-                        #[cfg(target_os = "windows")]
-                        let v_out = if is_batch {
-                            Command::new("cmd.exe").args(["/c", &path_str, "--version"]).creation_flags(0x08000000).output()
-                        } else {
-                            Command::new(&path_str).arg("--version").creation_flags(0x08000000).output()
-                        };
-                        #[cfg(not(target_os = "windows"))]
-                        let v_out = Command::new(&path_str).arg("--version").output();
-
-                        v_out.ok().and_then(|o| {
-                            if o.status.success() {
-                                let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                                if v.is_empty() { None } else { Some(v) }
-                            } else {
-                                None
-                            }
-                        })
-                    });
+                    let ver = bin_path.as_ref().and_then(|p| get_cli_binary_version(p));
 
                     Ok(CliInstallResult {
                         success: true,
@@ -410,10 +390,6 @@ pub async fn test_gemini_cli(
         }
     };
 
-    let bin_path_str = bin.to_string_lossy().to_string();
-    let is_batch = bin_path_str.to_lowercase().ends_with(".cmd") || bin_path_str.to_lowercase().ends_with(".bat");
-
-    // Resolve credentials to test
     let effective_config = match config {
         Some(c) => c,
         None => get_gemini_auth_config(state.clone()).await?,
@@ -429,74 +405,20 @@ pub async fn test_gemini_cli(
     tokio::task::spawn_blocking(move || {
         let start = Instant::now();
 
-        #[cfg(target_os = "windows")]
-        let mut cmd = if is_batch {
-            let mut c = Command::new("cmd.exe");
-            c.args([
-                "/c",
-                &bin_path_str,
+        let mut cmd = crate::process_manager::ProcessSupervisor::build_cli_command(
+            &bin,
+            &[
                 "--skip-trust",
                 "-p",
                 "Respond with 'OK' and nothing else.",
                 "--model",
-                &test_model,
+                test_model.as_str(),
                 "--output-format",
                 "text",
-            ]);
-            c
-        } else {
-            let mut c = Command::new(&bin_path_str);
-            c.args([
-                "--skip-trust",
-                "-p",
-                "Respond with 'OK' and nothing else.",
-                "--model",
-                &test_model,
-                "--output-format",
-                "text",
-            ]);
-            c
-        };
+            ],
+        );
 
-        #[cfg(not(target_os = "windows"))]
-        let mut cmd = {
-            let mut c = Command::new(&bin_path_str);
-            c.args([
-                "--skip-trust",
-                "-p",
-                "Respond with 'OK' and nothing else.",
-                "--model",
-                &test_model,
-                "--output-format",
-                "text",
-            ]);
-            c
-        };
-
-        // Determine an enterprise-grade test directory.
-        // Priority 1: Valid active workspace project directory.
-        // Priority 2: User Home Directory (%USERPROFILE%, e.g. C:\Users\<username>), which is the standard
-        //             working directory for Windows developer shells and pre-whitelisted in EDR profiles.
-        // Priority 3: LocalAppData application directory (%LOCALAPPDATA%\GeminiDesktop).
-        // We strictly avoid %TEMP% to eliminate CrowdStrike / Defender EDR temporary folder IOA alerts.
-        let safe_fallback = if let Ok(home) = std::env::var("USERPROFILE") {
-            let p = std::path::PathBuf::from(home);
-            if p.is_dir() {
-                p
-            } else if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
-                let p2 = std::path::PathBuf::from(local_app).join("GeminiDesktop");
-                let _ = std::fs::create_dir_all(&p2);
-                p2
-            } else {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-            }
-        } else if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
-            let p = std::path::PathBuf::from(local_app).join("GeminiDesktop");
-            let _ = std::fs::create_dir_all(&p);
-            p
-        } else {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-        };
+        let safe_fallback = crate::process_manager::ProcessSupervisor::fallback_safe_dir();
 
         let test_dir = if let Some(ref ws) = workspace_path {
             let d = std::path::PathBuf::from(ws);
@@ -635,8 +557,12 @@ pub async fn test_gemini_cli(
                 "Google Cloud credentials not found. Run 'gcloud auth application-default login' or provide a Service Account key."
             } else if combined_err.contains("aiplatform.googleapis.com") {
                 "Vertex AI API (aiplatform.googleapis.com) is disabled on your Google Cloud Project."
-            } else if combined_err.contains("RESOURCE_EXHAUSTED") || combined_err.contains("Quota") {
-                "API Quota exceeded for this key or project."
+            } else if combined_err.contains("RESOURCE_EXHAUSTED")
+                || combined_err.contains("Quota")
+                || combined_err.to_lowercase().contains("spending cap")
+                || combined_err.to_lowercase().contains("spend cap")
+            {
+                "API Quota or monthly spending cap exceeded for this key or project."
             } else if combined_err.contains("trusted") || combined_err.contains("trust") {
                 "Workspace directory is not trusted. Pass --skip-trust or add folder to trusted folders."
             } else {
@@ -691,14 +617,39 @@ pub fn parse_cli_models_json(stdout: &str) -> Vec<CliModelInfo> {
         if let Some(arr) = items {
             let mut result = Vec::new();
             for item in arr {
-                if let Some(id) = item.get("id").or_else(|| item.get("model")).or_else(|| item.get("name")).and_then(|v| v.as_str()) {
+                if let Some(id) = item
+                    .get("id")
+                    .or_else(|| item.get("modelId"))
+                    .or_else(|| item.get("model"))
+                    .or_else(|| item.get("name"))
+                    .and_then(|v| v.as_str())
+                {
                     let id_str = id.trim().to_string();
                     if !id_str.is_empty() {
-                        let name = item.get("displayName").or_else(|| item.get("name")).and_then(|v| v.as_str()).map(|s| s.to_string());
-                        let description = item.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
-                        let input_token_limit = item.get("inputTokenLimit").or_else(|| item.get("input_token_limit")).and_then(|v| v.as_u64());
-                        let output_token_limit = item.get("outputTokenLimit").or_else(|| item.get("output_token_limit")).and_then(|v| v.as_u64());
-                        let is_default = item.get("isDefault").or_else(|| item.get("default")).and_then(|v| v.as_bool());
+                        let name = item
+                            .get("displayName")
+                            .or_else(|| item.get("name"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let description = item
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let input_token_limit = item
+                            .get("inputTokenLimit")
+                            .or_else(|| item.get("input_token_limit"))
+                            .or_else(|| item.pointer("/contextLimits/inputTokens"))
+                            .and_then(|v| v.as_u64());
+                        let output_token_limit = item
+                            .get("outputTokenLimit")
+                            .or_else(|| item.get("output_token_limit"))
+                            .or_else(|| item.pointer("/contextLimits/outputTokens"))
+                            .and_then(|v| v.as_u64());
+                        let is_default = item
+                            .get("isDefault")
+                            .or_else(|| item.get("default"))
+                            .and_then(|v| v.as_bool())
+                            .or_else(|| Some(id_str.eq_ignore_ascii_case("auto")));
 
                         result.push(CliModelInfo {
                             id: id_str,
@@ -738,7 +689,12 @@ pub fn parse_cli_models_json(stdout: &str) -> Vec<CliModelInfo> {
             }
         }
 
-        if clean.starts_with("gemini-") || clean.starts_with("auto") || clean.starts_with("claude-") || clean.starts_with("gpt-") {
+        if clean.starts_with("gemini-")
+            || clean.starts_with("auto")
+            || clean.starts_with("claude-")
+            || clean.starts_with("gpt-")
+            || clean.starts_with("orchestrator")
+        {
             let parts: Vec<&str> = clean.split_whitespace().collect();
             if let Some(first) = parts.first() {
                 text_models.push(CliModelInfo {
@@ -756,22 +712,11 @@ pub fn parse_cli_models_json(stdout: &str) -> Vec<CliModelInfo> {
 }
 
 pub fn get_cli_binary_version(bin_path: &std::path::Path) -> Option<String> {
-    let path_str = bin_path.to_string_lossy().to_string();
-    let is_batch = path_str.to_lowercase().ends_with(".cmd") || path_str.to_lowercase().ends_with(".bat");
-    #[cfg(target_os = "windows")]
-    let v_out = if is_batch {
-        Command::new("cmd.exe")
-            .args(["/c", &path_str, "--version"])
-            .creation_flags(0x08000000)
-            .output()
-    } else {
-        Command::new(&path_str)
-            .arg("--version")
-            .creation_flags(0x08000000)
-            .output()
-    };
-    #[cfg(not(target_os = "windows"))]
-    let v_out = Command::new(&path_str).arg("--version").output();
+    let v_out = crate::process_manager::ProcessSupervisor::build_cli_command(
+        bin_path,
+        &["--version"],
+    )
+    .output();
 
     v_out.ok().and_then(|o| {
         if o.status.success() {
@@ -806,33 +751,10 @@ pub async fn discover_gemini_models(
             }
         };
 
-        let bin_path_str = bin.to_string_lossy().to_string();
-        let is_batch = bin_path_str.to_lowercase().ends_with(".cmd") || bin_path_str.to_lowercase().ends_with(".bat");
         let cli_version = get_cli_binary_version(&bin);
 
         return tokio::task::spawn_blocking(move || {
-            #[cfg(target_os = "windows")]
-            let mut cmd = if is_batch {
-                let mut c = Command::new("cmd.exe");
-                c.args(["/c", &bin_path_str, "models"]);
-                c
-            } else {
-                let mut c = Command::new(&bin_path_str);
-                c.arg("models");
-                c
-            };
-
-            #[cfg(not(target_os = "windows"))]
-            let mut cmd = {
-                let mut c = Command::new(&bin_path_str);
-                c.arg("models");
-                c
-            };
-
-            #[cfg(target_os = "windows")]
-            {
-                cmd.creation_flags(0x08000000);
-            }
+            let mut cmd = crate::process_manager::ProcessSupervisor::build_cli_command(&bin, &["models"]);
 
             cmd.stdout(std::process::Stdio::piped());
             cmd.stderr(std::process::Stdio::piped());
@@ -886,8 +808,6 @@ pub async fn discover_gemini_models(
         }
     };
 
-    let bin_path_str = bin.to_string_lossy().to_string();
-    let is_batch = bin_path_str.to_lowercase().ends_with(".cmd") || bin_path_str.to_lowercase().ends_with(".bat");
     let cli_version = get_cli_binary_version(&bin);
     let effective_config = match get_gemini_auth_config(state.clone()).await {
         Ok(c) => c,
@@ -902,23 +822,10 @@ pub async fn discover_gemini_models(
 
     tokio::task::spawn_blocking(move || {
         // Run: gemini models --output-format json
-        #[cfg(target_os = "windows")]
-        let mut cmd = if is_batch {
-            let mut c = Command::new("cmd.exe");
-            c.args(["/c", &bin_path_str, "models", "--output-format", "json"]);
-            c
-        } else {
-            let mut c = Command::new(&bin_path_str);
-            c.args(["models", "--output-format", "json"]);
-            c
-        };
-
-        #[cfg(not(target_os = "windows"))]
-        let mut cmd = {
-            let mut c = Command::new(&bin_path_str);
-            c.args(["models", "--output-format", "json"]);
-            c
-        };
+        let mut cmd = crate::process_manager::ProcessSupervisor::build_cli_command(
+            &bin,
+            &["models", "--output-format", "json"],
+        );
 
         if effective_config.auth_mode == "vertex_ai" {
             cmd.env("GOOGLE_GENAI_USE_VERTEXAI", "true");
@@ -972,28 +879,10 @@ pub async fn discover_gemini_models(
         }
 
         // If 'models' subcommand failed, try 'gemini --list-models' as fallback (v0.67.0 flag)
-        #[cfg(target_os = "windows")]
-        let mut cmd_flag = if is_batch {
-            let mut c = Command::new("cmd.exe");
-            c.args(["/c", &bin_path_str, "--list-models"]);
-            c
-        } else {
-            let mut c = Command::new(&bin_path_str);
-            c.args(["--list-models"]);
-            c
-        };
-
-        #[cfg(not(target_os = "windows"))]
-        let mut cmd_flag = {
-            let mut c = Command::new(&bin_path_str);
-            c.args(["--list-models"]);
-            c
-        };
-
-        #[cfg(target_os = "windows")]
-        {
-            cmd_flag.creation_flags(0x08000000);
-        }
+        let mut cmd_flag = crate::process_manager::ProcessSupervisor::build_cli_command(
+            &bin,
+            &["--list-models"],
+        );
         cmd_flag.stdout(std::process::Stdio::piped());
         cmd_flag.stderr(std::process::Stdio::piped());
 
@@ -1256,18 +1145,8 @@ pub async fn update_or_install_agy_cli() -> Result<CliInstallResult, String> {
 
         #[cfg(target_os = "windows")]
         let (output, method) = if let Some(ref bin_path) = existing_bin {
-            let path_str = bin_path.to_string_lossy().to_string();
-            let is_batch = path_str.to_lowercase().ends_with(".cmd") || path_str.to_lowercase().ends_with(".bat");
-            let mut c = if is_batch {
-                let mut cmd = Command::new("cmd.exe");
-                cmd.args(["/c", &path_str, "update"]);
-                cmd
-            } else {
-                let mut cmd = Command::new(&path_str);
-                cmd.arg("update");
-                cmd
-            };
-            c.current_dir(&user_home).creation_flags(0x08000000);
+            let mut c = crate::process_manager::ProcessSupervisor::build_cli_command(bin_path, &["update"]);
+            c.current_dir(&user_home);
             (c.output(), "agy update")
         } else {
             let mut c = Command::new("powershell.exe");
@@ -1301,27 +1180,7 @@ pub async fn update_or_install_agy_cli() -> Result<CliInstallResult, String> {
                 if out.status.success() {
                     crate::process_manager::invalidate_cli_path_cache();
                     let bin_path = crate::process_manager::find_agy_executable();
-                    let ver = bin_path.as_ref().and_then(|p| {
-                        let path_str = p.to_string_lossy().to_string();
-                        let is_batch = path_str.to_lowercase().ends_with(".cmd") || path_str.to_lowercase().ends_with(".bat");
-                        #[cfg(target_os = "windows")]
-                        let v_out = if is_batch {
-                            Command::new("cmd.exe").args(["/c", &path_str, "--version"]).creation_flags(0x08000000).output()
-                        } else {
-                            Command::new(&path_str).arg("--version").creation_flags(0x08000000).output()
-                        };
-                        #[cfg(not(target_os = "windows"))]
-                        let v_out = Command::new(&path_str).arg("--version").output();
-
-                        v_out.ok().and_then(|o| {
-                            if o.status.success() {
-                                let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                                if v.is_empty() { None } else { Some(v) }
-                            } else {
-                                None
-                            }
-                        })
-                    });
+                    let ver = bin_path.as_ref().and_then(|p| get_cli_binary_version(p));
 
                     Ok(CliInstallResult {
                         success: true,
@@ -1351,9 +1210,23 @@ pub async fn update_or_install_agy_cli() -> Result<CliInstallResult, String> {
     }).await.map_err(|e| e.to_string())?
 }
 
+pub fn classify_agy_test_error(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    if lower.contains("unauthenticated") || lower.contains("401") || lower.contains("not logged in") || lower.contains("oauth") {
+        format!("Antigravity CLI authentication required: {}. Click 'Sign In via agy' or configure a Gemini API key.", raw.trim())
+    } else if lower.contains("prepaid") || lower.contains("402") || lower.contains("quota") || lower.contains("billing") {
+        format!("Antigravity quota or prepaid wallet error: {}. Check your license or billing status.", raw.trim())
+    } else if lower.contains("not_found") || lower.contains("model") && lower.contains("not found") {
+        format!("Model unavailable or deprecated: {}. Refresh discovered models in Workspace settings.", raw.trim())
+    } else {
+        raw.trim().to_string()
+    }
+}
+
 #[tauri::command]
 pub async fn test_agy_cli(
-    _workspace_path: Option<String>,
+    workspace_path: Option<String>,
+    verify_auth: Option<bool>,
 ) -> Result<CliTestResult, String> {
     tokio::task::spawn_blocking(move || {
         let bin = match crate::process_manager::find_agy_executable() {
@@ -1370,56 +1243,86 @@ pub async fn test_agy_cli(
 
         let start = Instant::now();
         let path_str = bin.to_string_lossy().to_string();
-        let is_batch = path_str.to_lowercase().ends_with(".cmd") || path_str.to_lowercase().ends_with(".bat");
 
-        let user_home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME"))
+        let user_home = crate::process_manager::ProcessSupervisor::fallback_safe_dir();
+        let work_dir = workspace_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| user_home.clone());
 
-        #[cfg(target_os = "windows")]
-        let output = if is_batch {
-            let mut cmd = Command::new("cmd.exe");
-            cmd.args(["/c", &path_str, "--version"]);
-            cmd.current_dir(&user_home);
-            cmd.creation_flags(0x08000000);
-            cmd.output()
-        } else {
-            let mut cmd = Command::new(&path_str);
-            cmd.arg("--version");
-            cmd.current_dir(&user_home);
-            cmd.creation_flags(0x08000000);
+        let run_agy = |args: &[&str]| -> std::io::Result<std::process::Output> {
+            let mut cmd = crate::process_manager::ProcessSupervisor::build_cli_command(&bin, args);
+            cmd.current_dir(&work_dir);
+            cmd.env("CI", "true");
             cmd.output()
         };
 
-        #[cfg(not(target_os = "windows"))]
-        let output = {
-            let mut cmd = Command::new(&path_str);
-            cmd.arg("--version");
-            cmd.current_dir(&user_home);
-            cmd.output()
-        };
-
+        let version_out = run_agy(&["--version"]);
         let latency_ms = start.elapsed().as_millis() as u64;
 
-        match output {
+        match version_out {
             Ok(out) => {
                 let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                if out.status.success() {
-                    Ok(CliTestResult {
-                        success: true,
-                        latency_ms,
-                        message: format!("Antigravity CLI is operational (version {}).", if stdout.is_empty() { "verified" } else { &stdout }),
-                        details: Some(format!("Binary: {}\nOutput: {}", path_str, stdout)),
-                    })
-                } else {
-                    Ok(CliTestResult {
+                if !out.status.success() {
+                    let raw_err = if !stderr.is_empty() { stderr } else { stdout };
+                    return Ok(CliTestResult {
                         success: false,
                         latency_ms,
                         message: format!("Antigravity CLI test failed with exit code: {:?}", out.status.code()),
-                        details: Some(if !stderr.is_empty() { stderr } else { stdout }),
-                    })
+                        details: Some(classify_agy_test_error(&raw_err)),
+                    });
                 }
+
+                // Optionally perform a live prompt probe when explicitly requested
+                if verify_auth.unwrap_or(false) {
+                    let live_start = Instant::now();
+                    match run_agy(&["-p", "Respond with 'OK' and nothing else.", "--output-format", "json"]) {
+                        Ok(live_out) => {
+                            let live_ms = live_start.elapsed().as_millis() as u64;
+                            let live_stdout = String::from_utf8_lossy(&live_out.stdout).trim().to_string();
+                            let live_stderr = String::from_utf8_lossy(&live_out.stderr).trim().to_string();
+                            if live_out.status.success() {
+                                return Ok(CliTestResult {
+                                    success: true,
+                                    latency_ms: live_ms,
+                                    message: format!(
+                                        "Antigravity CLI & authentication verified (version {}, {} ms).",
+                                        if stdout.is_empty() { "verified" } else { &stdout },
+                                        live_ms
+                                    ),
+                                    details: Some(format!("Binary: {}\nLive JSON probe succeeded.", path_str)),
+                                });
+                            } else {
+                                let err_text = if !live_stderr.is_empty() { &live_stderr } else { &live_stdout };
+                                return Ok(CliTestResult {
+                                    success: false,
+                                    latency_ms: live_ms,
+                                    message: classify_agy_test_error(err_text),
+                                    details: Some(format!("Version: {}\nStderr: {}", stdout, err_text)),
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            return Ok(CliTestResult {
+                                success: false,
+                                latency_ms,
+                                message: format!("Live auth probe failed: {}", e),
+                                details: Some(path_str),
+                            });
+                        }
+                    }
+                }
+
+                Ok(CliTestResult {
+                    success: true,
+                    latency_ms,
+                    message: format!("Antigravity CLI is operational (version {}).", if stdout.is_empty() { "verified" } else { &stdout }),
+                    details: Some(format!("Binary: {}\nOutput: {}", path_str, stdout)),
+                })
             }
             Err(e) => {
                 Ok(CliTestResult {
@@ -1431,6 +1334,38 @@ pub async fn test_agy_cli(
             }
         }
     }).await.map_err(|e| e.to_string())?
+}
+
+/// Launches Antigravity CLI's interactive authentication flow (`agy acp --login`).
+#[tauri::command]
+pub async fn launch_agy_login() -> Result<CliInstallResult, String> {
+    let bin = crate::process_manager::find_agy_executable()
+        .ok_or_else(|| "Antigravity CLI (agy) executable not found on PATH.".to_string())?;
+    let path_str = bin.to_string_lossy().to_string();
+    let ver = get_cli_binary_version(&bin);
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd.exe")
+            .args(["/c", "start", "Antigravity CLI Login", &path_str, "acp", "--login"])
+            .spawn()
+            .map_err(|e| format!("Failed to launch agy acp --login: {}", e))?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new(&path_str)
+            .args(["acp", "--login"])
+            .spawn()
+            .map_err(|e| format!("Failed to launch agy acp --login: {}", e))?;
+    }
+
+    Ok(CliInstallResult {
+        success: true,
+        message: "Opened Antigravity CLI sign-in window (`agy acp --login`). Complete authentication, then test connection or discover models.".to_string(),
+        installed_path: Some(path_str),
+        version: ver,
+    })
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1453,36 +1388,13 @@ pub async fn import_gemini_plugins_via_agy() -> Result<PluginImportResult, Strin
         }
     };
 
-    let bin_path_str = bin.to_string_lossy().to_string();
-    let is_batch = bin_path_str.to_lowercase().ends_with(".cmd") || bin_path_str.to_lowercase().ends_with(".bat");
-
     tokio::task::spawn_blocking(move || {
-        let user_home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME"))
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+        let user_home = crate::process_manager::ProcessSupervisor::fallback_safe_dir();
 
-        #[cfg(target_os = "windows")]
-        let mut cmd = if is_batch {
-            let mut c = Command::new("cmd.exe");
-            c.args(["/c", &bin_path_str, "plugin", "import", "gemini"]);
-            c
-        } else {
-            let mut c = Command::new(&bin_path_str);
-            c.args(["plugin", "import", "gemini"]);
-            c
-        };
-
-        #[cfg(not(target_os = "windows"))]
-        let mut cmd = {
-            let mut c = Command::new(&bin_path_str);
-            c.args(["plugin", "import", "gemini"]);
-            c
-        };
-
-        #[cfg(target_os = "windows")]
-        {
-            cmd.creation_flags(0x08000000);
-        }
+        let mut cmd = crate::process_manager::ProcessSupervisor::build_cli_command(
+            &bin,
+            &["plugin", "import", "gemini"],
+        );
         cmd.current_dir(&user_home);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -1801,5 +1713,39 @@ mod tests {
         assert_eq!(deserialized.engine.as_deref(), Some("agy"));
         assert_eq!(deserialized.cli_version.as_deref(), Some("1.5.8"));
         assert_eq!(deserialized.models.len(), 1);
+    }
+
+    #[test]
+    fn test_classify_agy_test_error_and_orchestrator_parsing() {
+        assert!(classify_agy_test_error("RPC error: UNAUTHENTICATED").contains("authentication required"));
+        assert!(classify_agy_test_error("HTTP 402 prepaid wallet exhausted").contains("prepaid wallet"));
+        assert!(classify_agy_test_error("model foo not found").contains("Model unavailable"));
+
+        let list_out = "orchestrator\tOrchestrator Agent\ngemini-4-hydrogen-high\tGemini 4 Hydrogen (High)\n";
+        let models = parse_cli_models_json(list_out);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "orchestrator");
+        assert_eq!(models[1].id, "gemini-4-hydrogen-high");
+    }
+
+    #[test]
+    fn test_parse_cli_models_nested_context_limits_gemini_071() {
+        let json_input = r#"[
+            {
+                "modelId": "gemini-3.1-pro-preview-customtools",
+                "id": "gemini-3.1-pro-preview-customtools",
+                "displayName": "gemini-3.1-pro-preview",
+                "contextLimits": {
+                    "inputTokens": 1048576,
+                    "outputTokens": 65536
+                }
+            }
+        ]"#;
+        let models = parse_cli_models_json(json_input);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gemini-3.1-pro-preview-customtools");
+        assert_eq!(models[0].input_token_limit, Some(1048576));
+        assert_eq!(models[0].output_token_limit, Some(65536));
+        assert_eq!(models[0].is_default, Some(false));
     }
 }

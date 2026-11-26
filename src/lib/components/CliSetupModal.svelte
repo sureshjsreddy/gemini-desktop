@@ -9,9 +9,10 @@
     Workspace,
     CliEngine,
     CliEnginesStatus,
-    CliPathStatus,
-    PathAddResult,
   } from "$lib/types";
+  import EngineSwitcher from "$lib/components/EngineSwitcher.svelte";
+  import CliPathStatusBanner from "$lib/components/CliPathStatusBanner.svelte";
+  import { engineStore } from "$lib/stores/engineStore.svelte";
   import {
     Terminal,
     Key,
@@ -98,21 +99,17 @@
   let isUpdatingAgy = $state(false);
   let agyInstallResult = $state<CliInstallResult | null>(null);
 
-  // PATH Management State
-  let cliPathStatus = $state<CliPathStatus | null>(null);
-  let isCheckingPath = $state(false);
-  let isAddingToPath = $state(false);
-  let pathAddResult = $state<PathAddResult | null>(null);
-
-  // Gemini Extensions / Skills Importer State
+  // Antigravity Extensions / Skills Importer State
   let isImportingPlugins = $state(false);
   let pluginImportResult = $state<{ success: boolean; message: string; output: string } | null>(null);
+  let isLaunchingLogin = $state(false);
+  let loginResult = $state<CliInstallResult | null>(null);
+  let verifyAgyLiveAuth = $state(false);
 
   $effect(() => {
     if (isOpen) {
       loadSavedConfig();
       loadEngineStatus();
-      loadPathStatus();
     }
   });
 
@@ -122,40 +119,13 @@
     }
   });
 
-  async function loadPathStatus() {
-    isCheckingPath = true;
-    try {
-      cliPathStatus = await invoke<CliPathStatus>("check_cli_path_status");
-    } catch (e) {
-      console.warn("Failed to check CLI PATH status:", e);
-    } finally {
-      isCheckingPath = false;
-    }
-  }
-
   async function loadEngineStatus() {
     try {
-      const status = await invoke<CliEnginesStatus>("get_cli_engines_status");
-      enginesStatus = status;
-      activeEngine = status.activeEngine;
+      await engineStore.refresh();
+      enginesStatus = engineStore.enginesStatus;
+      activeEngine = engineStore.activeEngine;
     } catch (e) {
       console.warn("Failed to load CLI engines status:", e);
-    }
-  }
-
-  async function handleSwitchEngine(engine: CliEngine) {
-    if (activeEngine === engine) return;
-    activeEngine = engine;
-    testResult = null;
-    try {
-      await invoke<string>("set_active_cli_engine", { engine });
-      if (typeof window !== "undefined") {
-        localStorage.setItem("gemini_desktop_active_engine", engine);
-      }
-      await loadEngineStatus();
-      await loadPathStatus();
-    } catch (e) {
-      console.warn("Failed to switch engine:", e);
     }
   }
 
@@ -166,7 +136,6 @@
       const res = await invoke<CliInstallResult>("update_or_install_agy_cli");
       agyInstallResult = res;
       await loadEngineStatus();
-      await loadPathStatus();
     } catch (e: any) {
       agyInstallResult = {
         success: false,
@@ -174,26 +143,6 @@
       };
     } finally {
       isUpdatingAgy = false;
-    }
-  }
-
-  async function handleAddToPath(engine: CliEngine) {
-    isAddingToPath = true;
-    pathAddResult = null;
-    try {
-      const res = await invoke<PathAddResult>("add_cli_to_user_path", { engine });
-      pathAddResult = res;
-      await loadPathStatus();
-      await loadEngineStatus();
-    } catch (e: any) {
-      pathAddResult = {
-        success: false,
-        message: e?.toString() || "Failed to add directory to User PATH.",
-        targetDir: "",
-        alreadyInPath: false,
-      };
-    } finally {
-      isAddingToPath = false;
     }
   }
 
@@ -286,6 +235,7 @@
       if (activeEngine === "agy") {
         const res = await invoke<CliTestResult>("test_agy_cli", {
           workspacePath: wsPath,
+          verifyAuth: verifyAgyLiveAuth,
         });
         testResult = res;
       } else {
@@ -312,6 +262,21 @@
       };
     } finally {
       isTesting = false;
+    }
+  }
+
+  async function handleLaunchAgyLogin() {
+    isLaunchingLogin = true;
+    loginResult = null;
+    try {
+      loginResult = await invoke<CliInstallResult>("launch_agy_login");
+    } catch (e: any) {
+      loginResult = {
+        success: false,
+        message: e?.toString() || "Failed to launch Antigravity CLI login.",
+      };
+    } finally {
+      isLaunchingLogin = false;
     }
   }
 
@@ -444,29 +409,15 @@
         <!-- ================= TAB 1: CLI ENGINE ================= -->
         {#if activeTab === "cli"}
           <div class="space-y-4">
-            <!-- Engine Toggle Bar -->
-            <div class="p-3.5 rounded-lg border border-subtle bg-surface flex items-center justify-between">
-              <div>
-                <span class="text-xs font-semibold text-primary-theme">Active Agent Engine</span>
-                <p class="text-[11px] text-muted-theme mt-0.5">Switch between Antigravity CLI and Gemini CLI.</p>
-              </div>
-              <div class="flex items-center gap-1.5 p-1 bg-surface-elevated rounded-lg border border-subtle">
-                <button
-                  type="button"
-                  onclick={() => handleSwitchEngine("agy")}
-                  class="px-2.5 py-1 text-xs rounded-md font-medium transition-all cursor-pointer {activeEngine === 'agy' ? 'bg-accent-theme text-white shadow-xs' : 'text-secondary-theme hover:text-primary-theme'}"
-                >
-                  🚀 Antigravity (agy)
-                </button>
-                <button
-                  type="button"
-                  onclick={() => handleSwitchEngine("gemini")}
-                  class="px-2.5 py-1 text-xs rounded-md font-medium transition-all cursor-pointer {activeEngine === 'gemini' ? 'bg-accent-theme text-white shadow-xs' : 'text-secondary-theme hover:text-primary-theme'}"
-                >
-                  ♊ Gemini CLI
-                </button>
-              </div>
-            </div>
+            <!-- Engine Toggle Bar (Shared Component) -->
+            <EngineSwitcher
+              variant="toggle-bar"
+              onSwitch={async (eng) => {
+                activeEngine = eng;
+                testResult = null;
+                enginesStatus = engineStore.enginesStatus;
+              }}
+            />
 
             {#if activeEngine === "agy"}
               <!-- Antigravity Status Card -->
@@ -607,15 +558,26 @@
               {/if}
 
               <!-- Antigravity Info Card -->
-              <div class="p-4 rounded-lg border border-subtle bg-surface space-y-2 text-xs">
+              <div class="p-4 rounded-lg border border-subtle bg-surface space-y-2.5 text-xs">
                 <div class="font-semibold text-primary-theme flex items-center gap-2">
                   <Building2 size={15} class="text-accent-theme" />
                   Enterprise Antigravity Workspace Integration
                 </div>
                 <p class="text-secondary-theme leading-relaxed">
-                  Your organization manages Antigravity credentials and agent policies. All ACP sessions leverage local configuration in <code class="px-1 py-0.5 rounded bg-surface-elevated font-mono text-[11px]">~/.gemini/antigravity/</code> and your active Google account.
+                  Antigravity CLI stores global settings under <code class="px-1 py-0.5 rounded bg-surface-elevated font-mono text-[11px]">~/.gemini/antigravity-cli/</code> (and MCP/plugins under <code class="px-1 py-0.5 rounded bg-surface-elevated font-mono text-[11px]">~/.gemini/config/</code>). ADC users on enterprise environments can authenticate via <code class="px-1 py-0.5 rounded bg-surface-elevated font-mono text-[11px]">AGY_ADC_AUTH=true</code> or interactive OAuth login.
                 </p>
-                <div class="pt-2">
+                <div class="pt-1 flex flex-wrap items-center gap-2">
+                  {#if enginesStatus?.agyInstalled}
+                    <button
+                      type="button"
+                      onclick={handleLaunchAgyLogin}
+                      disabled={isLaunchingLogin}
+                      class="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium text-xs transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      <RefreshCw size={13} class={isLaunchingLogin ? "animate-spin" : ""} />
+                      <span>{isLaunchingLogin ? "Opening Login..." : "Sign In via agy acp --login"}</span>
+                    </button>
+                  {/if}
                   <button
                     type="button"
                     onclick={() => (activeTab = "diagnostics")}
@@ -625,6 +587,11 @@
                     <span>Run Antigravity Connection Test</span>
                   </button>
                 </div>
+                {#if loginResult}
+                  <div class="p-2.5 rounded-lg text-[11px] {loginResult.success ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'}">
+                    {loginResult.message}
+                  </div>
+                {/if}
               </div>
             {:else}
             <!-- CLI Status Card -->
@@ -732,88 +699,19 @@
                 </div>
                 <button
                   type="button"
-                  onclick={loadPathStatus}
-                  disabled={isCheckingPath}
+                  onclick={() => engineStore.refresh()}
+                  disabled={engineStore.isCheckingPath}
                   class="p-1 rounded text-secondary-theme hover:text-primary-theme hover:bg-surface-elevated transition-colors cursor-pointer text-xs"
                   title="Refresh PATH Status"
                 >
-                  <RefreshCw size={13} class={isCheckingPath ? 'animate-spin' : ''} />
+                  <RefreshCw size={13} class={engineStore.isCheckingPath ? 'animate-spin' : ''} />
                 </button>
               </div>
 
-              {#if pathAddResult}
-                <div class="p-2.5 rounded-lg text-xs flex items-start gap-2 {pathAddResult.success ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'}">
-                  {#if pathAddResult.success}
-                    <CheckCircle2 size={14} class="text-emerald-400 shrink-0 mt-0.5" />
-                  {:else}
-                    <AlertCircle size={14} class="text-rose-400 shrink-0 mt-0.5" />
-                  {/if}
-                  <span class="leading-relaxed">{pathAddResult.message}</span>
-                </div>
-              {/if}
-
               <div class="space-y-2 pt-1">
-                <!-- Antigravity PATH Row -->
-                <div class="flex items-center justify-between p-2.5 rounded-lg bg-surface-elevated border border-subtle text-xs">
-                  <div class="min-w-0 mr-3">
-                    <div class="flex items-center gap-2">
-                      <span class="font-medium text-primary-theme">Antigravity CLI (agy)</span>
-                      {#if cliPathStatus?.agyInUserPath}
-                        <span class="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-mono font-medium flex items-center gap-1">
-                          <Check size={10} /> In User PATH
-                        </span>
-                      {:else}
-                        <span class="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-400 font-mono font-medium">
-                          Not in User PATH
-                        </span>
-                      {/if}
-                    </div>
-                    <p class="text-[11px] font-mono text-muted-theme truncate mt-0.5">
-                      {cliPathStatus?.agyDir || "Directory not located"}
-                    </p>
-                  </div>
-                  {#if !cliPathStatus?.agyInUserPath}
-                    <button
-                      type="button"
-                      onclick={() => handleAddToPath("agy")}
-                      disabled={isAddingToPath}
-                      class="px-2.5 py-1 rounded bg-accent-theme hover:bg-accent-hover text-white text-[11px] font-medium transition-colors cursor-pointer shrink-0 disabled:opacity-50"
-                    >
-                      {isAddingToPath ? "Adding..." : "Add to User PATH"}
-                    </button>
-                  {/if}
-                </div>
-
-                <!-- Gemini CLI PATH Row -->
-                <div class="flex items-center justify-between p-2.5 rounded-lg bg-surface-elevated border border-subtle text-xs">
-                  <div class="min-w-0 mr-3">
-                    <div class="flex items-center gap-2">
-                      <span class="font-medium text-primary-theme">Gemini CLI (gemini)</span>
-                      {#if cliPathStatus?.geminiInUserPath}
-                        <span class="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-mono font-medium flex items-center gap-1">
-                          <Check size={10} /> In User PATH
-                        </span>
-                      {:else}
-                        <span class="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-400 font-mono font-medium">
-                          Not in User PATH
-                        </span>
-                      {/if}
-                    </div>
-                    <p class="text-[11px] font-mono text-muted-theme truncate mt-0.5">
-                      {cliPathStatus?.geminiDir || "Directory not located"}
-                    </p>
-                  </div>
-                  {#if !cliPathStatus?.geminiInUserPath}
-                    <button
-                      type="button"
-                      onclick={() => handleAddToPath("gemini")}
-                      disabled={isAddingToPath}
-                      class="px-2.5 py-1 rounded bg-accent-theme hover:bg-accent-hover text-white text-[11px] font-medium transition-colors cursor-pointer shrink-0 disabled:opacity-50"
-                    >
-                      {isAddingToPath ? "Adding..." : "Add to User PATH"}
-                    </button>
-                  {/if}
-                </div>
+                {#each engineStore.catalog as eng (eng.id)}
+                  <CliPathStatusBanner engineId={eng.id} />
+                {/each}
               </div>
             </div>
           </div>
@@ -1114,8 +1012,16 @@
                   </select>
                 </div>
               {:else}
-                <div class="flex items-center gap-2 pt-2.5 border-t border-subtle text-xs text-secondary-theme font-mono">
-                  <span>🚀 Engine: <strong>Antigravity CLI (agy)</strong> &bull; Verifies binary execution and ACP availability</span>
+                <div class="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-subtle text-xs text-secondary-theme">
+                  <span class="font-mono">🚀 Engine: <strong>Antigravity CLI (agy)</strong></span>
+                  <label class="flex items-center gap-1.5 cursor-pointer text-[11px] text-primary-theme">
+                    <input
+                      type="checkbox"
+                      bind:checked={verifyAgyLiveAuth}
+                      class="rounded accent-accent-theme cursor-pointer"
+                    />
+                    <span>Verify live auth &amp; model response (<code class="font-mono text-[10px]">-p</code>)</span>
+                  </label>
                 </div>
               {/if}
             </div>

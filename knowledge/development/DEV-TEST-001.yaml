@@ -3,7 +3,7 @@ type: development_standard
 title: Automated Verification, svelte-check & Cargo Test Standards
 domain: development
 status: approved
-version: 1.6.0
+version: 1.7.0
 authority:
   level: official
   confidence: high
@@ -16,11 +16,12 @@ applies_to:
   - ci_cd
 
 rule:
-  "Every change to the codebase must pass type validation (`npm run check`), Rust backend unit tests (`cargo test --lib`), and always complete a native desktop build (`npm run tauri build`). Always produce and verify native desktop production release executables (`gemini-desktop.exe`, `.msi`, and `-setup.exe`) via `npm run tauri build`."
+  "Every change to the codebase must pass frontend unit tests (`npm test`), type validation (`npm run check`), Rust backend unit tests (`cargo test --lib`), knowledge base validation (`npx -y akbo-cli@3.0.0 validate .`), and always complete a native desktop build (`npm run tauri build`). Always produce and verify native desktop production release executables (`gemini-desktop.exe`, `.msi`, and `-setup.exe`) via `npm run tauri build`."
 
 do:
+  - "Run `npm test` (`node --test tests/pure-utils.test.mjs`) to verify pure TypeScript helpers (`engineModels.ts`, `planParser.ts`, `debugParser.ts`, `fileFilters.ts`)."
   - "Run `npm run check` (`svelte-kit sync && svelte-check --tsconfig ./tsconfig.json`) and enforce 0 errors and 0 warnings before committing."
-  - "Maintain in-memory SQLite unit tests in `database.rs` to verify table initialization, default seeding, cascades, FTS5 search, and atomic session title auto-assignment."
+  - "Maintain in-memory SQLite unit tests in `database.rs` and Rust unit tests across `engines/*.rs`, `transports/mod.rs`, `process_manager.rs`, `commands/*.rs`, and `acp_client.rs` (146+ tests) covering adapter registry/capabilities, transport contracts, cross-engine model sanitization, AKBO manifest/hook/rules contracts, ACP streaming, session diffs, and Git workflows."
   - "Maintain Rust backend unit tests in `process_manager.rs`, `database.rs`, `commands/*.rs`, and `acp_client.rs` covering model argument extraction, complex .env parsing, git context resolution, chat export formats, crawler depth filtering, relational cascade deletion, FTS5 cleanup triggers, automatic session title assignment on first user message, MCP preservation, non-blocking workspace search cancellation, native file opener fallback, WinGet version parsing, semver comparison, EDR-safe updater script generation, workspace directory existence and system path validation, ACP stream delta sanitization, permission response payload formatting, session mode tracking, permission option caching, disconnected request error handling, turn exhaustion session cleanup, intermediate tool result stream continuation, ACP ENOENT error formatting, non-existent file empty content response, workspace mode switching and YOLO-to-Ask mode isolation, tool call status payload formatting, workspace/terminal lifecycle results, deterministic terminal context pruning, concise tool summary generation, session diff snapshot tracking and repair, per-session file tracking isolation, single and batch revert resurrection prevention, Git porcelain v1 status parsing, staging, quote normalization, deprecated model error mapping, CLI dynamic model discovery JSON and fallback parsing, CLI executable routing, in-memory CLI path cache invalidation, clipboard image decode and storage, and session forking/branching up to any turn (111/111 tests)."
   - "Always run `npm run tauri build` to compile the native Rust backend and package production desktop artifacts (`gemini-desktop.exe`, `.msi`, and `-setup.exe`) in `src-tauri/target/release/` on every completed feature."
   - "Never stop at only `npm run build`; always run `npm run tauri build` to ensure native desktop executables and Windows installers are continuously updated and valid."

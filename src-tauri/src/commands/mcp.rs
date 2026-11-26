@@ -10,28 +10,7 @@ pub struct McpConfigResponse {
 }
 
 pub fn resolve_mcp_config_file(workspace_path: Option<&str>, engine: Option<&str>) -> Result<PathBuf, String> {
-    let is_agy = engine.map(|e| e == "agy").unwrap_or(false);
-
-    if let Some(ws) = workspace_path {
-        let trimmed = ws.trim();
-        if !trimmed.is_empty() {
-            if is_agy {
-                return Ok(PathBuf::from(trimmed).join(".agents").join("mcp_config.json"));
-            } else {
-                return Ok(PathBuf::from(trimmed).join(".gemini").join("settings.json"));
-            }
-        }
-    }
-
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map_err(|_| "Could not determine user home directory".to_string())?;
-
-    if is_agy {
-        Ok(PathBuf::from(home).join(".gemini").join("config").join("mcp_config.json"))
-    } else {
-        Ok(PathBuf::from(home).join(".gemini").join("settings.json"))
-    }
+    crate::engines::get_adapter(engine.unwrap_or("gemini")).resolve_mcp_config_path(workspace_path)
 }
 
 #[allow(dead_code)]
@@ -53,7 +32,7 @@ pub fn get_mcp_config_internal(workspace_path: Option<&str>, engine: Option<&str
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| format!("Failed to read MCP configuration file {}: {}", path_str, e))?;
 
-    let parsed: serde_json::Value = serde_json::from_str(&content)
+    let parsed: serde_json::Value = serde_json::from_str(crate::commands::strip_utf8_bom(&content))
         .map_err(|e| format!("Failed to parse MCP configuration JSON in {}: {}", path_str, e))?;
 
     let mcp_servers = if let Some(servers) = parsed.get("mcpServers") {
@@ -88,7 +67,8 @@ pub fn save_mcp_config_internal(
     let mut root_json: serde_json::Value = if file_path.exists() {
         let content = std::fs::read_to_string(&file_path)
             .unwrap_or_else(|_| "{}".to_string());
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+        serde_json::from_str(crate::commands::strip_utf8_bom(&content))
+            .unwrap_or_else(|_| serde_json::json!({}))
     } else {
         serde_json::json!({})
     };
@@ -255,6 +235,41 @@ fn format_acp_kv_array(val: Option<&serde_json::Value>) -> serde_json::Value {
     }
 }
 
+/// Expands `${PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_ROOT}` placeholders inside plugin MCP definitions.
+fn expand_plugin_root_vars(raw: &str, plugin_dir: Option<&std::path::Path>) -> String {
+    match plugin_dir {
+        Some(dir) => {
+            let dir_str = dir.to_string_lossy();
+            raw.replace("${PLUGIN_ROOT}", &dir_str)
+                .replace("${CLAUDE_PLUGIN_ROOT}", &dir_str)
+        }
+        None => raw.to_string(),
+    }
+}
+
+fn expand_kv_array_plugin_vars(val: serde_json::Value, plugin_dir: Option<&std::path::Path>) -> serde_json::Value {
+    match (val, plugin_dir) {
+        (serde_json::Value::Array(arr), Some(_)) => {
+            let mapped = arr
+                .into_iter()
+                .map(|mut item| {
+                    if let Some(v_str) = item.get("value").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+                        if let Some(obj) = item.as_object_mut() {
+                            obj.insert(
+                                "value".to_string(),
+                                serde_json::Value::String(expand_plugin_root_vars(&v_str, plugin_dir)),
+                            );
+                        }
+                    }
+                    item
+                })
+                .collect();
+            serde_json::Value::Array(mapped)
+        }
+        (other, _) => other,
+    }
+}
+
 /// Builds an ACP-compliant `McpServer` entry (`McpServerStdio` or `McpServerHttp`)
 /// from a raw `mcpServers` config object.
 fn build_acp_mcp_entry(
@@ -266,24 +281,36 @@ fn build_acp_mcp_entry(
     let mut entry_map = serde_json::Map::new();
     entry_map.insert("name".to_string(), serde_json::Value::String(name.to_string()));
 
+    if cfg_obj.get("eager").and_then(|v| v.as_bool()) == Some(true) {
+        entry_map.insert("eager".to_string(), serde_json::Value::Bool(true));
+    }
+
     // Streamable HTTP / SSE transport
     if let Some(url_val) = cfg_obj.get("url").or_else(|| cfg_obj.get("serverUrl")) {
         entry_map.insert("type".to_string(), serde_json::Value::String("http".to_string()));
-        entry_map.insert("url".to_string(), url_val.clone());
-        entry_map.insert("headers".to_string(), format_acp_kv_array(cfg_obj.get("headers")));
+        let resolved_url = url_val
+            .as_str()
+            .map(|u| serde_json::Value::String(expand_plugin_root_vars(u, resolve_plugin_dir)))
+            .unwrap_or_else(|| url_val.clone());
+        entry_map.insert("url".to_string(), resolved_url);
+        entry_map.insert(
+            "headers".to_string(),
+            expand_kv_array_plugin_vars(format_acp_kv_array(cfg_obj.get("headers")), resolve_plugin_dir),
+        );
         return serde_json::Value::Object(entry_map);
     }
 
     // Stdio transport
     if let Some(cmd_val) = cfg_obj.get("command") {
         let final_cmd = if let Some(cmd_str) = cmd_val.as_str() {
-            if cmd_str == "agy-node"
+            let expanded_cmd = expand_plugin_root_vars(cmd_str, resolve_plugin_dir);
+            if expanded_cmd == "agy-node"
                 && crate::process_manager::find_binary_by_name("agy-node").is_none()
                 && crate::process_manager::find_binary_by_name("node").is_some()
             {
                 serde_json::Value::String("node".to_string())
             } else {
-                cmd_val.clone()
+                serde_json::Value::String(expanded_cmd)
             }
         } else {
             cmd_val.clone()
@@ -292,13 +319,14 @@ fn build_acp_mcp_entry(
     }
 
     let resolved_args = if let Some(args_val) = cfg_obj.get("args").and_then(|a| a.as_array()) {
-        if let Some(plugin_dir) = resolve_plugin_dir {
-            args_val
-                .iter()
-                .map(|arg| {
-                    if let Some(arg_str) = arg.as_str() {
-                        let candidate = plugin_dir.join(std::path::Path::new(arg_str));
-                        if candidate.exists() {
+        args_val
+            .iter()
+            .map(|arg| {
+                if let Some(arg_str) = arg.as_str() {
+                    let expanded = expand_plugin_root_vars(arg_str, resolve_plugin_dir);
+                    if let Some(plugin_dir) = resolve_plugin_dir {
+                        let candidate = plugin_dir.join(std::path::Path::new(&expanded));
+                        if candidate.exists() && expanded == arg_str {
                             #[cfg(target_os = "windows")]
                             let norm = candidate.to_string_lossy().replace('/', "\\");
                             #[cfg(not(target_os = "windows"))]
@@ -306,20 +334,26 @@ fn build_acp_mcp_entry(
                             return serde_json::Value::String(norm);
                         }
                     }
-                    arg.clone()
-                })
-                .collect()
-        } else {
-            args_val.clone()
-        }
+                    return serde_json::Value::String(expanded);
+                }
+                arg.clone()
+            })
+            .collect()
     } else {
         Vec::new()
     };
     entry_map.insert("args".to_string(), serde_json::Value::Array(resolved_args));
-    entry_map.insert("env".to_string(), format_acp_kv_array(cfg_obj.get("env")));
+    entry_map.insert(
+        "env".to_string(),
+        expand_kv_array_plugin_vars(format_acp_kv_array(cfg_obj.get("env")), resolve_plugin_dir),
+    );
 
     if let Some(cwd_val) = cfg_obj.get("cwd") {
-        entry_map.insert("cwd".to_string(), cwd_val.clone());
+        let resolved_cwd = cwd_val
+            .as_str()
+            .map(|c| serde_json::Value::String(expand_plugin_root_vars(c, resolve_plugin_dir)))
+            .unwrap_or_else(|| cwd_val.clone());
+        entry_map.insert("cwd".to_string(), resolved_cwd);
     } else if let Some(cwd_fallback) = default_cwd {
         entry_map.insert("cwd".to_string(), serde_json::Value::String(cwd_fallback.to_string()));
     }
@@ -356,7 +390,7 @@ pub fn get_active_mcp_servers_for_session(
             let config_file = config_dir.join("config.json");
             if config_file.is_file() {
                 if let Ok(content) = std::fs::read_to_string(&config_file) {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(crate::commands::strip_utf8_bom(&content)) {
                         if let Some(plugins_obj) = parsed.get("plugins").and_then(|p| p.as_object()) {
                             for (p_name, p_val) in plugins_obj {
                                 let is_enabled = p_val.get("enabled")
@@ -394,13 +428,20 @@ pub fn get_active_mcp_servers_for_session(
                             }
                         }
 
-                        let plugin_mcp_file = plugin_dir.join("mcp_config.json");
-                        if !plugin_mcp_file.is_file() {
-                            continue;
-                        }
+                        let plugin_mcp_file = {
+                            let primary = plugin_dir.join("mcp.json");
+                            let legacy = plugin_dir.join("mcp_config.json");
+                            if primary.is_file() {
+                                primary
+                            } else if legacy.is_file() {
+                                legacy
+                            } else {
+                                continue;
+                            }
+                        };
 
                         if let Ok(content) = std::fs::read_to_string(&plugin_mcp_file) {
-                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(crate::commands::strip_utf8_bom(&content)) {
                                 if let Some(servers) = parsed.get("mcpServers").and_then(|s| s.as_object()) {
                                     let plugin_dir_str = plugin_dir.to_string_lossy().to_string();
                                     for (raw_s_name, s_cfg) in servers {
@@ -886,5 +927,36 @@ W1125 09:37:06.200000 12 mcp_manager.go:100] mcp disabled by BAIC admin controls
         assert_eq!(entry_map["args"][0], dummy_script.to_string_lossy().to_string());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_build_acp_mcp_entry_plugin_root_and_eager_http() {
+        let plugin_dir = std::path::PathBuf::from(r"C:\Plugins\demo-plugin");
+
+        // Stdio entry with ${PLUGIN_ROOT} and ${CLAUDE_PLUGIN_ROOT} + eager
+        let mut stdio_obj = serde_json::Map::new();
+        stdio_obj.insert("command".to_string(), serde_json::json!("${PLUGIN_ROOT}/bin/server.exe"));
+        stdio_obj.insert("args".to_string(), serde_json::json!(["--root", "${CLAUDE_PLUGIN_ROOT}/data"]));
+        stdio_obj.insert("cwd".to_string(), serde_json::json!("${PLUGIN_ROOT}"));
+        stdio_obj.insert("eager".to_string(), serde_json::json!(true));
+        stdio_obj.insert("env".to_string(), serde_json::json!({ "PLUGIN_HOME": "${PLUGIN_ROOT}/cfg" }));
+
+        let stdio_entry = build_acp_mcp_entry("demo_srv", &stdio_obj, Some(&plugin_dir), None);
+        assert_eq!(stdio_entry["eager"], true);
+        assert_eq!(stdio_entry["command"], r"C:\Plugins\demo-plugin/bin/server.exe");
+        assert_eq!(stdio_entry["args"][1], r"C:\Plugins\demo-plugin/data");
+        assert_eq!(stdio_entry["cwd"], r"C:\Plugins\demo-plugin");
+        assert_eq!(stdio_entry["env"][0]["value"], r"C:\Plugins\demo-plugin/cfg");
+
+        // HTTP entry with headers and without eager
+        let mut http_obj = serde_json::Map::new();
+        http_obj.insert("url".to_string(), serde_json::json!("https://mcp.example.com/sse"));
+        http_obj.insert("headers".to_string(), serde_json::json!({ "Authorization": "Bearer tok" }));
+
+        let http_entry = build_acp_mcp_entry("remote_mcp", &http_obj, Some(&plugin_dir), None);
+        assert_eq!(http_entry["type"], "http");
+        assert_eq!(http_entry["url"], "https://mcp.example.com/sse");
+        assert!(http_entry.get("eager").is_none());
+        assert_eq!(http_entry["headers"][0]["name"], "Authorization");
     }
 }

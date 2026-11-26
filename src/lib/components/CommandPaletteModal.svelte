@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Workspace, Session, CliEngine } from "$lib/types";
   import { themeManager, THEMES, type ThemeId } from "$lib/theme.svelte";
+  import { engineStore } from "$lib/stores/engineStore.svelte";
   import {
     Search,
     X,
@@ -110,31 +111,18 @@
       },
     });
 
-    if (activeEngine === "gemini") {
+    for (const eng of engineStore.catalog) {
+      if (eng.id === activeEngine) continue;
       items.push({
-        id: "cmd-switch-agy",
-        title: "Switch CLI Engine to Antigravity CLI (agy)",
-        subtitle: "Access enterprise agent extensions, MCP plugins & multi-model routing",
+        id: `cmd-switch-${eng.id}`,
+        title: `Switch CLI Engine to ${eng.displayName}`,
+        subtitle: eng.description,
         category: "Commands",
         icon: Sparkles,
-        iconClass: "text-purple-400",
+        iconClass: eng.id === "agy" ? "text-purple-400" : "text-sky-400",
         badge: "Engine",
         action: () => {
-          onSwitchEngine("agy");
-          onClose();
-        },
-      });
-    } else {
-      items.push({
-        id: "cmd-switch-gemini",
-        title: "Switch CLI Engine to Google Gemini CLI",
-        subtitle: "Official Google open-source agent runtime",
-        category: "Commands",
-        icon: Sparkles,
-        iconClass: "text-sky-400",
-        badge: "Engine",
-        action: () => {
-          onSwitchEngine("gemini");
+          onSwitchEngine(eng.id);
           onClose();
         },
       });
