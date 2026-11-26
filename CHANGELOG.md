@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.1] - 2026-11-26
+
+### Fixed & Changed
+- **AKBO IDE Fallback Dynamic Pool Routing (`plugins.rs` `mcp.cjs` & `on-stop.cjs`)**: Fixed central pool resolution when Antigravity IDE launches `mcp.cjs` without `WORKSPACE_DIR`/`PROJECT_DIR` (falling back to the plugin directory). Instead of pinning `AKBO_POOL_DIR` to `projects/akbo`, `mcp.cjs` now exports `AKBO_CENTRAL_POOL_DIR` and `AKBO_DISALLOW_DIRS`, fails fast with `isError: true` when write/context tools omit `dir`, and dynamically injects `pool` (`<centralPoolRoot>/projects/<project>`) per `tools/call`. `hooks/on-stop.cjs` now ignores plugin-directory fallback turns to prevent spurious `projects/plugin-akbo` creation.
+- **Non-Destructive Repo-Local `knowledge/` Mirroring & Provenance Rules (`plugins.rs`)**: Both `mcp.cjs` and `hooks/on-stop.cjs` non-destructively mirror existing repo-local `knowledge/` files into `~/.akb/central-pool/projects/<project>/knowledge/` while preserving repository files untouched. Updated `rules/AGENTS.md` with explicit `dir` passing and `local+pool` provenance guidance.
+- **AKBO CLI v3.1.0 Pinning (`plugins.rs` & `McpModal.svelte`)**: Updated the built-in AKBO plugin manifest (`version: "3.1.0"`), `mcp.cjs` launcher, `hooks/on-stop.cjs`, `skills/akbo/SKILL.md`, and the `McpModal.svelte` AKBO preset to pinned `akbo-cli@3.1.0`.
+- **Tests & Knowledge Base**: Added Rust/Node runtime verification tests in `plugins.rs` (`test_akbo_scripts_node_syntax_and_on_stop_fallback_mirroring` and `test_akbo_mcp_script_fallback_routing_and_error_guards`) and updated `PROD-PLUGIN-001.yaml` and `DEV-TEST-001.yaml`.
+
 ## [0.11.0] - 2026-11-26
 
 ### Added & Architectural

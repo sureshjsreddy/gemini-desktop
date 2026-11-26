@@ -151,7 +151,7 @@
       config: {
         key: "akbo",
         command: "npx",
-        args: ["-y", "akbo-cli@2.0.0", "mcp"],
+        args: ["-y", "akbo-cli@3.1.0", "mcp"],
         env: {},
       },
     },

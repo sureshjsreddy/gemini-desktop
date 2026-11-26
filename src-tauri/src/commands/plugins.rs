@@ -232,7 +232,7 @@ fn akbo_manifest_json() -> serde_json::Value {
     serde_json::json!({
         "name": "akbo",
         "displayName": "AKBO Knowledge Oracle & Central Memory Pool",
-        "version": "3.0.0",
+        "version": "3.1.0",
         "description": "Hybrid AST Codebase Knowledge Graph (TS Compiler + WASM tree-sitter), centralized cross-project knowledge pooling, AST-backed convention guardrails, and staged post-conversation memory consolidation ('dreaming')."
     })
 }
@@ -276,7 +276,19 @@ function main() {
     return;
   }
 
-  const workspacePath = (payload.workspacePaths && payload.workspacePaths[0]) || payload.cwd || process.cwd();
+  const rawWorkspace = (payload.workspacePaths && payload.workspacePaths[0]) || payload.cwd;
+  const resolvedPluginDir = path.resolve(__dirname, '..');
+  const isSameDir = (a, b) => {
+    const ra = path.resolve(a);
+    const rb = path.resolve(b);
+    return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
+  };
+  if (!rawWorkspace || isSameDir(rawWorkspace, resolvedPluginDir)) {
+    allowStop();
+    return;
+  }
+
+  const workspacePath = rawWorkspace;
   const userHome = process.env.USERPROFILE || process.env.HOME || '';
   const configFile = path.join(userHome, '.gemini', 'config', 'akbo_pool.json');
 
@@ -360,6 +372,67 @@ function main() {
     }
   } catch {}
 
+  // Mirror repo-local knowledge/ non-destructively into the central pool
+  try {
+    const localKDir = path.join(workspacePath, 'knowledge');
+    if (fs.existsSync(localKDir) && !isSameDir(workspacePath, targetProjectPool)) {
+      const poolKDir = path.join(targetProjectPool, 'knowledge');
+      let hasPoolOnlyUnits = false;
+      if (fs.existsSync(poolKDir)) {
+        const checkPoolOnly = (dir, relBase = '') => {
+          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            const rel = relBase ? path.join(relBase, entry.name) : entry.name;
+            const fullPool = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+              checkPoolOnly(fullPool, rel);
+            } else if (
+              entry.isFile() &&
+              (entry.name.endsWith('.yaml') || entry.name.endsWith('.yml')) &&
+              entry.name.toLowerCase() !== 'index.yaml' &&
+              !fs.existsSync(path.join(localKDir, rel))
+            ) {
+              hasPoolOnlyUnits = true;
+            }
+          }
+        };
+        checkPoolOnly(poolKDir);
+      }
+
+      const mirrorDir = (srcDir, destDir, relBase = '') => {
+        fs.mkdirSync(destDir, { recursive: true });
+        for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+          const rel = relBase ? path.join(relBase, entry.name) : entry.name;
+          const srcPath = path.join(srcDir, entry.name);
+          const destPath = path.join(destDir, entry.name);
+          if (entry.isDirectory()) {
+            mirrorDir(srcPath, destPath, rel);
+            continue;
+          }
+          if (!entry.isFile() || (!entry.name.endsWith('.yaml') && !entry.name.endsWith('.yml'))) {
+            continue;
+          }
+          if (rel.toLowerCase() === 'index.yaml' && fs.existsSync(destPath) && hasPoolOnlyUnits) {
+            continue;
+          }
+          let shouldCopy = !fs.existsSync(destPath);
+          if (!shouldCopy) {
+            try {
+              if (fs.statSync(srcPath).mtimeMs > fs.statSync(destPath).mtimeMs + 1) {
+                shouldCopy = true;
+              }
+            } catch {
+              shouldCopy = true;
+            }
+          }
+          if (shouldCopy) {
+            fs.copyFileSync(srcPath, destPath);
+          }
+        }
+      };
+      mirrorDir(localKDir, poolKDir);
+    }
+  } catch {}
+
   // Skip spawning CLI entirely if there are no pending unconsolidated observations
   let hasPendingObservations = false;
   try {
@@ -391,7 +464,7 @@ function main() {
   // Run dreaming exclusively in targetProjectPool
   try {
     const stageArg = stageOnly ? ' --stage-only' : ' --auto-approve';
-    const PINNED_PKG = 'akbo-cli@3.0.0';
+    const PINNED_PKG = 'akbo-cli@3.1.0';
     let runner = `npx -y ${PINNED_PKG}`;
 
     try {
@@ -448,12 +521,13 @@ trigger: always_on
 # 🧠 AKBO Centralized Knowledge & Memory Rules
 
 ## 1. Pre-Execution Grounding
-- Before proposing code modifications, investigating unfamiliar project architectures, or querying dependencies, invoke `akbo_context`, `akbo_search`, or `akbo_list_invariants` to retrieve the project's Codebase Knowledge Graph (CKG) and approved architectural constraints with 0 token waste.
+- Before proposing code modifications, investigating unfamiliar project architectures, or querying dependencies, pass the active project workspace root as `dir` when calling `akbo_context`, `akbo_search`, or `akbo_list_invariants` to retrieve the project's Codebase Knowledge Graph (CKG) and approved architectural constraints with 0 token waste.
 - Never perform speculative raw file grepping if high-level architectural standards exist in the central knowledge pool.
 
 ## 2. Project Analysis & Baseline Knowledge Onboarding
 - `akbo_harvest` only scans deterministic code topology into `.akb/caches/` (0 LLM tokens); it does **not** create Knowledge Units (`knowledge/*.yaml`, `index.yaml`).
-- When analyzing, documenting, or onboarding a project—especially when `akbo_list_invariants` returns empty (`[]`) or no `knowledge/index.yaml` exists yet—run `akbo_harvest`, inspect key manifests/modules, and persist baseline Knowledge Units into the central pool via `akbo_upsert_units`:
+- When a repository already has a tracked repo-local `knowledge/` folder, `mcp.cjs` and `on-stop.cjs` mirror it non-destructively into `~/.akb/central-pool/projects/<project>/knowledge/`, and `akbo_list_invariants` reports the resolved source (`local`, `pool`, or `local+pool`). Never delete or overwrite the repository's own `knowledge/` files.
+- When analyzing, documenting, or onboarding a project—especially when `akbo_list_invariants` returns empty (`[]`), no `knowledge/index.yaml` exists yet, or units only exist locally (`source: "local"`) without a central pool entry—run `akbo_harvest` with `dir`, inspect key manifests/modules, and persist baseline Knowledge Units into the central pool via `akbo_upsert_units` (passing `dir`, and optional `pool` if targeting an explicit pool directory):
   - Standard units (`architecture_standard`, `development_standard`, `product_rule`): require `id` (e.g. `ARCH-SYS-001`), `type`, `title`, `domain` (`architecture` | `development` | `product`), `status` (`"approved"`), `applies_to` (`string[]`), `rule`, `do` (`string[]`, min 1), `dont` (`string[]`, min 1), `reason`.
   - Decision units (`architecture_decision`): require `id` (e.g. `ADR-001`), `type` (`"architecture_decision"`), `title`, `domain` (`"decisions"`), `status` (`"approved"`), `decision`, `context`, `applies_to` (`string[]`).
 
@@ -471,6 +545,369 @@ trigger: always_on
 ## 5. Central Pool Isolation (Zero Workspace Pollution)
 - All session observations (`.akb/sessions/`), Codebase Knowledge Graph caches (`.akb/caches/`), and durable knowledge units (`knowledge/`, `ADR-xxx.yaml`, `index.yaml`) reside exclusively in the external Central Knowledge Pool (`~/.akb/central-pool/projects/<project>/`).
 - Never create or write `.akb/` folders or ephemeral session caches directly into the active project workspace.
+"#
+}
+
+fn akbo_mcp_script() -> &'static str {
+    r#"#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const { spawn, execSync } = require('child_process');
+
+function samePath(a, b) {
+  const ra = path.resolve(a);
+  const rb = path.resolve(b);
+  return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
+}
+
+const rawEnvWorkspace =
+  (process.env.WORKSPACE_DIR && process.env.WORKSPACE_DIR.trim()) ||
+  (process.env.PROJECT_DIR && process.env.PROJECT_DIR.trim()) ||
+  '';
+const resolvedPluginDir = path.resolve(__dirname);
+const resolvedCwd = path.resolve(process.cwd());
+const workspacePath = rawEnvWorkspace ? path.resolve(rawEnvWorkspace) : resolvedCwd;
+const isPluginFallback = !rawEnvWorkspace && samePath(workspacePath, resolvedPluginDir);
+
+const userHome = process.env.USERPROFILE || process.env.HOME || '';
+const configFile = path.join(userHome, '.gemini', 'config', 'akbo_pool.json');
+
+let centralPoolRoot = process.env.AKBO_CENTRAL_POOL_DIR || '';
+if (!centralPoolRoot && !isPluginFallback && process.env.AKBO_POOL_DIR && process.env.AKBO_POOL_DIR.trim()) {
+  centralPoolRoot = process.env.AKBO_POOL_DIR.trim();
+}
+if (fs.existsSync(configFile)) {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+    if (cfg.centralPoolDir && cfg.centralPoolDir.trim()) {
+      centralPoolRoot = cfg.centralPoolDir.trim();
+    }
+  } catch {}
+}
+
+if (!centralPoolRoot) {
+  centralPoolRoot = path.join(userHome, '.akb', 'central-pool');
+}
+centralPoolRoot = path.resolve(centralPoolRoot);
+
+const projectPoolCache = new Map();
+
+function resolveProjectName(targetDir) {
+  const absTarget = path.resolve(targetDir);
+  let projectName = path.basename(absTarget);
+
+  if (fs.existsSync(absTarget)) {
+    try {
+      const gitRemote = execSync('git config --get remote.origin.url', {
+        cwd: absTarget,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 3000
+      }).toString().trim();
+
+      if (gitRemote) {
+        const match = gitRemote.match(/[:\/]([^\/:]+?)(\.git)?$/);
+        if (match && match[1]) {
+          return match[1];
+        }
+      }
+    } catch {}
+
+    try {
+      const topLevel = execSync('git rev-parse --show-toplevel', {
+        cwd: absTarget,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 3000
+      }).toString().trim();
+
+      if (topLevel) {
+        const topBase = path.basename(path.resolve(topLevel));
+        if (topBase) {
+          projectName = topBase;
+        }
+      }
+    } catch {}
+  }
+
+  return projectName && projectName !== '.' && projectName !== '..' ? projectName : 'root';
+}
+
+function migrateWorkspaceAkb(targetDir, targetProjectPool) {
+  try {
+    const wsAkb = path.join(targetDir, '.akb');
+    if (fs.existsSync(wsAkb)) {
+      const wsSessions = path.join(wsAkb, 'sessions');
+      const poolSessions = path.join(targetProjectPool, '.akb', 'sessions');
+      if (fs.existsSync(wsSessions)) {
+        fs.mkdirSync(poolSessions, { recursive: true });
+        for (const agent of fs.readdirSync(wsSessions)) {
+          const srcAgentDir = path.join(wsSessions, agent);
+          const destAgentDir = path.join(poolSessions, agent);
+          if (!fs.statSync(srcAgentDir).isDirectory()) continue;
+          fs.mkdirSync(destAgentDir, { recursive: true });
+          const srcObs = path.join(srcAgentDir, 'observations.jsonl');
+          const destObs = path.join(destAgentDir, 'observations.jsonl');
+          if (fs.existsSync(srcObs)) {
+            const srcLines = fs.readFileSync(srcObs, 'utf-8').split('\n').filter(Boolean);
+            let destLines = [];
+            if (fs.existsSync(destObs)) {
+              destLines = fs.readFileSync(destObs, 'utf-8').split('\n').filter(Boolean);
+            }
+            const existingIds = new Set(destLines.map(l => {
+              try { return JSON.parse(l).id; } catch { return null; }
+            }).filter(Boolean));
+            for (const line of srcLines) {
+              try {
+                const parsed = JSON.parse(line);
+                if (!existingIds.has(parsed.id)) {
+                  destLines.push(line);
+                }
+              } catch {}
+            }
+            fs.writeFileSync(destObs, destLines.join('\n') + '\n', 'utf8');
+          }
+        }
+      }
+      fs.rmSync(wsAkb, { recursive: true, force: true });
+    }
+  } catch {}
+}
+
+function mirrorLocalKnowledge(targetDir, targetProjectPool) {
+  try {
+    const localKDir = path.join(targetDir, 'knowledge');
+    if (!fs.existsSync(localKDir) || samePath(targetDir, targetProjectPool)) {
+      return;
+    }
+
+    const poolKDir = path.join(targetProjectPool, 'knowledge');
+    let hasPoolOnlyUnits = false;
+
+    if (fs.existsSync(poolKDir)) {
+      const checkPoolOnly = (dir, relBase = '') => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const rel = relBase ? path.join(relBase, entry.name) : entry.name;
+          const fullPool = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            checkPoolOnly(fullPool, rel);
+          } else if (
+            entry.isFile() &&
+            (entry.name.endsWith('.yaml') || entry.name.endsWith('.yml')) &&
+            entry.name.toLowerCase() !== 'index.yaml' &&
+            !fs.existsSync(path.join(localKDir, rel))
+          ) {
+            hasPoolOnlyUnits = true;
+          }
+        }
+      };
+      checkPoolOnly(poolKDir);
+    }
+
+    const mirrorDir = (srcDir, destDir, relBase = '') => {
+      fs.mkdirSync(destDir, { recursive: true });
+      for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+        const rel = relBase ? path.join(relBase, entry.name) : entry.name;
+        const srcPath = path.join(srcDir, entry.name);
+        const destPath = path.join(destDir, entry.name);
+        if (entry.isDirectory()) {
+          mirrorDir(srcPath, destPath, rel);
+          continue;
+        }
+        if (!entry.isFile() || (!entry.name.endsWith('.yaml') && !entry.name.endsWith('.yml'))) {
+          continue;
+        }
+        if (rel.toLowerCase() === 'index.yaml' && fs.existsSync(destPath) && hasPoolOnlyUnits) {
+          continue;
+        }
+        let shouldCopy = !fs.existsSync(destPath);
+        if (!shouldCopy) {
+          try {
+            if (fs.statSync(srcPath).mtimeMs > fs.statSync(destPath).mtimeMs + 1) {
+              shouldCopy = true;
+            }
+          } catch {
+            shouldCopy = true;
+          }
+        }
+        if (shouldCopy) {
+          fs.copyFileSync(srcPath, destPath);
+        }
+      }
+    };
+
+    mirrorDir(localKDir, poolKDir);
+  } catch {}
+}
+
+function prepareProjectPool(targetDir) {
+  const absTarget = path.resolve(targetDir);
+  const cacheKey = process.platform === 'win32' ? absTarget.toLowerCase() : absTarget;
+  if (projectPoolCache.has(cacheKey)) {
+    return projectPoolCache.get(cacheKey);
+  }
+
+  const projectName = resolveProjectName(absTarget);
+  const targetProjectPool = path.join(centralPoolRoot, 'projects', projectName);
+  if (fs.existsSync(absTarget)) {
+    try {
+      fs.mkdirSync(targetProjectPool, { recursive: true });
+    } catch {}
+    migrateWorkspaceAkb(absTarget, targetProjectPool);
+    mirrorLocalKnowledge(absTarget, targetProjectPool);
+  }
+
+  projectPoolCache.set(cacheKey, targetProjectPool);
+  return targetProjectPool;
+}
+
+const env = {
+  ...process.env,
+  AKBO_CENTRAL_POOL_DIR: centralPoolRoot
+};
+
+let pinnedProjectPool = null;
+if (isPluginFallback) {
+  // Do not pin AKBO_POOL_DIR to projects/akbo when launched from the plugin directory without WORKSPACE_DIR/PROJECT_DIR.
+  delete env.AKBO_POOL_DIR;
+  const existingDisallowed = env.AKBO_DISALLOW_DIRS
+    ? env.AKBO_DISALLOW_DIRS.split(',').map(s => s.trim()).filter(Boolean)
+    : [];
+  if (!existingDisallowed.some(d => samePath(d, resolvedPluginDir))) {
+    existingDisallowed.push(resolvedPluginDir);
+  }
+  env.AKBO_DISALLOW_DIRS = existingDisallowed.join(',');
+} else {
+  pinnedProjectPool = prepareProjectPool(workspacePath);
+  env.AKBO_POOL_DIR = pinnedProjectPool;
+}
+
+const PINNED_PKG = 'akbo-cli@3.1.0';
+let command = 'npx';
+let args = pinnedProjectPool
+  ? ['-y', PINNED_PKG, 'mcp', workspacePath, '--pool', pinnedProjectPool]
+  : ['-y', PINNED_PKG, 'mcp', workspacePath];
+let useShell = true;
+
+try {
+  const pkgJsonPath = path.join(workspacePath, 'package.json');
+  const localCli = path.join(workspacePath, 'dist', 'cli.js');
+  if (fs.existsSync(pkgJsonPath) && fs.existsSync(localCli)) {
+    const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8'));
+    if (pkg && pkg.name === 'akbo-cli') {
+      command = process.execPath;
+      args = pinnedProjectPool
+        ? [localCli, 'mcp', workspacePath, '--pool', pinnedProjectPool]
+        : [localCli, 'mcp', workspacePath];
+      useShell = false;
+    }
+  }
+} catch {}
+
+if (command === 'npx') {
+  try {
+    const checkCmd = process.platform === 'win32' ? 'where akbo-mcp' : 'which akbo-mcp';
+    execSync(checkCmd, { stdio: 'ignore', timeout: 2000 });
+    command = 'akbo-mcp';
+    args = pinnedProjectPool
+      ? [workspacePath, '--pool', pinnedProjectPool]
+      : [workspacePath];
+    useShell = process.platform === 'win32';
+  } catch {}
+}
+
+const child = spawn(command, args, {
+  shell: useShell,
+  stdio: isPluginFallback ? ['pipe', 'pipe', 'inherit'] : 'inherit',
+  env
+});
+
+if (isPluginFallback) {
+  const TOOLS_REQUIRING_DIR_IN_FALLBACK = new Set([
+    'akbo_validate',
+    'akbo_upsert_unit',
+    'akbo_upsert_units',
+    'akbo_get_unit',
+    'akbo_delete_unit',
+    'akbo_import_skills',
+    'akbo_record_observation',
+    'akbo_scratchpad',
+    'akbo_dream'
+  ]);
+
+  child.stdout.pipe(process.stdout);
+  child.stdin.on('error', () => {});
+
+  let stdinBuffer = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => {
+    stdinBuffer += chunk;
+    let newlineIdx;
+    while ((newlineIdx = stdinBuffer.indexOf('\n')) !== -1) {
+      const rawLine = stdinBuffer.slice(0, newlineIdx).replace(/\r$/, '');
+      stdinBuffer = stdinBuffer.slice(newlineIdx + 1);
+      if (!rawLine.trim()) continue;
+
+      let outLine = rawLine;
+      try {
+        const msg = JSON.parse(rawLine);
+        if (msg && msg.method === 'tools/call' && msg.params && typeof msg.params === 'object') {
+          const toolName = msg.params.name;
+          const toolArgs =
+            msg.params.arguments && typeof msg.params.arguments === 'object' && !Array.isArray(msg.params.arguments)
+              ? { ...msg.params.arguments }
+              : {};
+
+          const hasExplicitPool = typeof toolArgs.pool === 'string' && toolArgs.pool.trim().length > 0;
+          const rawDir = typeof toolArgs.dir === 'string' ? toolArgs.dir.trim() : '';
+          const resolvedArgDir = rawDir ? path.resolve(rawDir) : '';
+          const dirIsPluginFallback = !resolvedArgDir || samePath(resolvedArgDir, resolvedPluginDir);
+
+          if (!hasExplicitPool && !dirIsPluginFallback) {
+            toolArgs.pool = prepareProjectPool(resolvedArgDir);
+            msg.params.arguments = toolArgs;
+            outLine = JSON.stringify(msg);
+          } else if (!hasExplicitPool && dirIsPluginFallback && TOOLS_REQUIRING_DIR_IN_FALLBACK.has(toolName) && msg.id !== undefined) {
+            const errResp = {
+              jsonrpc: '2.0',
+              id: msg.id,
+              result: {
+                content: [
+                  {
+                    type: 'text',
+                    text: `Error: Tool "${toolName}" requires an explicit "dir" (project workspace path) or "pool" when AKBO MCP is started from the plugin directory without WORKSPACE_DIR/PROJECT_DIR.`
+                  }
+                ],
+                isError: true
+              }
+            };
+            process.stdout.write(JSON.stringify(errResp) + '\n');
+            continue;
+          }
+        }
+      } catch {}
+
+      if (child.stdin && !child.stdin.destroyed) {
+        child.stdin.write(outLine + '\n');
+      }
+    }
+  });
+
+  process.stdin.on('end', () => {
+    if (child.stdin && !child.stdin.destroyed) {
+      child.stdin.end();
+    }
+  });
+}
+
+process.on('SIGTERM', () => child.kill());
+process.on('SIGINT', () => child.kill());
+
+child.on('exit', (code, signal) => {
+  if (signal) {
+    process.kill(process.pid, signal);
+  } else {
+    process.exit(code || 0);
+  }
+});
 "#
 }
 
@@ -496,142 +933,7 @@ pub fn install_builtin_akbo_plugin() -> Result<AgyPluginOpResult, String> {
         .map_err(|e| format!("Failed to write plugin.json: {}", e))?;
 
     // 2. mcp.cjs launcher that isolates all caches, sessions, and knowledge units in the central pool
-    let mcp_script = r#"#!/usr/bin/env node
-const fs = require('fs');
-const path = require('path');
-const { spawn, execSync } = require('child_process');
-
-const workspacePath = process.env.WORKSPACE_DIR || process.env.PROJECT_DIR || process.cwd();
-
-const userHome = process.env.USERPROFILE || process.env.HOME || '';
-const configFile = path.join(userHome, '.gemini', 'config', 'akbo_pool.json');
-
-let centralPoolRoot = process.env.AKBO_CENTRAL_POOL_DIR || process.env.AKBO_POOL_DIR;
-if (fs.existsSync(configFile)) {
-  try {
-    const cfg = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
-    if (cfg.centralPoolDir && cfg.centralPoolDir.trim()) {
-      centralPoolRoot = cfg.centralPoolDir.trim();
-    }
-  } catch {}
-}
-
-if (!centralPoolRoot) {
-  centralPoolRoot = path.join(userHome, '.akb', 'central-pool');
-}
-
-let projectName = path.basename(path.resolve(workspacePath));
-try {
-  const gitRemote = execSync('git config --get remote.origin.url', {
-    cwd: workspacePath,
-    stdio: ['ignore', 'pipe', 'ignore'],
-    timeout: 3000
-  }).toString().trim();
-
-  if (gitRemote) {
-    const match = gitRemote.match(/\/([^\/]+?)(\.git)?$/);
-    if (match && match[1]) {
-      projectName = match[1];
-    }
-  }
-} catch {}
-
-const targetProjectPool = path.join(centralPoolRoot, 'projects', projectName);
-try {
-  fs.mkdirSync(targetProjectPool, { recursive: true });
-} catch {}
-
-// Purge any workspace .akb directory if present and migrate
-try {
-  const wsAkb = path.join(workspacePath, '.akb');
-  if (fs.existsSync(wsAkb)) {
-    const wsSessions = path.join(wsAkb, 'sessions');
-    const poolSessions = path.join(targetProjectPool, '.akb', 'sessions');
-    if (fs.existsSync(wsSessions)) {
-      fs.mkdirSync(poolSessions, { recursive: true });
-      for (const agent of fs.readdirSync(wsSessions)) {
-        const srcAgentDir = path.join(wsSessions, agent);
-        const destAgentDir = path.join(poolSessions, agent);
-        if (!fs.statSync(srcAgentDir).isDirectory()) continue;
-        fs.mkdirSync(destAgentDir, { recursive: true });
-        const srcObs = path.join(srcAgentDir, 'observations.jsonl');
-        const destObs = path.join(destAgentDir, 'observations.jsonl');
-        if (fs.existsSync(srcObs)) {
-          const srcLines = fs.readFileSync(srcObs, 'utf-8').split('\n').filter(Boolean);
-          let destLines = [];
-          if (fs.existsSync(destObs)) {
-            destLines = fs.readFileSync(destObs, 'utf-8').split('\n').filter(Boolean);
-          }
-          const existingIds = new Set(destLines.map(l => {
-            try { return JSON.parse(l).id; } catch { return null; }
-          }).filter(Boolean));
-          for (const line of srcLines) {
-            try {
-              const parsed = JSON.parse(line);
-              if (!existingIds.has(parsed.id)) {
-                destLines.push(line);
-              }
-            } catch {}
-          }
-          fs.writeFileSync(destObs, destLines.join('\n') + '\n', 'utf8');
-        }
-      }
-    }
-    fs.rmSync(wsAkb, { recursive: true, force: true });
-  }
-} catch {}
-
-const env = {
-  ...process.env,
-  AKBO_POOL_DIR: targetProjectPool
-};
-
-const PINNED_PKG = 'akbo-cli@3.0.0';
-let command = 'npx';
-let args = ['-y', PINNED_PKG, 'mcp', workspacePath, '--pool', targetProjectPool];
-let useShell = true;
-
-try {
-  const pkgJsonPath = path.join(workspacePath, 'package.json');
-  const localCli = path.join(workspacePath, 'dist', 'cli.js');
-  if (fs.existsSync(pkgJsonPath) && fs.existsSync(localCli)) {
-    const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8'));
-    if (pkg && pkg.name === 'akbo-cli') {
-      command = process.execPath;
-      args = [localCli, 'mcp', workspacePath, '--pool', targetProjectPool];
-      useShell = false;
-    }
-  }
-} catch {}
-
-if (command === 'npx') {
-  try {
-    const checkCmd = process.platform === 'win32' ? 'where akbo-mcp' : 'which akbo-mcp';
-    execSync(checkCmd, { stdio: 'ignore', timeout: 2000 });
-    command = 'akbo-mcp';
-    args = [workspacePath, '--pool', targetProjectPool];
-    useShell = process.platform === 'win32';
-  } catch {}
-}
-
-const child = spawn(command, args, {
-  shell: useShell,
-  stdio: 'inherit',
-  env
-});
-
-process.on('SIGTERM', () => child.kill());
-process.on('SIGINT', () => child.kill());
-
-child.on('exit', (code, signal) => {
-  if (signal) {
-    process.kill(process.pid, signal);
-  } else {
-    process.exit(code || 0);
-  }
-});
-"#;
-    std::fs::write(plugin_dir.join("mcp.cjs"), mcp_script)
+    std::fs::write(plugin_dir.join("mcp.cjs"), akbo_mcp_script())
         .map_err(|e| format!("Failed to write mcp.cjs: {}", e))?;
 
     // 3. mcp_config.json
@@ -698,32 +1000,32 @@ Use this skill when you want to inspect project architecture invariants, trigger
 ### 1. Memory Consolidation (`/dream`)
 Consolidates recorded observations and recent conversation error traces out-of-band into staged proposals in `.akb/staged/` (default) for review:
 ```powershell
-npx -y akbo-cli@3.0.0 dream --stage-only
-npx -y akbo-cli@3.0.0 dream --list-staged
-npx -y akbo-cli@3.0.0 dream --approve all
+npx -y akbo-cli@3.1.0 dream --stage-only
+npx -y akbo-cli@3.1.0 dream --list-staged
+npx -y akbo-cli@3.1.0 dream --approve all
 ```
 To auto-approve and immediately update the central pool without manual staging:
 ```powershell
-npx -y akbo-cli@3.0.0 dream --auto-approve
+npx -y akbo-cli@3.1.0 dream --auto-approve
 ```
 
 ### 2. Inspect Invariants (`/invariants`)
 Retrieves all approved architecture and development invariants for the active project from the central pool:
 ```powershell
-npx -y akbo-cli@3.0.0 invariants
+npx -y akbo-cli@3.1.0 invariants
 ```
 
 ### 3. Hybrid AST Codebase Knowledge Graph Harvest (`/harvest`)
 Deterministically scans project topology using the Hybrid AST Engine (TS Compiler AST + WASM tree-sitter for C#, Java, Python, Rust, Go with comment-stripped regex fallback, 0 LLM tokens) and updates the CKG cache in the central pool:
 ```powershell
-npx -y akbo-cli@3.0.0 harvest .
+npx -y akbo-cli@3.1.0 harvest .
 ```
 
 ### 4. Scoped Blast-Radius & Convention Guardrails
 Traces architectural boundaries and cross-file TS `IMPORTS`/`CALLS_SYMBOL` (`scope: all | architectural | symbol` on `akbo_impact`, `file#symbol` disambiguation) before refactoring, and evaluates `ast_query` + diff-aware guardrails:
 ```powershell
-npx -y akbo-cli@3.0.0 context <symbol_or_file>
-npx -y akbo-cli@3.0.0 guard <file> -c "<code_or_diff>"
+npx -y akbo-cli@3.1.0 context <symbol_or_file>
+npx -y akbo-cli@3.1.0 guard <file> -c "<code_or_diff>"
 ```
 "#;
     std::fs::write(skill_dir.join("SKILL.md"), skill_md)
@@ -1254,6 +1556,8 @@ mod tests {
         assert!(on_stop.contains("dream \"${workspacePath}\""));
         assert!(on_stop.contains("payload.continuationActive || payload.continuation_active"));
         assert!(on_stop.contains("process.stdout.write('{}')"));
+        assert!(on_stop.contains("isSameDir(rawWorkspace, resolvedPluginDir)"));
+        assert!(on_stop.contains("mirrorDir(localKDir, poolKDir)"));
         assert!(!on_stop.contains("status:"));
         assert!(!on_stop.contains("--targetDir"));
         assert!(!on_stop.contains("--transcriptFiles"));
@@ -1272,17 +1576,283 @@ mod tests {
         assert!(rules.contains("akbo_upsert_units"));
         assert!(rules.contains("`topic`"));
         assert!(rules.contains("`finding`"));
+        assert!(rules.contains("local+pool"));
+        assert!(rules.contains("as `dir`"));
         assert!(!rules.contains("`content`: Concrete technical description"));
     }
 
     #[test]
     fn test_akbo_mcp_wrapper_syntax() {
-        let pinned_pkg = "akbo-cli@3.0.0";
-        let sample_mcp = format!(r#"const args = ['-y', '{}', 'mcp', workspacePath, '--pool', targetProjectPool];"#, pinned_pkg);
-        assert!(sample_mcp.contains("--pool"));
-        assert!(sample_mcp.contains("akbo-cli@3.0.0"));
-        assert!(!sample_mcp.contains("@latest"));
-        assert!(sample_mcp.contains("mcp"));
+        let mcp = akbo_mcp_script();
+        assert!(mcp.contains("akbo-cli@3.1.0"));
+        assert!(!mcp.contains("@latest"));
+        assert!(mcp.contains("AKBO_CENTRAL_POOL_DIR"));
+        assert!(mcp.contains("isPluginFallback"));
+        assert!(mcp.contains("delete env.AKBO_POOL_DIR"));
+        assert!(mcp.contains("AKBO_DISALLOW_DIRS"));
+        assert!(mcp.contains("mirrorLocalKnowledge"));
+        assert!(mcp.contains("tools/call"));
+        assert!(mcp.contains("--pool"));
+        assert!(mcp.contains("mcp"));
+    }
+
+    #[test]
+    fn test_akbo_scripts_node_syntax_and_on_stop_fallback_mirroring() {
+        let tmp_root = std::env::temp_dir().join(format!(
+            "gemini_desktop_akbo_on_stop_test_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let plugin_dir = tmp_root.join("plugin-akbo");
+        let hooks_dir = plugin_dir.join("hooks");
+        let fake_home = tmp_root.join("home");
+        let repo_dir = tmp_root.join("SampleAutoWin");
+        let pool_root = fake_home.join(".akb").join("central-pool");
+
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+        std::fs::create_dir_all(&fake_home).unwrap();
+        std::fs::create_dir_all(repo_dir.join("knowledge").join("architecture")).unwrap();
+
+        let mcp_path = plugin_dir.join("mcp.cjs");
+        let on_stop_path = hooks_dir.join("on-stop.cjs");
+        std::fs::write(&mcp_path, akbo_mcp_script()).unwrap();
+        std::fs::write(&on_stop_path, akbo_on_stop_script()).unwrap();
+
+        // Verify Node syntax of both generated scripts
+        for script_path in [&mcp_path, &on_stop_path] {
+            let check = std::process::Command::new("node")
+                .arg("--check")
+                .arg(script_path)
+                .output()
+                .expect("node must be available to syntax-check generated AKBO scripts");
+            assert!(
+                check.status.success(),
+                "node --check failed for {:?}: {}",
+                script_path,
+                String::from_utf8_lossy(&check.stderr)
+            );
+        }
+
+        // Write a repo-local unit and index.yaml
+        let unit_path = repo_dir.join("knowledge").join("architecture").join("ARCH-TEST-001.yaml");
+        let index_path = repo_dir.join("knowledge").join("index.yaml");
+        std::fs::write(&unit_path, "id: ARCH-TEST-001\nrule: Keep local knowledge intact.\n").unwrap();
+        std::fs::write(&index_path, "system_name: SampleAutoWin\nknowledge_units_count: 1\n").unwrap();
+
+        // 1. Empty payload / fallback dir must emit {} and NOT create projects/plugin-akbo
+        let mut child_empty = std::process::Command::new("node")
+            .arg(&on_stop_path)
+            .current_dir(&plugin_dir)
+            .env("USERPROFILE", &fake_home)
+            .env("HOME", &fake_home)
+            .env_remove("AKBO_POOL_DIR")
+            .env_remove("AKBO_CENTRAL_POOL_DIR")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            use std::io::Write;
+            child_empty.stdin.as_mut().unwrap().write_all(b"{}").unwrap();
+        }
+        let out_empty = child_empty.wait_with_output().unwrap();
+        assert!(out_empty.status.success());
+        assert_eq!(String::from_utf8_lossy(&out_empty.stdout).trim(), "{}");
+        assert!(!pool_root.join("projects").join("plugin-akbo").exists());
+
+        // 2. Workspace payload mirrors repo-local knowledge/ non-destructively into central pool
+        let payload = serde_json::json!({
+            "workspacePaths": [repo_dir.to_string_lossy().to_string()]
+        })
+        .to_string();
+        let mut child_mirror = std::process::Command::new("node")
+            .arg(&on_stop_path)
+            .current_dir(&plugin_dir)
+            .env("USERPROFILE", &fake_home)
+            .env("HOME", &fake_home)
+            .env_remove("AKBO_POOL_DIR")
+            .env_remove("AKBO_CENTRAL_POOL_DIR")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            use std::io::Write;
+            child_mirror.stdin.as_mut().unwrap().write_all(payload.as_bytes()).unwrap();
+        }
+        let out_mirror = child_mirror.wait_with_output().unwrap();
+        assert!(out_mirror.status.success());
+        assert_eq!(String::from_utf8_lossy(&out_mirror.stdout).trim(), "{}");
+
+        let mirrored_pool = pool_root.join("projects").join("SampleAutoWin");
+        assert!(mirrored_pool.join("knowledge").join("architecture").join("ARCH-TEST-001.yaml").exists());
+        assert!(mirrored_pool.join("knowledge").join("index.yaml").exists());
+        assert!(unit_path.exists(), "repo-local knowledge file must remain intact");
+
+        let _ = std::fs::remove_dir_all(&tmp_root);
+    }
+
+    #[test]
+    fn test_akbo_mcp_script_fallback_routing_and_error_guards() {
+        let tmp_root = std::env::temp_dir().join(format!(
+            "gemini_desktop_akbo_mcp_fallback_test_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let plugin_dir = tmp_root.join("akbo");
+        let fake_home = tmp_root.join("home");
+        let bin_dir = tmp_root.join("bin");
+        let repo_dir = tmp_root.join("AutoWinSample");
+        let pool_root = fake_home.join(".akb").join("central-pool");
+
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::create_dir_all(&fake_home).unwrap();
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::create_dir_all(repo_dir.join("knowledge").join("architecture")).unwrap();
+        std::fs::write(
+            repo_dir.join("knowledge").join("architecture").join("ARCH-SYS-001.yaml"),
+            "id: ARCH-SYS-001\nrule: Sample rule.\n",
+        )
+        .unwrap();
+
+        let mcp_path = plugin_dir.join("mcp.cjs");
+        std::fs::write(&mcp_path, akbo_mcp_script()).unwrap();
+
+        // Create a deterministic mock `akbo-mcp` binary on PATH that echoes received args/env/tools-call JSON
+        let mock_server_js = bin_dir.join("mock_akbo_mcp.cjs");
+        std::fs::write(
+            &mock_server_js,
+            r#"let buf = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  buf += chunk;
+  let idx;
+  while ((idx = buf.indexOf('\n')) !== -1) {
+    const line = buf.slice(0, idx).replace(/\r$/, '');
+    buf = buf.slice(idx + 1);
+    if (!line.trim()) continue;
+    const msg = JSON.parse(line);
+    process.stdout.write(JSON.stringify({
+      jsonrpc: '2.0',
+      id: msg.id ?? null,
+      result: {
+        envPool: process.env.AKBO_POOL_DIR ?? null,
+        envCentralPool: process.env.AKBO_CENTRAL_POOL_DIR ?? null,
+        envDisallowDirs: process.env.AKBO_DISALLOW_DIRS ?? null,
+        forwardedMethod: msg.method,
+        forwardedParams: msg.params ?? null
+      }
+    }) + '\n');
+  }
+});
+"#,
+        )
+        .unwrap();
+
+        #[cfg(windows)]
+        {
+            let shim = bin_dir.join("akbo-mcp.cmd");
+            std::fs::write(
+                &shim,
+                format!("@echo off\r\nnode \"{}\" %*\r\n", mock_server_js.to_string_lossy()),
+            )
+            .unwrap();
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let shim = bin_dir.join("akbo-mcp");
+            std::fs::write(
+                &shim,
+                format!("#!/usr/bin/env sh\nexec node \"{}\" \"$@\"\n", mock_server_js.to_string_lossy()),
+            )
+            .unwrap();
+            let mut perms = std::fs::metadata(&shim).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&shim, perms).unwrap();
+        }
+
+        let orig_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut paths = vec![bin_dir.clone()];
+        paths.extend(std::env::split_paths(&orig_path));
+        let test_path = std::env::join_paths(paths).unwrap();
+
+        let mut child = std::process::Command::new("node")
+            .arg(&mcp_path)
+            .current_dir(&plugin_dir)
+            .env("PATH", &test_path)
+            .env("USERPROFILE", &fake_home)
+            .env("HOME", &fake_home)
+            .env_remove("WORKSPACE_DIR")
+            .env_remove("PROJECT_DIR")
+            .env_remove("AKBO_POOL_DIR")
+            .env_remove("AKBO_CENTRAL_POOL_DIR")
+            .env_remove("AKBO_DISALLOW_DIRS")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        {
+            use std::io::Write;
+            let stdin = child.stdin.as_mut().unwrap();
+            let req1 = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": { "name": "akbo_upsert_units", "arguments": { "units": [] } }
+            })
+            .to_string();
+            let req2 = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "akbo_harvest",
+                    "arguments": { "dir": repo_dir.to_string_lossy().to_string() }
+                }
+            })
+            .to_string();
+            writeln!(stdin, "{}", req1).unwrap();
+            writeln!(stdin, "{}", req2).unwrap();
+        }
+
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "mcp.cjs exited non-zero: {}", String::from_utf8_lossy(&output.stderr));
+
+        let stdout_str = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<serde_json::Value> = stdout_str
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2, "Expected 2 JSON-RPC responses, got: {}", stdout_str);
+
+        // Response 1: write tool missing `dir` in plugin fallback must fail fast with isError: true
+        assert_eq!(lines[0]["id"], 1);
+        assert_eq!(lines[0]["result"]["isError"], true);
+
+        // Response 2: `dir` triggers dynamic pool injection + central pool env + local knowledge mirroring
+        assert_eq!(lines[1]["id"], 2);
+        let res2 = &lines[1]["result"];
+        assert!(res2["envPool"].is_null(), "AKBO_POOL_DIR must not be pinned in plugin fallback");
+        assert_eq!(
+            res2["envCentralPool"].as_str(),
+            Some(pool_root.to_string_lossy().as_ref())
+        );
+        assert!(res2["envDisallowDirs"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains(&plugin_dir.to_string_lossy().to_lowercase()));
+
+        let expected_pool = pool_root.join("projects").join("AutoWinSample");
+        assert_eq!(
+            res2["forwardedParams"]["arguments"]["pool"].as_str(),
+            Some(expected_pool.to_string_lossy().as_ref())
+        );
+        assert!(expected_pool.join("knowledge").join("architecture").join("ARCH-SYS-001.yaml").exists());
+        assert!(!pool_root.join("projects").join("akbo").exists());
+
+        let _ = std::fs::remove_dir_all(&tmp_root);
     }
 
     #[test]
