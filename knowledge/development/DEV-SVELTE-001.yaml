@@ -3,7 +3,7 @@ type: development_standard
 title: Svelte 5 Runes State Management & Tailwind CSS v4 Component Standard
 domain: development
 status: approved
-version: 1.11.0
+version: 1.12.0
 authority:
   level: official
   confidence: high
@@ -33,7 +33,8 @@ do:
   - "Enable session forking (`fork_session`) from any conversation turn in `ChatView.svelte` to branch discussions into independent sessions without altering the original history."
   - "Decompose high-complexity views into focused subcomponents (e.g. `ToolPermissionCard.svelte`, `ToolCallNode.svelte`, `ChatPromptComposer.svelte`, `ChatMentionPopover.svelte`, `ChatSlashPopover.svelte`, `ExplorerContextMenu.svelte`, `ExplorerTreeRow.svelte`, `EngineSwitcher.svelte`, `CliPathStatusBanner.svelte`) and extract reusable domain logic into shared stores and pure utility modules (`engineStore.svelte.ts`, `engineModels.ts`, `approvalModes.ts`, `toolSteps.ts`, `fileIcons.ts`, `fileFilters.ts`)."
   - "Bound markdown rendering cost and chat DOM growth via LRU caching in `markdown.ts` and message windowing ('Show earlier messages') in `ChatView.svelte`."
-  - "Group multi-step agent tool executions into a hierarchical progress tree via `ToolCallGroup.svelte` with wall-clock turn duration tracking (`formatDuration`) and live elapsed timing during streaming: while the agent is executing, tuck completed steps into an expandable accordion header (`[▶] Executing tasks (N/M completed)... Xm Ys`) and display only the currently active working step underneath; once all steps complete, tuck the entire sequence into a single compact header (`[▶] N steps completed • Xm Ys`) with a toggleable tree view, keeping the assistant's final response clean and fully readable without terminal clutter."
+  - "Group multi-step agent tool executions and ACP plan milestones via `ToolCallGroup.svelte` and `toolSteps.ts` as a Living Now Capsule while streaming (compact phase/milestone stepper, single-line active focus with burst-grouped reads, live elapsed clock, and changed-file/check impact pills) that collapses automatically into a 1-Line Work Receipt with an expandable `[Inspect]` timeline drawer (`All` / `Files` / `Commands` / `Errors`) once completed."
+  - "Enforce empty-only prompt history recall via `resolvePromptHistoryNavigation` (`src/lib/utils/promptHistory.ts`) in `ChatPromptComposer.svelte`: `ArrowUp` enters past prompt history only when the composer text is completely empty and no modifier keys or text selections are active, preserving unsent drafts and prefilled/rewound prompts."
   - "Enforce strict CSS stacking context hierarchy: header has `relative z-30`, chat message viewport has `z-0`, bottom prompt bar has `relative z-20`, tooltips elevate dynamically to `z-50` on hover, and dropdown menus (Export, Workspace profile) use `z-40` with outside-click dismissal backdrops so chat messages never occlude menus or tooltips."
   - "Design collateral navigation panels (Sidebar, SolutionExplorer) with dual-state layouts: full-width drawer when open, and a compact vertical icon strip (`w-12` on left, `w-7` on right) when collapsed to maximize chat and code viewing space while retaining 1-click access to core actions."
   - "Structure primary navigation with Pinned Chat Hero + Bottom Settings Hub layout (`Sidebar.svelte`): place high-frequency actions (`New Chat`, `Search History`) at the top, assign primary remaining height (`flex-1 min-h-0 overflow-y-auto`) exclusively to `Recent Chats` so conversations are never pushed below the fold, and consolidate developer drawer toggles (`Terminal`, `Workspace Explorer`) and low-frequency configuration tools (`Plugins`, `MCP`, `Settings`, `Setup`, `Theme`) into a compact bottom toolbar with an upward-floating popover menu."

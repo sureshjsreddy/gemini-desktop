@@ -106,6 +106,12 @@ class EngineStore {
   isCheckingPath = $state(false);
   isAddingToPath = $state(false);
   pathAddResult = $state<PathAddResult | null>(null);
+  pathAddResultByEngine = $state<Record<string, PathAddResult | null>>({});
+
+  getPathAddResult(engineId?: string | null): PathAddResult | null {
+    const key = (engineId || this.activeEngine).trim().toLowerCase();
+    return this.pathAddResultByEngine[key] ?? null;
+  }
 
   activeDescriptor = $derived<EngineDescriptor>(
     this.catalog.find((e) => e.id === this.activeEngine) ??
@@ -185,22 +191,35 @@ class EngineStore {
   }
 
   async addToPath(engineId?: CliEngine): Promise<PathAddResult | null> {
-    const target = engineId || this.activeEngine;
+    const target = (engineId || this.activeEngine).trim().toLowerCase();
     this.isAddingToPath = true;
     this.pathAddResult = null;
+    this.pathAddResultByEngine = {
+      ...this.pathAddResultByEngine,
+      [target]: null,
+    };
     try {
       const res = await invoke<PathAddResult>("add_cli_to_user_path", { engine: target });
       this.pathAddResult = res;
+      this.pathAddResultByEngine = {
+        ...this.pathAddResultByEngine,
+        [target]: res,
+      };
       await this.refresh();
       return res;
     } catch (e: any) {
-      this.pathAddResult = {
+      const errRes: PathAddResult = {
         success: false,
         message: e?.toString() || "Failed to add directory to User PATH.",
         targetDir: "",
         alreadyInPath: false,
       };
-      return this.pathAddResult;
+      this.pathAddResult = errRes;
+      this.pathAddResultByEngine = {
+        ...this.pathAddResultByEngine,
+        [target]: errRes,
+      };
+      return errRes;
     } finally {
       this.isAddingToPath = false;
     }

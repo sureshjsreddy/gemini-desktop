@@ -35,6 +35,7 @@
     Clock,
   } from "lucide-svelte";
   import { parseDebugError } from "$lib/utils/debugParser";
+  import { resolvePromptHistoryNavigation } from "$lib/utils/promptHistory";
   import type { ParsedDebugError } from "$lib/types";
   import { tick, onMount, onDestroy } from "svelte";
 
@@ -87,7 +88,6 @@
   const PROMPT_HISTORY_STORAGE_KEY = "gemini_desktop_prompt_history";
   let promptHistory = $state<string[]>([]);
   let historyIndex = $state(-1);
-  let tempDraft = $state("");
 
   // File & Git Attachments State
   let attachments: AttachmentItem[] = $state([]);
@@ -324,6 +324,7 @@
     function handlePrefill(e: Event) {
       const customEvent = e as CustomEvent<string>;
       if (customEvent.detail) {
+        historyIndex = -1;
         inputPrompt = (inputPrompt ? inputPrompt + "\n\n" : "") + customEvent.detail;
         tick().then(() => {
           if (textareaElem) {
@@ -578,6 +579,7 @@
         return false;
       case "clear":
         inputPrompt = "";
+        historyIndex = -1;
         attachments = [];
         return true;
       default:
@@ -603,6 +605,7 @@
     }
 
     const insert = option.insertText.endsWith(" ") ? option.insertText : option.insertText + " ";
+    historyIndex = -1;
     inputPrompt = textBefore + insert + textAfter;
     tick().then(() => {
       if (textareaElem) {
@@ -619,6 +622,7 @@
     const textBefore = inputPrompt.slice(0, mentionMatchStart);
     const textAfter = inputPrompt.slice(cursor);
 
+    historyIndex = -1;
     inputPrompt = textBefore + option.insertText + textAfter;
     showMentionPopover = false;
     dismissedMatchStart = null;
@@ -680,6 +684,7 @@
     if (onSteerPrompt) {
       onSteerPrompt(trimmed);
       inputPrompt = "";
+      historyIndex = -1;
     }
   }
 
@@ -699,6 +704,7 @@
       }
     }
     inputPrompt = "";
+    historyIndex = -1;
     attachments = [];
     showMentionPopover = false;
     onQueuePrompt?.(finalPrompt, submitAttachments);
@@ -747,46 +753,28 @@
       }
     }
 
-    // Prompt History Navigation: ArrowUp and ArrowDown
-    if (!showSlashPopover && !showMentionPopover) {
-      if (e.key === "ArrowUp") {
-        const cursor = textareaElem?.selectionStart ?? 0;
-        const isFirstLine = !inputPrompt.slice(0, cursor).includes("\n");
-        if (isFirstLine && promptHistory.length > 0) {
-          if (historyIndex === -1) {
-            tempDraft = inputPrompt;
+    // Prompt History Navigation: ArrowUp and ArrowDown (only enters history when prompt is empty)
+    if (!showSlashPopover && !showMentionPopover && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      const nav = resolvePromptHistoryNavigation({
+        key: e.key,
+        inputPrompt,
+        selectionStart: textareaElem?.selectionStart ?? 0,
+        selectionEnd: textareaElem?.selectionEnd ?? 0,
+        historyIndex,
+        promptHistory,
+        hasModifiers: e.shiftKey || e.ctrlKey || e.altKey || e.metaKey,
+      });
+
+      if (nav.handled) {
+        e.preventDefault();
+        historyIndex = nav.nextHistoryIndex;
+        inputPrompt = nav.nextPrompt;
+        tick().then(() => {
+          if (textareaElem) {
+            textareaElem.selectionStart = textareaElem.selectionEnd = textareaElem.value.length;
           }
-          if (historyIndex < promptHistory.length - 1) {
-            e.preventDefault();
-            historyIndex++;
-            inputPrompt = promptHistory[promptHistory.length - 1 - historyIndex];
-            tick().then(() => {
-              if (textareaElem) {
-                textareaElem.selectionStart = textareaElem.selectionEnd = textareaElem.value.length;
-              }
-            });
-            return;
-          }
-        }
-      } else if (e.key === "ArrowDown") {
-        const cursor = textareaElem?.selectionStart ?? 0;
-        const isLastLine = !inputPrompt.slice(cursor).includes("\n");
-        if (isLastLine && historyIndex >= 0) {
-          e.preventDefault();
-          if (historyIndex > 0) {
-            historyIndex--;
-            inputPrompt = promptHistory[promptHistory.length - 1 - historyIndex];
-          } else {
-            historyIndex = -1;
-            inputPrompt = tempDraft;
-          }
-          tick().then(() => {
-            if (textareaElem) {
-              textareaElem.selectionStart = textareaElem.selectionEnd = textareaElem.value.length;
-            }
-          });
-          return;
-        }
+        });
+        return;
       }
     }
 
@@ -820,7 +808,6 @@
       }
     }
     historyIndex = -1;
-    tempDraft = "";
 
     if (trimmed.startsWith("/")) {
       const parts = trimmed.split(/\s+/);

@@ -3,7 +3,7 @@ type: product_standard
 title: Dual-Engine Setup, In-App Upgrades, Dual Auth & CrowdStrike EDR Safe Execution Standard
 domain: product
 status: approved
-version: 1.3.0
+version: 1.4.0
 authority:
   level: official
   confidence: high
@@ -23,7 +23,9 @@ do:
   - "Provide an app-level engine switcher supporting Gemini CLI (`gemini`) and Antigravity CLI (`agy`), persisting the choice in SQLite `app_settings` under key `active_cli_engine` across application restarts."
   - "Detect installation status and binary paths for both engines: detect `gemini` in npm global directories or system PATH, and detect `agy` in `%LOCALAPPDATA%\\agy\\bin\\agy.exe`, `%USERPROFILE%\\.antigravity\\bin\\agy.exe`, or system PATH."
   - "Provide 1-click installer and updater options for both engines: `@google/gemini-cli@latest` via npm/WinGet, and Antigravity CLI via `agy update` or PowerShell release installer."
-  - "Provide a 1-click option to add either CLI executable folder to the Windows User Environment Variable `Path` (`[Environment]::SetEnvironmentVariable('Path', ..., 'User')`) with safety checks against path duplication and null corruption."
+  - "Provide a 1-click option to add ONLY the currently selected CLI engine's executable folder to the Windows User Environment Variable `Path` (`[Environment]::SetEnvironmentVariable('Path', ..., 'User')`) with per-engine result state and safety checks against path duplication and null corruption."
+  - "Provide engine-aware Authentication setup (`2. Authentication`): support `agy acp --login`, optional `AGY_ADC_AUTH=true`, GCP Vertex/ADC overrides, and BYOK API Key when Antigravity (`agy`) is active, and Vertex AI (with 1-click `launch_gemini_login` + Service Account JSON file picker) or AI Studio API Key when Gemini CLI (`gemini`) is active."
+  - "Allow users to inspect and explicitly sync/clear non-secret GCP & CLI configuration variables (`GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_GENAI_USE_VERTEXAI`, and `AGY_ADC_AUTH`) in Windows User Environment (`HKCU\\Environment`) while strictly never writing API keys (`GEMINI_API_KEY`) to the Windows Registry. In Tab 2, default `syncToUserEnvOnSave` to selected (`true`) and leave `applyToWorkspace`, `includeUseVertexFlag`, and `agyAdcAuth` unselected (`false`) by default."
   - "Support Dual Authentication Modes with Google Cloud Vertex AI as the primary default mode (`vertex_ai`), and Google AI Studio (`api_key`) via `GEMINI_API_KEY`."
   - "Support Zero-Dependency Corporate Auth: Gemini CLI incorporates a built-in browser OAuth2 login flow (caching credentials in `~/.gemini/oauth_creds.json` and `~/.gemini/google_accounts.json`), meaning the full Google Cloud SDK (`gcloud` CLI) is strictly optional and not required for corporate Vertex AI operation."
   - "Auto-detect existing developer environment state: detect native Gemini CLI browser OAuth credentials (`~/.gemini/oauth_creds.json`), optional `gcloud` CLI presence, active Google Cloud project (`gcloud config get-value project`), and Application Default Credentials (ADC in `%APPDATA%\\gcloud\\application_default_credentials.json`)."

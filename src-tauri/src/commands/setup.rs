@@ -15,6 +15,8 @@ pub struct GeminiAuthConfig {
     pub google_cloud_project: Option<String>,
     pub google_cloud_location: Option<String>,
     pub google_app_credentials: Option<String>,
+    #[serde(default)]
+    pub agy_adc_auth: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,29 +45,30 @@ pub struct GCloudStatus {
     pub path: Option<String>,
 }
 
-#[tauri::command]
-pub async fn get_gemini_auth_config(
-    state: State<'_, AppState>,
-) -> Result<GeminiAuthConfig, String> {
-    let auth_mode = state.db.get_setting("gemini_auth_mode")
+pub fn read_auth_config_from_db(db: &crate::database::DbManager) -> Result<GeminiAuthConfig, String> {
+    let non_empty = |v: Option<String>| -> Option<String> {
+        v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    };
+
+    let auth_mode = db.get_setting("gemini_auth_mode")
         .map_err(|e| e.to_string())?
+        .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| {
-            if let Ok(Some(key)) = state.db.get_setting("gemini_api_key") {
+            if let Ok(Some(key)) = db.get_setting("gemini_api_key") {
                 if !key.trim().is_empty() {
                     return "api_key".to_string();
                 }
             }
             "vertex_ai".to_string()
         });
-    let api_key = state.db.get_setting("gemini_api_key")
-        .map_err(|e| e.to_string())?;
-    let google_cloud_project = state.db.get_setting("google_cloud_project")
-        .map_err(|e| e.to_string())?;
-    let google_cloud_location = state.db.get_setting("google_cloud_location")
-        .map_err(|e| e.to_string())?
+    let api_key = non_empty(db.get_setting("gemini_api_key").map_err(|e| e.to_string())?);
+    let google_cloud_project = non_empty(db.get_setting("google_cloud_project").map_err(|e| e.to_string())?);
+    let google_cloud_location = non_empty(db.get_setting("google_cloud_location").map_err(|e| e.to_string())?)
         .or_else(|| Some("us-central1".to_string()));
-    let google_app_credentials = state.db.get_setting("google_app_credentials")
-        .map_err(|e| e.to_string())?;
+    let google_app_credentials = non_empty(db.get_setting("google_app_credentials").map_err(|e| e.to_string())?);
+    let agy_adc_auth = db.get_setting("agy_adc_auth")
+        .map_err(|e| e.to_string())?
+        .map(|s| s.trim().eq_ignore_ascii_case("true"));
 
     Ok(GeminiAuthConfig {
         auth_mode,
@@ -73,7 +76,76 @@ pub async fn get_gemini_auth_config(
         google_cloud_project,
         google_cloud_location,
         google_app_credentials,
+        agy_adc_auth,
     })
+}
+
+pub fn write_auth_config_to_db(db: &crate::database::DbManager, config: &GeminiAuthConfig) -> Result<(), String> {
+    // Persist empty strings on cleared optional fields so stale values never linger
+    db.set_setting("gemini_auth_mode", config.auth_mode.trim()).map_err(|e| e.to_string())?;
+    db.set_setting("gemini_api_key", config.api_key.as_deref().unwrap_or("").trim()).map_err(|e| e.to_string())?;
+    db.set_setting("google_cloud_project", config.google_cloud_project.as_deref().unwrap_or("").trim()).map_err(|e| e.to_string())?;
+    db.set_setting("google_cloud_location", config.google_cloud_location.as_deref().unwrap_or("").trim()).map_err(|e| e.to_string())?;
+    db.set_setting("google_app_credentials", config.google_app_credentials.as_deref().unwrap_or("").trim()).map_err(|e| e.to_string())?;
+    if let Some(adc) = config.agy_adc_auth {
+        db.set_setting("agy_adc_auth", if adc { "true" } else { "false" }).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub fn build_env_local_content(existing_content: Option<&str>, config: &GeminiAuthConfig) -> String {
+    let mut env_lines = Vec::new();
+    if let Some(existing) = existing_content {
+        for line in existing.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("GEMINI_API_KEY=")
+                || trimmed.starts_with("GOOGLE_GENAI_USE_VERTEXAI=")
+                || trimmed.starts_with("GOOGLE_CLOUD_PROJECT=")
+                || trimmed.starts_with("GOOGLE_CLOUD_LOCATION=")
+                || trimmed.starts_with("GOOGLE_APPLICATION_CREDENTIALS=")
+                || trimmed.starts_with("AGY_ADC_AUTH=")
+            {
+                continue;
+            }
+            env_lines.push(line.to_string());
+        }
+    }
+
+    if config.auth_mode == "vertex_ai" {
+        env_lines.push("GOOGLE_GENAI_USE_VERTEXAI=true".to_string());
+        if let Some(proj) = &config.google_cloud_project {
+            if !proj.trim().is_empty() {
+                env_lines.push(format!("GOOGLE_CLOUD_PROJECT={}", proj.trim()));
+            }
+        }
+        if let Some(loc) = &config.google_cloud_location {
+            if !loc.trim().is_empty() {
+                env_lines.push(format!("GOOGLE_CLOUD_LOCATION={}", loc.trim()));
+            }
+        }
+        if let Some(creds) = &config.google_app_credentials {
+            if !creds.trim().is_empty() {
+                env_lines.push(format!("GOOGLE_APPLICATION_CREDENTIALS={}", creds.trim()));
+            }
+        }
+    } else if let Some(key) = &config.api_key {
+        if !key.trim().is_empty() {
+            env_lines.push(format!("GEMINI_API_KEY={}", key.trim()));
+        }
+    }
+
+    if config.agy_adc_auth == Some(true) {
+        env_lines.push("AGY_ADC_AUTH=true".to_string());
+    }
+
+    env_lines.join("\n") + "\n"
+}
+
+#[tauri::command]
+pub async fn get_gemini_auth_config(
+    state: State<'_, AppState>,
+) -> Result<GeminiAuthConfig, String> {
+    read_auth_config_from_db(&state.db)
 }
 
 #[tauri::command]
@@ -83,19 +155,7 @@ pub async fn save_gemini_auth_config(
     apply_to_workspace: Option<String>,
 ) -> Result<(), String> {
     // 1. Save in SQLite
-    state.db.set_setting("gemini_auth_mode", &config.auth_mode).map_err(|e| e.to_string())?;
-    if let Some(key) = &config.api_key {
-        state.db.set_setting("gemini_api_key", key).map_err(|e| e.to_string())?;
-    }
-    if let Some(proj) = &config.google_cloud_project {
-        state.db.set_setting("google_cloud_project", proj).map_err(|e| e.to_string())?;
-    }
-    if let Some(loc) = &config.google_cloud_location {
-        state.db.set_setting("google_cloud_location", loc).map_err(|e| e.to_string())?;
-    }
-    if let Some(creds) = &config.google_app_credentials {
-        state.db.set_setting("google_app_credentials", creds).map_err(|e| e.to_string())?;
-    }
+    write_auth_config_to_db(&state.db, &config)?;
 
     // 2. Sync to ~/.gemini/settings.json so official CLI also picks up selected auth mode
     let home_dir = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok();
@@ -141,47 +201,12 @@ pub async fn save_gemini_auth_config(
         let ws_dir = std::path::PathBuf::from(&ws_path);
         if ws_dir.is_dir() {
             let env_local_path = ws_dir.join(".env.local");
-            let mut env_lines = Vec::new();
-            if env_local_path.is_file() {
-                if let Ok(existing) = std::fs::read_to_string(&env_local_path) {
-                    for line in existing.lines() {
-                        let trimmed = line.trim();
-                        if trimmed.starts_with("GEMINI_API_KEY=")
-                            || trimmed.starts_with("GOOGLE_GENAI_USE_VERTEXAI=")
-                            || trimmed.starts_with("GOOGLE_CLOUD_PROJECT=")
-                            || trimmed.starts_with("GOOGLE_CLOUD_LOCATION=")
-                            || trimmed.starts_with("GOOGLE_APPLICATION_CREDENTIALS=") {
-                            continue;
-                        }
-                        env_lines.push(line.to_string());
-                    }
-                }
-            }
-
-            if config.auth_mode == "vertex_ai" {
-                env_lines.push("GOOGLE_GENAI_USE_VERTEXAI=true".to_string());
-                if let Some(proj) = &config.google_cloud_project {
-                    if !proj.trim().is_empty() {
-                        env_lines.push(format!("GOOGLE_CLOUD_PROJECT={}", proj.trim()));
-                    }
-                }
-                if let Some(loc) = &config.google_cloud_location {
-                    if !loc.trim().is_empty() {
-                        env_lines.push(format!("GOOGLE_CLOUD_LOCATION={}", loc.trim()));
-                    }
-                }
-                if let Some(creds) = &config.google_app_credentials {
-                    if !creds.trim().is_empty() {
-                        env_lines.push(format!("GOOGLE_APPLICATION_CREDENTIALS={}", creds.trim()));
-                    }
-                }
-            } else if let Some(key) = &config.api_key {
-                if !key.trim().is_empty() {
-                    env_lines.push(format!("GEMINI_API_KEY={}", key.trim()));
-                }
-            }
-
-            let new_content = env_lines.join("\n") + "\n";
+            let existing = if env_local_path.is_file() {
+                std::fs::read_to_string(&env_local_path).ok()
+            } else {
+                None
+            };
+            let new_content = build_env_local_content(existing.as_deref(), &config);
             let _ = std::fs::write(&env_local_path, new_content);
         }
     }
@@ -817,6 +842,7 @@ pub async fn discover_gemini_models(
             google_cloud_project: None,
             google_cloud_location: None,
             google_app_credentials: None,
+            agy_adc_auth: None,
         },
     };
 
@@ -940,7 +966,95 @@ pub struct PathAddResult {
     pub already_in_path: bool,
 }
 
-pub fn get_user_path_dirs() -> Vec<std::path::PathBuf> {
+/// Non-secret GCP & CLI configuration variables eligible for Windows User Environment sync.
+pub const MANAGED_GCP_USER_ENV_KEYS: [&str; 4] = [
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "AGY_ADC_AUTH",
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserEnvVarStatus {
+    pub name: String,
+    pub value: Option<String>,
+    pub is_set: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserEnvSyncRequest {
+    pub google_cloud_project: Option<String>,
+    pub google_cloud_location: Option<String>,
+    #[serde(default)]
+    pub google_genai_use_vertexai: Option<bool>,
+    #[serde(default)]
+    pub agy_adc_auth: Option<bool>,
+    #[serde(default)]
+    pub clear_unspecified: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserEnvSyncResult {
+    pub success: bool,
+    pub message: String,
+    pub updated_vars: Vec<String>,
+    pub removed_vars: Vec<String>,
+    pub vars: Vec<UserEnvVarStatus>,
+}
+
+/// Validates and translates a `UserEnvSyncRequest` into deterministic set (`Some`) or delete (`None`)
+/// Registry operations scoped strictly to `MANAGED_GCP_USER_ENV_KEYS`.
+pub fn build_managed_user_env_plan(
+    req: &UserEnvSyncRequest,
+) -> Result<Vec<(&'static str, Option<String>)>, String> {
+    let validate_value = |key: &str, raw: &str| -> Result<String, String> {
+        let trimmed = raw.trim();
+        if trimmed.contains('\n') || trimmed.contains('\r') || trimmed.contains('\0') {
+            return Err(format!("{} cannot contain newlines or control characters.", key));
+        }
+        Ok(trimmed.to_string())
+    };
+
+    let mut plan: Vec<(&'static str, Option<String>)> = Vec::new();
+
+    match req.google_cloud_project.as_deref().map(str::trim) {
+        Some(p) if !p.is_empty() => {
+            plan.push(("GOOGLE_CLOUD_PROJECT", Some(validate_value("GOOGLE_CLOUD_PROJECT", p)?)));
+        }
+        _ if req.clear_unspecified => plan.push(("GOOGLE_CLOUD_PROJECT", None)),
+        _ => {}
+    }
+
+    match req.google_cloud_location.as_deref().map(str::trim) {
+        Some(loc) if !loc.is_empty() => {
+            plan.push(("GOOGLE_CLOUD_LOCATION", Some(validate_value("GOOGLE_CLOUD_LOCATION", loc)?)));
+        }
+        _ if req.clear_unspecified => plan.push(("GOOGLE_CLOUD_LOCATION", None)),
+        _ => {}
+    }
+
+    match req.google_genai_use_vertexai {
+        Some(true) => plan.push(("GOOGLE_GENAI_USE_VERTEXAI", Some("true".to_string()))),
+        Some(false) => plan.push(("GOOGLE_GENAI_USE_VERTEXAI", None)),
+        None if req.clear_unspecified => plan.push(("GOOGLE_GENAI_USE_VERTEXAI", None)),
+        None => {}
+    }
+
+    match req.agy_adc_auth {
+        Some(true) => plan.push(("AGY_ADC_AUTH", Some("true".to_string()))),
+        Some(false) => plan.push(("AGY_ADC_AUTH", None)),
+        None if req.clear_unspecified => plan.push(("AGY_ADC_AUTH", None)),
+        None => {}
+    }
+
+    Ok(plan)
+}
+
+/// Reads a Windows User Environment Variable directly from `HKCU\Environment` (0 subprocesses).
+pub fn read_windows_user_env_var(name: &str) -> Option<String> {
     #[cfg(target_os = "windows")]
     {
         use std::ffi::OsStr;
@@ -949,13 +1063,12 @@ pub fn get_user_path_dirs() -> Vec<std::path::PathBuf> {
             RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
         };
 
-        // In-process native Win32 Registry lookup of HKCU\Environment\Path (0 subprocesses, <0.01ms)
         unsafe {
             let subkey: Vec<u16> = OsStr::new("Environment")
                 .encode_wide()
                 .chain(Some(0))
                 .collect();
-            let val_name: Vec<u16> = OsStr::new("Path")
+            let val_name: Vec<u16> = OsStr::new(name)
                 .encode_wide()
                 .chain(Some(0))
                 .collect();
@@ -969,17 +1082,53 @@ pub fn get_user_path_dirs() -> Vec<std::path::PathBuf> {
                         let _ = RegCloseKey(hkey);
                         let u16_slice: &[u16] = std::slice::from_raw_parts(buffer.as_ptr() as *const u16, data_len as usize / 2);
                         let end = u16_slice.iter().position(|&c| c == 0).unwrap_or(u16_slice.len());
-                        let path_str = String::from_utf16_lossy(&u16_slice[..end]);
-                        return path_str
-                            .split(';')
-                            .map(|s| s.trim())
-                            .filter(|s| !s.is_empty())
-                            .map(std::path::PathBuf::from)
-                            .collect();
+                        let val_str = String::from_utf16_lossy(&u16_slice[..end]).trim().to_string();
+                        if !val_str.is_empty() {
+                            return Some(val_str);
+                        }
+                        return None;
                     }
                 }
                 let _ = RegCloseKey(hkey);
             }
+        }
+        None
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::env::var(name)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+}
+
+pub fn read_managed_user_env_statuses() -> Vec<UserEnvVarStatus> {
+    MANAGED_GCP_USER_ENV_KEYS
+        .iter()
+        .map(|&name| {
+            let value = read_windows_user_env_var(name);
+            let is_set = value.is_some();
+            UserEnvVarStatus {
+                name: name.to_string(),
+                value,
+                is_set,
+            }
+        })
+        .collect()
+}
+
+pub fn get_user_path_dirs() -> Vec<std::path::PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(path_str) = read_windows_user_env_var("Path") {
+            return path_str
+                .split(';')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(std::path::PathBuf::from)
+                .collect();
         }
     }
 
@@ -991,6 +1140,131 @@ pub fn get_user_path_dirs() -> Vec<std::path::PathBuf> {
     }
 
     Vec::new()
+}
+
+#[tauri::command]
+pub async fn get_user_env_vars_status() -> Result<Vec<UserEnvVarStatus>, String> {
+    tokio::task::spawn_blocking(read_managed_user_env_statuses)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn sync_user_env_vars(
+    request: UserEnvSyncRequest,
+) -> Result<UserEnvSyncResult, String> {
+    let plan = build_managed_user_env_plan(&request)?;
+
+    tokio::task::spawn_blocking(move || {
+        if plan.is_empty() {
+            return Ok(UserEnvSyncResult {
+                success: false,
+                message: "No Google Cloud Project or Vertex settings provided to sync.".to_string(),
+                updated_vars: Vec::new(),
+                removed_vars: Vec::new(),
+                vars: read_managed_user_env_statuses(),
+            });
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let mut updated_vars = Vec::new();
+            let mut removed_vars = Vec::new();
+            let mut cmd = Command::new("powershell.exe");
+            let ps_script = r#"
+$count = [int]$env:GEMINI_UENV_COUNT
+for ($i = 0; $i -lt $count; $i++) {
+  $name = [Environment]::GetEnvironmentVariable("GEMINI_UENV_NAME_$i", 'Process')
+  $op = [Environment]::GetEnvironmentVariable("GEMINI_UENV_OP_$i", 'Process')
+  $val = [Environment]::GetEnvironmentVariable("GEMINI_UENV_VAL_$i", 'Process')
+  if ($op -eq 'remove') {
+    [Environment]::SetEnvironmentVariable($name, $null, 'User')
+  } else {
+    [Environment]::SetEnvironmentVariable($name, $val, 'User')
+  }
+}
+"#;
+            cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps_script]);
+            cmd.creation_flags(0x08000000);
+            cmd.env("GEMINI_UENV_COUNT", plan.len().to_string());
+
+            for (idx, (key, val_opt)) in plan.iter().enumerate() {
+                cmd.env(format!("GEMINI_UENV_NAME_{}", idx), key);
+                match val_opt {
+                    Some(v) => {
+                        cmd.env(format!("GEMINI_UENV_OP_{}", idx), "set");
+                        cmd.env(format!("GEMINI_UENV_VAL_{}", idx), v);
+                        updated_vars.push((*key).to_string());
+                    }
+                    None => {
+                        cmd.env(format!("GEMINI_UENV_OP_{}", idx), "remove");
+                        removed_vars.push((*key).to_string());
+                    }
+                }
+            }
+
+            match cmd.output() {
+                Ok(out) if out.status.success() => {
+                    // Keep the desktop app's own process environment in sync immediately too
+                    for (key, val_opt) in &plan {
+                        match val_opt {
+                            Some(v) => std::env::set_var(key, v),
+                            None => std::env::remove_var(key),
+                        }
+                    }
+
+                    let mut parts = Vec::new();
+                    if !updated_vars.is_empty() {
+                        parts.push(format!("Set {} in Windows User Env", updated_vars.join(", ")));
+                    }
+                    if !removed_vars.is_empty() {
+                        parts.push(format!("Cleared {} from Windows User Env", removed_vars.join(", ")));
+                    }
+                    let summary = format!("{}. New terminals will pick these up automatically.", parts.join("; "));
+
+                    Ok(UserEnvSyncResult {
+                        success: true,
+                        message: summary,
+                        updated_vars,
+                        removed_vars,
+                        vars: read_managed_user_env_statuses(),
+                    })
+                }
+                Ok(out) => {
+                    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    Ok(UserEnvSyncResult {
+                        success: false,
+                        message: if err.is_empty() {
+                            "Failed to update Windows User Environment variables.".to_string()
+                        } else {
+                            format!("Failed to update Windows User Environment variables: {}", err)
+                        },
+                        updated_vars: Vec::new(),
+                        removed_vars: Vec::new(),
+                        vars: read_managed_user_env_statuses(),
+                    })
+                }
+                Err(e) => Ok(UserEnvSyncResult {
+                    success: false,
+                    message: format!("Failed to invoke PowerShell to update User Environment: {}", e),
+                    updated_vars: Vec::new(),
+                    removed_vars: Vec::new(),
+                    vars: read_managed_user_env_statuses(),
+                }),
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            Ok(UserEnvSyncResult {
+                success: false,
+                message: "Automatic User Environment sync is only supported on Windows.".to_string(),
+                updated_vars: Vec::new(),
+                removed_vars: Vec::new(),
+                vars: read_managed_user_env_statuses(),
+            })
+        }
+    }).await.map_err(|e| e.to_string())?
 }
 
 pub fn is_dir_in_path_list(target_dir: &std::path::Path, path_list: &[std::path::PathBuf]) -> bool {
@@ -1225,9 +1499,16 @@ pub fn classify_agy_test_error(raw: &str) -> String {
 
 #[tauri::command]
 pub async fn test_agy_cli(
+    state: State<'_, AppState>,
+    config: Option<GeminiAuthConfig>,
     workspace_path: Option<String>,
     verify_auth: Option<bool>,
 ) -> Result<CliTestResult, String> {
+    let effective_config = match config {
+        Some(c) => Some(c),
+        None => get_gemini_auth_config(state.clone()).await.ok(),
+    };
+
     tokio::task::spawn_blocking(move || {
         let bin = match crate::process_manager::find_agy_executable() {
             Some(p) => p,
@@ -1253,14 +1534,43 @@ pub async fn test_agy_cli(
             .filter(|p| p.exists())
             .unwrap_or_else(|| user_home.clone());
 
-        let run_agy = |args: &[&str]| -> std::io::Result<std::process::Output> {
+        let run_agy = |args: &[&str], inject_auth: bool| -> std::io::Result<std::process::Output> {
             let mut cmd = crate::process_manager::ProcessSupervisor::build_cli_command(&bin, args);
             cmd.current_dir(&work_dir);
             cmd.env("CI", "true");
+            if inject_auth {
+                if let Some(ref cfg) = effective_config {
+                    if cfg.agy_adc_auth == Some(true) {
+                        cmd.env("AGY_ADC_AUTH", "true");
+                    }
+                    if cfg.auth_mode == "vertex_ai" {
+                        if let Some(ref proj) = cfg.google_cloud_project {
+                            if !proj.trim().is_empty() {
+                                cmd.env("GOOGLE_GENAI_USE_VERTEXAI", "true");
+                                cmd.env("GOOGLE_CLOUD_PROJECT", proj.trim());
+                            }
+                        }
+                        if let Some(ref loc) = cfg.google_cloud_location {
+                            if !loc.trim().is_empty() {
+                                cmd.env("GOOGLE_CLOUD_LOCATION", loc.trim());
+                            }
+                        }
+                        if let Some(ref creds) = cfg.google_app_credentials {
+                            if !creds.trim().is_empty() {
+                                cmd.env("GOOGLE_APPLICATION_CREDENTIALS", creds.trim());
+                            }
+                        }
+                    } else if let Some(ref key) = cfg.api_key {
+                        if !key.trim().is_empty() {
+                            cmd.env("GEMINI_API_KEY", key.trim());
+                        }
+                    }
+                }
+            }
             cmd.output()
         };
 
-        let version_out = run_agy(&["--version"]);
+        let version_out = run_agy(&["--version"], false);
         let latency_ms = start.elapsed().as_millis() as u64;
 
         match version_out {
@@ -1280,7 +1590,7 @@ pub async fn test_agy_cli(
                 // Optionally perform a live prompt probe when explicitly requested
                 if verify_auth.unwrap_or(false) {
                     let live_start = Instant::now();
-                    match run_agy(&["-p", "Respond with 'OK' and nothing else.", "--output-format", "json"]) {
+                    match run_agy(&["-p", "Respond with 'OK' and nothing else.", "--output-format", "json"], true) {
                         Ok(live_out) => {
                             let live_ms = live_start.elapsed().as_millis() as u64;
                             let live_stdout = String::from_utf8_lossy(&live_out.stdout).trim().to_string();
@@ -1366,6 +1676,131 @@ pub async fn launch_agy_login() -> Result<CliInstallResult, String> {
         installed_path: Some(path_str),
         version: ver,
     })
+}
+
+/// Launches Gemini CLI in an interactive terminal window so the user can complete browser OAuth sign-in.
+#[tauri::command]
+pub async fn launch_gemini_login(state: State<'_, AppState>) -> Result<CliInstallResult, String> {
+    let bin = crate::process_manager::find_gemini_executable()
+        .ok_or_else(|| "Gemini CLI (gemini) executable not found on PATH or standard npm directories.".to_string())?;
+    let path_str = bin.to_string_lossy().to_string();
+    let ver = get_cli_binary_version(&bin);
+    let saved_cfg = get_gemini_auth_config(state.clone()).await.ok();
+
+    let mut env_pairs: Vec<(&'static str, String)> = Vec::new();
+    if let Some(cfg) = saved_cfg {
+        if cfg.auth_mode == "vertex_ai" {
+            env_pairs.push(("GOOGLE_GENAI_USE_VERTEXAI", "true".to_string()));
+            if let Some(proj) = cfg.google_cloud_project {
+                env_pairs.push(("GOOGLE_CLOUD_PROJECT", proj));
+            }
+            if let Some(loc) = cfg.google_cloud_location {
+                env_pairs.push(("GOOGLE_CLOUD_LOCATION", loc));
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/c", "start", "Gemini CLI Login", &path_str]);
+        for (k, v) in &env_pairs {
+            cmd.env(k, v);
+        }
+        cmd.spawn()
+            .map_err(|e| format!("Failed to launch Gemini CLI login terminal: {}", e))?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = Command::new(&path_str);
+        for (k, v) in &env_pairs {
+            cmd.env(k, v);
+        }
+        cmd.spawn()
+            .map_err(|e| format!("Failed to launch Gemini CLI login: {}", e))?;
+    }
+
+    Ok(CliInstallResult {
+        success: true,
+        message: "Opened Gemini CLI sign-in window. Follow the browser OAuth prompt in the terminal, then return here to run Connection Test.".to_string(),
+        installed_path: Some(path_str),
+        version: ver,
+    })
+}
+
+/// Opens a native file dialog on Windows to pick a Service Account JSON credentials file.
+#[tauri::command]
+pub async fn pick_credentials_file(initial_path: Option<String>) -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let init_dir = initial_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .and_then(|s| {
+                let p = std::path::PathBuf::from(s);
+                if p.is_file() {
+                    p.parent().map(|par| par.to_string_lossy().to_string())
+                } else if p.is_dir() {
+                    Some(s.to_string())
+                } else {
+                    p.parent().filter(|par| par.is_dir()).map(|par| par.to_string_lossy().to_string())
+                }
+            })
+            .or_else(|| std::env::var("USERPROFILE").ok())
+            .unwrap_or_default();
+
+        tokio::task::spawn_blocking(move || {
+            let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$owner.StartPosition = 'Manual'
+$owner.Size = New-Object System.Drawing.Size(0, 0)
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Title = 'Select Google Service Account JSON Key'
+$dialog.Filter = 'JSON Credentials (*.json)|*.json|All Files (*.*)|*.*'
+if ($env:GEMINI_PICKER_INIT_DIR -and (Test-Path -LiteralPath $env:GEMINI_PICKER_INIT_DIR)) {
+  $dialog.InitialDirectory = $env:GEMINI_PICKER_INIT_DIR
+}
+$result = $dialog.ShowDialog($owner)
+if ($result -eq [System.Windows.Forms.DialogResult]::OK -and $dialog.FileName) {
+  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+  Write-Output $dialog.FileName
+}
+$dialog.Dispose()
+$owner.Dispose()
+"#;
+            let mut cmd = Command::new("powershell.exe");
+            cmd.args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script]);
+            cmd.env("GEMINI_PICKER_INIT_DIR", &init_dir);
+            cmd.creation_flags(0x08000000);
+            let output = cmd.output().map_err(|e| format!("Failed to launch file picker: {}", e))?;
+            if !output.status.success() {
+                let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                return Err(if err.is_empty() {
+                    "File picker exited unexpectedly.".to_string()
+                } else {
+                    err
+                });
+            }
+            let picked = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if picked.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(picked))
+            }
+        })
+        .await
+        .map_err(|e| format!("File picker task failed: {}", e))?
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = initial_path;
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1510,6 +1945,7 @@ mod tests {
             google_cloud_project: Some("corp-ai-sample-123".to_string()),
             google_cloud_location: Some("us-central1".to_string()),
             google_app_credentials: None,
+            agy_adc_auth: Some(true),
         };
 
         let json = serde_json::to_string(&config).expect("failed to serialize");
@@ -1519,6 +1955,7 @@ mod tests {
         let deserialized: GeminiAuthConfig = serde_json::from_str(&json).expect("failed to deserialize");
         assert_eq!(deserialized.auth_mode, "vertex_ai");
         assert_eq!(deserialized.google_cloud_project.as_deref(), Some("corp-ai-sample-123"));
+        assert_eq!(deserialized.agy_adc_auth, Some(true));
     }
 
     #[test]
@@ -1747,5 +2184,97 @@ mod tests {
         assert_eq!(models[0].input_token_limit, Some(1048576));
         assert_eq!(models[0].output_token_limit, Some(65536));
         assert_eq!(models[0].is_default, Some(false));
+    }
+
+    #[test]
+    fn test_build_managed_user_env_plan_non_secret_gcp_vars() {
+        let req = UserEnvSyncRequest {
+            google_cloud_project: Some("  my-gcp-proj-42  ".to_string()),
+            google_cloud_location: Some(" us-central1 ".to_string()),
+            google_genai_use_vertexai: Some(true),
+            agy_adc_auth: Some(true),
+            clear_unspecified: false,
+        };
+
+        let plan = build_managed_user_env_plan(&req).expect("plan should build");
+        assert_eq!(
+            plan,
+            vec![
+                ("GOOGLE_CLOUD_PROJECT", Some("my-gcp-proj-42".to_string())),
+                ("GOOGLE_CLOUD_LOCATION", Some("us-central1".to_string())),
+                ("GOOGLE_GENAI_USE_VERTEXAI", Some("true".to_string())),
+                ("AGY_ADC_AUTH", Some("true".to_string())),
+            ]
+        );
+
+        let clear_req = UserEnvSyncRequest {
+            google_cloud_project: None,
+            google_cloud_location: Some("   ".to_string()),
+            google_genai_use_vertexai: Some(false),
+            agy_adc_auth: None,
+            clear_unspecified: true,
+        };
+        let clear_plan = build_managed_user_env_plan(&clear_req).expect("clear plan should build");
+        assert_eq!(
+            clear_plan,
+            vec![
+                ("GOOGLE_CLOUD_PROJECT", None),
+                ("GOOGLE_CLOUD_LOCATION", None),
+                ("GOOGLE_GENAI_USE_VERTEXAI", None),
+                ("AGY_ADC_AUTH", None),
+            ]
+        );
+
+        let bad_req = UserEnvSyncRequest {
+            google_cloud_project: Some("bad\nvalue".to_string()),
+            google_cloud_location: None,
+            google_genai_use_vertexai: None,
+            agy_adc_auth: None,
+            clear_unspecified: false,
+        };
+        assert!(build_managed_user_env_plan(&bad_req).is_err());
+    }
+
+    #[test]
+    fn test_auth_config_db_clear_and_env_local_merge() {
+        let db = crate::database::DbManager::new_in_memory().unwrap();
+        let initial = GeminiAuthConfig {
+            auth_mode: "vertex_ai".to_string(),
+            api_key: Some("AIzaOldKey".to_string()),
+            google_cloud_project: Some("corp-proj-1".to_string()),
+            google_cloud_location: Some("europe-west1".to_string()),
+            google_app_credentials: Some("C:\\keys\\sa.json".to_string()),
+            agy_adc_auth: Some(true),
+        };
+        write_auth_config_to_db(&db, &initial).unwrap();
+        let loaded = read_auth_config_from_db(&db).unwrap();
+        assert_eq!(loaded.google_cloud_project.as_deref(), Some("corp-proj-1"));
+        assert_eq!(loaded.agy_adc_auth, Some(true));
+
+        // Clearing optional fields must overwrite stale DB values rather than leaving them behind
+        let cleared = GeminiAuthConfig {
+            auth_mode: "vertex_ai".to_string(),
+            api_key: None,
+            google_cloud_project: None,
+            google_cloud_location: Some("us-central1".to_string()),
+            google_app_credentials: None,
+            agy_adc_auth: Some(false),
+        };
+        write_auth_config_to_db(&db, &cleared).unwrap();
+        let after_clear = read_auth_config_from_db(&db).unwrap();
+        assert_eq!(after_clear.api_key, None);
+        assert_eq!(after_clear.google_cloud_project, None);
+        assert_eq!(after_clear.google_app_credentials, None);
+        assert_eq!(after_clear.agy_adc_auth, Some(false));
+
+        // .env.local merge preserves unrelated variables and refreshes Vertex + AGY_ADC_AUTH keys
+        let existing_env = "CUSTOM_TOKEN=keep-me\nGEMINI_API_KEY=stale\nGOOGLE_CLOUD_PROJECT=old-proj\nAGY_ADC_AUTH=true\n";
+        let merged = build_env_local_content(Some(existing_env), &initial);
+        assert!(merged.contains("CUSTOM_TOKEN=keep-me"));
+        assert!(!merged.contains("GEMINI_API_KEY=stale"));
+        assert!(merged.contains("GOOGLE_GENAI_USE_VERTEXAI=true"));
+        assert!(merged.contains("GOOGLE_CLOUD_PROJECT=corp-proj-1"));
+        assert!(merged.contains("GOOGLE_CLOUD_LOCATION=europe-west1"));
+        assert!(merged.contains("AGY_ADC_AUTH=true"));
     }
 }

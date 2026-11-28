@@ -3,7 +3,7 @@ type: architecture_standard
 title: Agent Client Protocol (ACP) JSON-RPC Streaming & Tool Intercepts
 domain: architecture
 status: approved
-version: 1.15.0
+version: 1.16.0
 authority:
   level: official
   confidence: high
@@ -57,6 +57,8 @@ do:
   - "Supervise ACP turn completion deterministically: whenever a prompt response returns, `stopReason: 'end_turn'` arrives, or child process reaches EOF, proactively emit completion signals (`is_done: true`) and sweep dangling tool call statuses, transitioning any remaining in-progress steps to completed and guaranteeing the UI never hangs in an infinite spinning state."
   - "Condition ACP steering cancellation on `has_pending_prompt_for_session`, preventing spurious cancellations of idle CLI engines, and differentiate conversational steering prompts from Plan Mode task classifications to prevent steering prompt poisoning."
   - "Extract semantic, human-friendly titles in `resolve_human_friendly_tool_title` by inspecting `parameters` (`toolSummary`, `CommandLine`, `Path`, `query`) instead of falling back to raw machine identifiers (`call_0`, `tool`), ensuring task summaries in the UI are human-readable."
+  - "Separate active context window occupancy (`usage_update` `used`/`size`) from cumulative multi-step turn billing totals (`session/prompt` `result.usage` stored as `lastTurnUsage`) via `extract_context_usage_from_update` and `mergeContextUsage` (`contextUsage.ts`), preventing context gauge inflation beyond the 1M window."
+  - "Forward ACP `sessionUpdate: \"plan\"` notifications via `acp-plan-update` with full 4-state status fidelity (`pending` | `in_progress` | `completed` | `failed`) normalized by `normalizeAcpPlanEntries` and persisted per message turn."
 
 dont:
   - "Do not execute file snapshots, disk copying, manifest updates, or emit `session-files-updated` events in any ACP handler when `track_file_changes` is disabled for the workspace profile."

@@ -23,8 +23,12 @@
     AttachmentItem,
     DynamicAcpCommand,
     ContextUsageStats,
+    TurnUsageStats,
     QueuedPromptItem,
+    TurnMilestoneStep,
   } from "$lib/types";
+  import { mergeContextUsage, mergeTurnUsage } from "$lib/utils/contextUsage";
+  import { normalizeAcpPlanEntries } from "$lib/utils/toolSteps";
   import { parseDebugError } from "$lib/utils/debugParser";
   import { notifyBackgroundTaskComplete, setupNotificationActionListener } from "$lib/utils/notifications";
   import Sidebar from "$lib/components/Sidebar.svelte";
@@ -91,11 +95,13 @@
     (activeStreamState.toolPermissionQueue?.length || 0) || (activeStreamState.toolPermission ? 1 : 0)
   );
   let streamingToolCalls = $derived(activeStreamState.toolCalls || []);
+  let streamingPlanSteps = $derived(activeStreamState.planSteps || []);
 
   let dynamicCommands = $state<DynamicAcpCommand[]>([]);
   let sessionContextUsage = $state<Record<string, ContextUsageStats>>({});
   let sessionQueuedPrompts = $state<Record<string, QueuedPromptItem[]>>({});
   let messageThoughts = $state<Record<string, { text: string; durationMs?: number }>>({});
+  let messageMilestones = $state<Record<string, TurnMilestoneStep[]>>({});
 
   let activeContextUsage = $derived<ContextUsageStats | null>(
     activeSessionId ? sessionContextUsage[activeSessionId] || null : null
@@ -178,6 +184,7 @@
   let unlistenAvailableCommands: UnlistenFn | null = null;
   let unlistenThought: UnlistenFn | null = null;
   let unlistenUsage: UnlistenFn | null = null;
+  let unlistenTurnUsage: UnlistenFn | null = null;
   let unlistenSessionInfo: UnlistenFn | null = null;
   let unlistenPlanUpdate: UnlistenFn | null = null;
 
@@ -608,11 +615,35 @@
       (event) => {
         const sid = event.payload?.sessionId;
         if (!sid) return;
-        const stats: ContextUsageStats = {
-          usedTokens: event.payload.usedTokens || 0,
-          contextWindow: event.payload.contextWindow || 0,
-          percentage: event.payload.percentage || 0,
+        const stats = mergeContextUsage(sessionContextUsage[sid], event.payload);
+        sessionContextUsage[sid] = stats;
+        sessionContextUsage = { ...sessionContextUsage };
+        if (streamStates[sid]) {
+          streamStates[sid].contextUsage = stats;
+        }
+      }
+    );
+
+    unlistenTurnUsage = await listen<{
+      sessionId: string;
+      inputTokens: number;
+      outputTokens: number;
+      cachedReadTokens?: number;
+      thoughtTokens?: number;
+      totalTokens: number;
+    }>(
+      "acp-turn-usage",
+      (event) => {
+        const sid = event.payload?.sessionId;
+        if (!sid) return;
+        const turnUsage: TurnUsageStats = {
+          inputTokens: event.payload.inputTokens || 0,
+          outputTokens: event.payload.outputTokens || 0,
+          cachedReadTokens: event.payload.cachedReadTokens || 0,
+          thoughtTokens: event.payload.thoughtTokens || 0,
+          totalTokens: event.payload.totalTokens || 0,
         };
+        const stats = mergeTurnUsage(sessionContextUsage[sid], turnUsage);
         sessionContextUsage[sid] = stats;
         sessionContextUsage = { ...sessionContextUsage };
         if (streamStates[sid]) {
@@ -634,7 +665,14 @@
     unlistenPlanUpdate = await listen<{ sessionId: string; entries?: any[] }>(
       "acp-plan-update",
       (event) => {
-        if (typeof window !== "undefined" && event.payload?.sessionId) {
+        const sid = event.payload?.sessionId;
+        if (!sid) return;
+        const normalized = normalizeAcpPlanEntries(event.payload?.entries);
+        if (normalized.length > 0 && streamStates[sid]) {
+          streamStates[sid].planSteps = normalized;
+          streamStates = { ...streamStates };
+        }
+        if (typeof window !== "undefined") {
           window.dispatchEvent(new CustomEvent("acp-plan-entries", { detail: event.payload }));
         }
       }
@@ -833,6 +871,7 @@
     if (unlistenAvailableCommands) unlistenAvailableCommands();
     if (unlistenThought) unlistenThought();
     if (unlistenUsage) unlistenUsage();
+    if (unlistenTurnUsage) unlistenTurnUsage();
     if (unlistenSessionInfo) unlistenSessionInfo();
     if (unlistenPlanUpdate) unlistenPlanUpdate();
     window.removeEventListener("focus", handleWindowFocus);
@@ -919,9 +958,25 @@
     await loadWorkspaceFiles(ws.id);
   }
 
+  function loadSessionMilestones(sessionId: string) {
+    if (typeof window === "undefined") return;
+    try {
+      const saved = localStorage.getItem(`gemini_msg_milestones_${sessionId}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          messageMilestones = { ...messageMilestones, ...parsed };
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to load message milestones:", e);
+    }
+  }
+
   async function selectSession(session: Session) {
     const targetId = session.id;
     activeSessionId = targetId;
+    loadSessionMilestones(targetId);
     const loadedMessages = await invoke<Message[]>("get_session_messages", { sessionId: targetId });
     if (activeSessionId === targetId) {
       const pending = pendingUserMessages[targetId];
@@ -970,8 +1025,11 @@
     if (!confirmed) return;
     await invoke("delete_session", { sessionId: session.id });
     delete pendingUserMessages[session.id];
+    delete sessionContextUsage[session.id];
+    sessionContextUsage = { ...sessionContextUsage };
     try {
       localStorage.removeItem(`gemini_plan_tasks_${session.id}`);
+      localStorage.removeItem(`gemini_msg_milestones_${session.id}`);
     } catch {}
     sessions = sessions.filter((s) => s.id !== session.id);
     if (activeSessionId === session.id) {
@@ -1013,6 +1071,8 @@
     prevPrompt?: string | null
   ) {
     if (!activeSessionId) return;
+    delete sessionContextUsage[activeSessionId];
+    sessionContextUsage = { ...sessionContextUsage };
     const loaded = await invoke<Message[]>("get_session_messages", { sessionId: activeSessionId });
     messages = loaded;
 
@@ -1245,18 +1305,25 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
       ? Math.max(0, Date.now() - stream.thinkingStartedAt)
       : stream.thinkingDurationMs;
 
-    // Auto-finalize any dangling tool calls: turns that have finished must never persist in_progress/pending states
+    // Auto-finalize any dangling tool calls or plan milestones when a turn completes
     const toolCalls = stream.toolCalls && stream.toolCalls.length > 0
       ? stream.toolCalls.map((step) => {
           if (step.status === "in_progress" || step.status === "pending") {
             return {
               ...step,
               status: "completed" as const,
-              summary: step.summary || `✅ Completed: ${step.title || step.tool_name}`,
+              summary: step.summary || `Completed: ${step.title || step.tool_name}`,
             };
           }
           return step;
         })
+      : undefined;
+    const finalPlanSteps = stream.planSteps && stream.planSteps.length > 0
+      ? stream.planSteps.map((m) =>
+          m.status === "in_progress" || m.status === "pending"
+            ? { ...m, status: "completed" as const }
+            : m
+        )
       : undefined;
     stream.isStreaming = false;
     delete streamStates[sessionId];
@@ -1273,6 +1340,23 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
         ...messageThoughts,
         [assistantId]: { text: finalThoughtText, durationMs: thinkingDurationMs },
       };
+    }
+    if (finalPlanSteps) {
+      messageMilestones = {
+        ...messageMilestones,
+        [assistantId]: finalPlanSteps,
+      };
+      if (typeof window !== "undefined") {
+        try {
+          const storageKey = `gemini_msg_milestones_${sessionId}`;
+          const existingRaw = localStorage.getItem(storageKey);
+          const existingMap = existingRaw ? JSON.parse(existingRaw) : {};
+          const merged = existingMap && typeof existingMap === "object" ? { ...existingMap, [assistantId]: finalPlanSteps } : { [assistantId]: finalPlanSteps };
+          // Cap persisted turn milestone snapshots per session to keep localStorage bounded
+          const entries = Object.entries(merged).slice(-40);
+          localStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(entries)));
+        } catch {}
+      }
     }
 
     const assistantMsg: Message = {
@@ -1391,12 +1475,12 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
     return await invoke<SearchResult[]>("search_history", { query });
   }
 
-  async function handleSaveWorkspace(ws: Workspace) {
+  async function handleSaveWorkspace(ws: Workspace, switchToWorkspace = false) {
     const isNew = !workspaces.some((w) => w.id === ws.id);
     const oldMode = activeWorkspace?.approval_mode;
     await invoke("save_workspace", { workspace: ws });
     workspaces = await invoke<Workspace[]>("get_workspaces");
-    if (isNew) {
+    if (isNew || switchToWorkspace) {
       await selectWorkspace(ws);
     } else if (activeWorkspace?.id === ws.id) {
       activeWorkspace = ws;
@@ -1490,7 +1574,9 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
       {streamingThoughtText}
       {streamingThinkingStartedAt}
       {messageThoughts}
+      {messageMilestones}
       {streamingToolCalls}
+      {streamingPlanSteps}
       streamingStartedAt={activeStreamState?.started_at}
       streamingSteeringHints={activeStreamState.steeringHints || []}
       {toolPermission}

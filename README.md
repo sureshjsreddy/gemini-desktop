@@ -16,7 +16,7 @@ A modern, blazing-fast native desktop application for interacting with **Gemini 
 - **🔌 Pluggable Multi-CLI Engine & Live Model Discovery**
   - **1-Click Engine Switching**: Switch seamlessly between **Gemini CLI (`gemini`)** and **Antigravity CLI (`agy`)** directly from the chat header pill (`<EngineSwitcher />`), sidebar footer badge, or setup/settings modals, backed by the extensible Rust `CliEngineAdapter` registry (`src-tauri/src/engines/`) and `TransportProtocol` seam (`src-tauri/src/transports/`).
   - **Live CLI Model Catalogs & Fallback Safety**: Queries live model catalogs (`agy models` / Gemini CLI v0.67+ & v0.71+ nested context metadata), supports Antigravity `orchestrator` + thinking/effort presets + `gemini-4-*` frontier tiers, remembers workspace models per engine, and displays safe `auto (fallback)` labels consistently across header, sidebar footer, and modals when switching engines.
-  - **Instant PATH Health Banner**: Surfaces missing-in-`PATH` warnings with 1-click user `PATH` repair (`<CliPathStatusBanner />`).
+  - **Instant PATH Health Banner & Windows User Env Sync**: Scopes binary status and `PATH` checks strictly to the selected engine with 1-click user `PATH` repair (`<CliPathStatusBanner />`), plus non-secret Google Cloud User Environment sync (`GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_GENAI_USE_VERTEXAI`, `AGY_ADC_AUTH`), 1-click CLI login launchers (`gemini` / `agy`), and native Service Account JSON picking directly in `CliSetupModal.svelte`.
 
 - **🔗 Universal Code Location, Line Goto & Resource Link Navigation**
   - **Interactive File Link Pills**: Click any code reference (e.g. `api/main.py:179`, `file.ts:42`, `PROJECT_ANALYSIS.md`) directly within the chat to immediately open it in your preferred editor.
@@ -41,12 +41,10 @@ A modern, blazing-fast native desktop application for interacting with **Gemini 
   - Branch any active discussion from any assistant response into an independent session without modifying original conversation history.
   - Dedicated `Fork` action button on each turn generates an atomic cloned session in SQLite with all preceding context and prompt history intact.
 
-- **🌲 Hierarchical Tool Execution Progress Tree, Multi-Toggle & Error Filtering**
-  - Tucks multi-step agent tool executions into an expandable accordion tree (`ToolCallGroup.svelte`) displaying only the single active running task with a live spinner during execution.
-  - Automatically collapses completed steps into a single compact header (`[▶] N steps completed • 2m 15s`) with a one-click toggleable tree view, keeping the assistant's final response clean and readable.
-  - **Error Filter Pill**: Toggle between "All Steps" and "Errors Only" to instantly isolate failed executions and stack traces.
-  - **Batch Multi-Toggle**: One-click "Expand All / Collapse All" to inspect parameters, raw stdout, and errors across all steps simultaneously.
-  - Semantic human-friendly task titles (`resolveHumanFriendlyTitle`) extracted dynamically from task parameters (`Run cargo test`, `Read src/lib.rs`, `Search files`).
+- **✨ Living Now Capsule, 1-Line Work Receipt & Progress Inspector**
+  - **Living Now Capsule**: Displays a calm, jump-free progress capsule (`ToolCallGroup.svelte`) during active agent turns—combining a compact phase/ACP milestone stepper (preserving 4-state `pending` / `in_progress` / `completed` / `failed` task states), single-line live focus with read/search burst grouping, wall-clock elapsed timer, and clickable modified-file / command chips.
+  - **1-Line Work Receipt & Filters**: Collapses completed turns into a clean summary receipt (`✓ Updated 2 files • Ran 2 commands • 1m 42s`) with an expandable `[Inspect]` timeline drawer offering `All`, `Files`, `Commands`, and `Errors` filter pills plus one-click `Expand All / Collapse All`.
+  - Semantic human-friendly task titles (`resolveHumanFriendlyTitle`) extracted dynamically from task parameters (`cargo test`, `CliSetupModal.svelte`) without raw machine identifiers or emoji clutter.
   - True wall-clock turn duration tracking ($\Delta t = t_{\text{assistant}} - t_{\text{user}}$) with live elapsed seconds/minutes during streaming and human-readable formatting (`formatDuration`: `0.4s`, `24s`, `2m 15s`, `1h 12m`).
   - Comprehensive turn metadata in the message footer (`3:45 PM • 2m 15s • ~1,450 tokens`).
 
@@ -57,12 +55,12 @@ A modern, blazing-fast native desktop application for interacting with **Gemini 
   - One-click Git context presets: `@git:diff` (working tree changes), `@git:staged` (index changes), and `@git:status`.
   - Removable badge chips row with individual and "Clear All" dismiss controls.
 
-- **📊 Context Window & Cumulative Token Meter Gauge**
-  - Live session token consumption meter in the chat header tracking active tokens against the 1M ceiling.
+- **📊 Context Window & Per-Turn Usage Telemetry**
+  - Live session context occupancy meter in the chat header separating true context window occupancy (`usage_update`) from cumulative multi-step billing metrics against the 1M ceiling.
   - Visual color indicator and warning notification when approaching 750,000+ tokens with one-click recommendation to compact context.
 
-- **💬 Prompt History Navigation & Sanitized Markdown**
-  - `↑` and `↓` arrow navigation in `ChatPromptComposer.svelte` cycling through past sent prompts while preserving active in-progress drafts.
+- **💬 Empty-Only Prompt History Recall & Sanitized Markdown**
+  - `↑` and `↓` arrow navigation (`promptHistory.ts` + `ChatPromptComposer.svelte`) cycles through past sent prompts when starting from an empty composer without clobbering active drafts.
   - XSS-safe markdown rendering powered by `DOMPurify` with event-delegated code block copy buttons.
 
 - **🎨 Multi-Theme System & Syntax Highlighting**
@@ -70,8 +68,8 @@ A modern, blazing-fast native desktop application for interacting with **Gemini 
   - Full theme-adaptive `highlight.js` syntax highlighting palette tuned for readable light and dark contrast.
   - Modernized theme-adaptive tool execution authorization banners.
 
-- **📁 Workspace & Directory Profiles**
-  - Configure individual workspaces bound to local project directories (`GEMINI.md` context is automatically loaded).
+- **📁 Split-Pane Workspace Workbench & Directory Profiles**
+  - Searchable split-pane Workspace Management modal (`WorkspaceModal.svelte`) with native folder picking, 1-click EDR-safe folder creation (`create_workspace_directory`), live stack/Git/`GEMINI.md`/`AGENTS.md` probing (`probe_workspace_context`), single-row Execution Approval Policy selector, and unsaved-change misclick guards.
   - Customize preferred models and custom system instructions per workspace profile.
 
 - **💬 Multi-Session Chat & History**
@@ -134,7 +132,7 @@ A modern, blazing-fast native desktop application for interacting with **Gemini 
 | **`Ctrl + M`** | Toggle MCP Server Manager | Global |
 | **`Ctrl + K`** | Open Full-Text SQLite FTS5 Search | Global |
 | **`Ctrl + N`** | Start New Chat Session | Global |
-| **`↑` / `↓`** | Navigate Prompt History (on first/last line) | Prompt Textarea |
+| **`↑` / `↓`** | Navigate Prompt History (when prompt is empty or browsing history) | Prompt Textarea |
 | **`/`** | Trigger Tools & Slash Commands Autocomplete Palette | Prompt Textarea |
 | **`@`** | Trigger Context Mention Autocomplete (Files, Dirs, Git) | Prompt Textarea |
 | **`Enter`** | Send Prompt / Execute Terminal Command | Prompt / Terminal |

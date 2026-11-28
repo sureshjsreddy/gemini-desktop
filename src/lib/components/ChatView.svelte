@@ -10,6 +10,7 @@
     FileSnippetResult,
     ToolExecutionStep,
     PlanTaskItem,
+    TurnMilestoneStep,
     SessionFileChange,
     CliEngine,
     AttachmentItem,
@@ -31,6 +32,7 @@
   import EngineSwitcher from "$lib/components/EngineSwitcher.svelte";
   import { engineStore } from "$lib/stores/engineStore.svelte";
   import { getEffectiveModel } from "$lib/utils/engineModels";
+  import { formatTokenCount, estimateSessionFallbackTokens } from "$lib/utils/contextUsage";
   import TerminalDrawer from "$lib/components/TerminalDrawer.svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { renderMarkdown } from "$lib/markdown";
@@ -73,7 +75,9 @@
     streamingThoughtText = "",
     streamingThinkingStartedAt = undefined,
     messageThoughts = {},
+    messageMilestones = {},
     streamingToolCalls = [],
+    streamingPlanSteps = [],
     streamingSteeringHints = [],
     streamingStartedAt = undefined,
     toolPermission = null,
@@ -116,7 +120,9 @@
     streamingThoughtText?: string;
     streamingThinkingStartedAt?: number;
     messageThoughts?: Record<string, { text: string; durationMs?: number }>;
+    messageMilestones?: Record<string, TurnMilestoneStep[]>;
     streamingToolCalls?: ToolExecutionStep[];
+    streamingPlanSteps?: TurnMilestoneStep[];
     streamingSteeringHints?: string[];
     streamingStartedAt?: number;
     toolPermission: ToolPermissionPayload | null;
@@ -187,7 +193,7 @@
   let totalDeletions = $derived(sessionChanges.reduce((acc, c) => acc + c.deletions, 0));
 
   let totalSessionTokens = $derived(
-    messages.reduce((acc, m) => acc + (m.token_count || 0), 0)
+    estimateSessionFallbackTokens(messages)
   );
 
   let displayedUsedTokens = $derived(
@@ -196,16 +202,6 @@
   let displayedContextWindow = $derived(
     contextUsage && contextUsage.contextWindow > 0 ? contextUsage.contextWindow : 1_000_000
   );
-
-  function formatTokenCount(num: number): string {
-    if (num >= 1_000_000) {
-      return (num / 1_000_000).toFixed(1) + "M";
-    }
-    if (num >= 1_000) {
-      return (num / 1_000).toFixed(1) + "k";
-    }
-    return num.toString();
-  }
 
   let contextUsageRatio = $derived(
     Math.min(1, displayedContextWindow > 0 ? displayedUsedTokens / displayedContextWindow : 0)
@@ -877,8 +873,10 @@
           subtext={isNearContextCeiling
             ? "⚠️ Approaching context window ceiling. Consider running /compact or Export > Compress Context."
             : contextUsage && contextUsage.usedTokens > 0
-              ? "Live token telemetry reported by active ACP runtime."
-              : "Estimated cumulative tokens across active conversation turns."}
+              ? contextUsage.lastTurnUsage && contextUsage.lastTurnUsage.totalTokens > 0
+                ? `Live context window reported by active ACP runtime. Last turn total across steps: ${contextUsage.lastTurnUsage.totalTokens.toLocaleString()} tokens.`
+                : "Live context window reported by active ACP runtime."
+              : "Estimated tokens across persisted conversation messages."}
           position="bottom"
         >
           <div
@@ -1113,6 +1111,7 @@
             </div>
           {:else}
             {@const toolSteps = parseToolSteps(msg)}
+            {@const msgMilestones = messageMilestones?.[msg.id] || []}
             {@const cleanContent = cleanMessageContent(msg.content, toolSteps.length > 0)}
             {@const turnDurationMs = getTurnDurationMs(absIdx, msg)}
             {@const msgThought = messageThoughts?.[msg.id]}
@@ -1140,9 +1139,15 @@
               </div>
             {/if}
 
-            {#if toolSteps.length > 0}
+            {#if toolSteps.length > 0 || msgMilestones.length > 0}
               <div class="mb-3">
-                <ToolCallGroup steps={toolSteps} isStreaming={false} {turnDurationMs} />
+                <ToolCallGroup
+                  steps={toolSteps}
+                  milestones={msgMilestones}
+                  isStreaming={false}
+                  {turnDurationMs}
+                  onInspectFile={workspace?.track_file_changes ? () => (isChangesModalOpen = true) : undefined}
+                />
               </div>
             {/if}
 
@@ -1289,9 +1294,15 @@
             </div>
           {/if}
 
-          {#if streamingToolCalls && streamingToolCalls.length > 0}
+          {#if (streamingToolCalls && streamingToolCalls.length > 0) || (streamingPlanSteps && streamingPlanSteps.length > 0)}
             <div class="mb-3">
-              <ToolCallGroup steps={streamingToolCalls} isStreaming={true} {streamingStartedAt} />
+              <ToolCallGroup
+                steps={streamingToolCalls}
+                milestones={streamingPlanSteps}
+                isStreaming={true}
+                {streamingStartedAt}
+                onInspectFile={workspace?.track_file_changes ? () => (isChangesModalOpen = true) : undefined}
+              />
             </div>
           {/if}
 
@@ -1299,7 +1310,7 @@
             <div class="markdown-body">
               {@html renderMarkdown(streamingText)}
             </div>
-          {:else if (!streamingToolCalls || streamingToolCalls.length === 0) && !streamingThoughtText}
+          {:else if (!streamingToolCalls || streamingToolCalls.length === 0) && (!streamingPlanSteps || streamingPlanSteps.length === 0) && !streamingThoughtText}
             <div class="flex items-center gap-2 text-muted-theme italic">
               <span class="inline-block w-2 h-2 rounded-full bg-accent-theme animate-ping"></span>
               Thinking...

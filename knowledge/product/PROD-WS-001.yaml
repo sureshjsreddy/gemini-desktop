@@ -3,7 +3,7 @@ type: product_standard
 title: Workspace Context Profiles & Working Directory Isolation
 domain: product
 status: approved
-version: 1.6.0
+version: 1.7.0
 authority:
   level: official
   confidence: high
@@ -36,6 +36,7 @@ do:
   - "Enforce cascade deletion of associated chat sessions and messages when a workspace profile is deleted."
   - "Persist the last active workspace ID locally across app sessions and reload it automatically on application startup instead of defaulting to the first workspace."
   - "Disable the Save button until both workspace name and folder path fields are non-empty, using `$derived` reactive validation (`canSave`)."
+  - "Present Workspace Management inside a split-pane workbench (`WorkspaceModal.svelte`): searchable saved-profile list on the left and details editor on the right, supporting native folder picking (`pick_workspace_directory`), explicit 1-click directory creation (`create_workspace_directory` with EDR checks), live repo/stack/instructions probing (`probe_workspace_context`), a single-row segmented Execution Approval Policy selector, and unsaved-change backdrop/close discard guards (`workspaceDraft.ts`)."
 
 dont:
   - "Do not seed cluttered or redundant demo workspaces by default."

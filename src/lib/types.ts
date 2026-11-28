@@ -121,10 +121,19 @@ export interface ToolCallPayload {
   raw_output?: string;
 }
 
+export interface TurnUsageStats {
+  inputTokens: number;
+  outputTokens: number;
+  cachedReadTokens?: number;
+  thoughtTokens?: number;
+  totalTokens: number;
+}
+
 export interface ContextUsageStats {
   usedTokens: number;
   contextWindow: number;
   percentage: number;
+  lastTurnUsage?: TurnUsageStats;
 }
 
 export interface DynamicAcpCommand {
@@ -141,6 +150,15 @@ export interface QueuedPromptItem {
   createdAt: number;
 }
 
+export type PlanStepStatus = "pending" | "in_progress" | "completed" | "failed";
+
+export interface TurnMilestoneStep {
+  id: string;
+  title: string;
+  status: PlanStepStatus;
+  priority?: string;
+}
+
 export interface SessionStreamState {
   streamingText: string;
   thoughtText?: string;
@@ -150,6 +168,7 @@ export interface SessionStreamState {
   toolPermission: ToolPermissionPayload | null;
   toolPermissionQueue?: ToolPermissionPayload[];
   toolCalls?: ToolExecutionStep[];
+  planSteps?: TurnMilestoneStep[];
   steeringHints?: string[];
   isSteering?: boolean;
   started_at?: number;
@@ -250,6 +269,29 @@ export interface GeminiAuthConfig {
   google_cloud_project?: string;
   google_cloud_location?: string;
   google_app_credentials?: string;
+  agy_adc_auth?: boolean;
+}
+
+export interface UserEnvVarStatus {
+  name: string;
+  value?: string;
+  isSet: boolean;
+}
+
+export interface UserEnvSyncRequest {
+  googleCloudProject?: string;
+  googleCloudLocation?: string;
+  googleGenaiUseVertexai?: boolean;
+  agyAdcAuth?: boolean;
+  clearUnspecified?: boolean;
+}
+
+export interface UserEnvSyncResult {
+  success: boolean;
+  message: string;
+  updatedVars: string[];
+  removedVars: string[];
+  vars: UserEnvVarStatus[];
 }
 
 export interface CliInstallResult {
@@ -279,6 +321,17 @@ export interface WorkspacePathValidation {
   is_valid: boolean;
   exists: boolean;
   error_message?: string;
+}
+
+export interface WorkspaceContextProbe {
+  validation: WorkspacePathValidation;
+  suggested_name: string;
+  has_git: boolean;
+  has_gemini_md: boolean;
+  has_agents_md: boolean;
+  has_gemini_skills: boolean;
+  has_agents_skills: boolean;
+  detected_stack: string[];
 }
 
 export interface FileSnippetResult {

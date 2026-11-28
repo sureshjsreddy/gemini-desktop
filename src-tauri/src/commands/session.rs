@@ -316,6 +316,11 @@ pub async fn send_prompt(
         }
 
         if is_agy {
+            if let Ok(Some(adc_auth)) = state.db.get_setting("agy_adc_auth") {
+                if adc_auth.trim().eq_ignore_ascii_case("true") {
+                    global_envs.push(("AGY_ADC_AUTH".to_string(), "true".to_string()));
+                }
+            }
             if let Ok(Some(compact_override)) = state.db.get_setting("agy_auto_compact_override") {
                 let trimmed = compact_override.trim();
                 if !trimmed.is_empty() {

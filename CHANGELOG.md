@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.12.0] - 2026-11-28
+
+### Added & Redesigned
+- **Living Now Capsule & 1-Line Work Receipt (`ToolCallGroup.svelte`, `ToolCallNode.svelte`, `toolSteps.ts`, `ChatView.svelte`, `+page.svelte`)**:
+  - Replaced cluttered stacked tool boxes and emoji-prefixed labels with a calm **Living Now Capsule** while streaming: shows a compact horizontal phase/milestone stepper (`visiblePhases`), single-line active work focus with automatic read/search burst grouping (`Reviewing files (N checked)`), live elapsed clock, and clickable edited-file / command outcome impact chips.
+  - Collapses completed turns cleanly into a **1-Line Work Receipt** (`Updated cliSetup.ts • Ran 2 commands` / `N/M tasks completed`), expanding on click into an `[Inspect]` timeline drawer with `All`, `Files`, `Commands`, and `Errors` filters plus `Expand All / Collapse All`.
+  - Preserves 4-state ACP `sessionUpdate: "plan"` milestones (`pending` | `in_progress` | `completed` | `failed`) and structured TODO tool updates per conversation turn (`gemini_msg_milestones_${sessionId}`), cleaned up automatically on session deletion.
+- **Split-Pane Workspace Management Workbench (`WorkspaceModal.svelte`, `workspace.rs`, `workspaceDraft.ts`, `lib.rs`)**:
+  - Redesigned workspace setup into a searchable left profile list + right configuration editor with native folder picking (`pick_workspace_directory`), explicit 1-click directory creation with parent/EDR checks (`create_workspace_directory`), instant stack/git/instructions probing (`probe_workspace_context`), a single-row segmented Execution Approval Policy selector, and dirty-state (`isWorkspaceDraftDirty`) backdrop/close discard protection.
+- **Engine-Scoped CLI & Auth Setup + Windows User Environment Sync (`CliSetupModal.svelte`, `CliPathStatusBanner.svelte`, `cliSetup.ts`, `engineStore.svelte.ts`, `setup.rs`, `session.rs`, `lib.rs`)**:
+  - Scoped modal header, tabs, diagnostics, and `<CliPathStatusBanner />` strictly to the currently selected CLI engine (`gemini` or `agy`) with per-engine PATH feedback (`pathAddResultByEngine`).
+  - Added zero-subprocess Win32 Registry inspection (`get_user_env_vars_status`) and safe allowlisted Windows User Environment sync/clear (`sync_user_env_vars` for non-secret `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_GENAI_USE_VERTEXAI`, and `AGY_ADC_AUTH`), 1-click Gemini CLI browser login (`launch_gemini_login`), native Service Account `.json` file picker (`pick_credentials_file`), `AGY_ADC_AUTH` session/test propagation, and Tab 2 default checkbox selection (`syncToUserEnvOnSave = true`, optional exports/workspace `.env.local` unselected by default).
+
+### Fixed
+- **Accurate Context Window Token Gauge (`acp_client.rs`, `contextUsage.ts`, `types.ts`, `+page.svelte`, `ChatView.svelte`)**:
+  - Separated live context window occupancy (`usage_update` `used`/`size`) from cumulative multi-step turn billing usage (`lastTurnUsage`) so heavy tool turns no longer inflate the 1M context meter to 3M–5M tokens; preserves non-zero occupancy across interim turn-start resets via `mergeContextUsage`.
+- **Empty-Only Prompt History Navigation (`promptHistory.ts`, `ChatPromptComposer.svelte`)**:
+  - Updated `ArrowUp` / `ArrowDown` prompt history navigation (`resolvePromptHistoryNavigation`) to enter history only when starting from an empty prompt (`inputPrompt.length === 0`) without modifier keys or active text selection, preserving unsent drafts and prefilled/rewound text.
+- **Cleared Auth Field Persistence (`setup.rs`)**:
+  - Refactored `get_gemini_auth_config` / `save_gemini_auth_config` (`read_auth_config_from_db`, `write_auth_config_to_db`, `build_env_local_content`) so clearing optional fields persists empty strings in SQLite instead of leaving stale values behind.
+
+### Verification & Knowledge Base
+- Added Rust unit tests in `setup.rs` (`test_build_managed_user_env_plan_non_secret_gcp_vars`, `test_auth_config_db_clear_and_env_local_merge`), `workspace.rs` (`test_probe_workspace_context_and_create_directory`), and `acp_client.rs` (`test_extract_context_usage_from_update_and_prompt_result_separation`), plus expanded `tests/pure-utils.test.mjs` across `contextUsage`, `workspaceDraft`, `cliSetup`, `promptHistory`, and `turnProgress` (10 JS/TS tests & 151 Rust tests).
+- Updated Knowledge Units [`ARCH-ACP-001.yaml`](knowledge/architecture/ARCH-ACP-001.yaml) (v1.16.0), [`PROD-WS-001.yaml`](knowledge/product/PROD-WS-001.yaml) (v1.7.0), [`PROD-SETUP-001.yaml`](knowledge/product/PROD-SETUP-001.yaml) (v1.4.0), [`DEV-SVELTE-001.yaml`](knowledge/development/DEV-SVELTE-001.yaml) (v1.12.0), [`DEV-TEST-001.yaml`](knowledge/development/DEV-TEST-001.yaml) (v1.10.0), and [`knowledge/index.yaml`](knowledge/index.yaml).
+
 ## [0.11.2] - 2026-11-26
 
 ### Changed

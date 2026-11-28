@@ -1107,6 +1107,126 @@ pub fn format_acp_error_message(err_val: &Value) -> String {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsageUpdate {
+    pub used_tokens: u64,
+    pub context_window: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnUsageSummary {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_read_tokens: u64,
+    pub thought_tokens: u64,
+    pub total_tokens: u64,
+}
+
+/// Extracts current context window occupancy (`used`, `size`) from a JSON usage object.
+/// Strictly avoids cumulative turn billing fields (`totalTokens`, `inputTokens`) so multi-step
+/// tool loops never inflate the header context gauge past the model's context window.
+fn extract_context_usage_fields(obj: &Value) -> Option<ContextUsageUpdate> {
+    let used_tokens = obj
+        .get("used")
+        .or_else(|| obj.get("usedTokens"))
+        .or_else(|| obj.get("contextTokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let context_window = obj
+        .get("size")
+        .or_else(|| obj.get("contextWindow"))
+        .or_else(|| obj.get("maxTokens"))
+        .or_else(|| obj.get("maxContextTokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    if used_tokens > 0 || context_window > 0 {
+        Some(ContextUsageUpdate {
+            used_tokens,
+            context_window,
+        })
+    } else {
+        None
+    }
+}
+
+/// Extracts context window occupancy from an ACP `session/update` (`usage_update`) notification.
+pub fn extract_context_usage_from_update(val: &Value) -> Option<ContextUsageUpdate> {
+    let used_tokens = val
+        .pointer("/params/update/used")
+        .or_else(|| val.pointer("/params/update/usedTokens"))
+        .or_else(|| val.pointer("/params/update/contextTokens"))
+        .or_else(|| val.pointer("/params/used"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let context_window = val
+        .pointer("/params/update/size")
+        .or_else(|| val.pointer("/params/update/contextWindow"))
+        .or_else(|| val.pointer("/params/update/maxTokens"))
+        .or_else(|| val.pointer("/params/update/maxContextTokens"))
+        .or_else(|| val.pointer("/params/size"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    if used_tokens > 0 || context_window > 0 {
+        Some(ContextUsageUpdate {
+            used_tokens,
+            context_window,
+        })
+    } else {
+        None
+    }
+}
+
+/// Extracts explicit context occupancy (if reported) and cumulative per-turn API token totals
+/// separately from an ACP `session/prompt` completion response.
+pub fn extract_prompt_result_usage(val: &Value) -> (Option<ContextUsageUpdate>, Option<TurnUsageSummary>) {
+    let Some(usage_obj) = val.pointer("/result/usage").or_else(|| val.pointer("/result/_meta/usage")) else {
+        return (None, None);
+    };
+
+    let context_usage = extract_context_usage_fields(usage_obj);
+
+    let input_tokens = usage_obj.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let output_tokens = usage_obj.get("outputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let cached_read_tokens = usage_obj.get("cachedReadTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let thought_tokens = usage_obj.get("thoughtTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let total_tokens = usage_obj
+        .get("totalTokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or_else(|| input_tokens.saturating_add(output_tokens).saturating_add(cached_read_tokens));
+
+    let turn_usage = if total_tokens > 0 || input_tokens > 0 || output_tokens > 0 {
+        Some(TurnUsageSummary {
+            input_tokens,
+            output_tokens,
+            cached_read_tokens,
+            thought_tokens,
+            total_tokens,
+        })
+    } else {
+        None
+    };
+
+    (context_usage, turn_usage)
+}
+
+fn emit_context_usage(app_handle: &AppHandle, session_id: &str, usage: &ContextUsageUpdate) {
+    let percentage = if usage.context_window > 0 {
+        ((usage.used_tokens as f64 / usage.context_window as f64) * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    let _ = app_handle.emit("acp-usage-update", serde_json::json!({
+        "sessionId": session_id,
+        "usedTokens": usage.used_tokens,
+        "contextWindow": usage.context_window,
+        "percentage": percentage,
+    }));
+}
+
 pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<AcpSession>, active_session_id: &str) {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -1171,32 +1291,20 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                     }
                 }
 
-                // Emit token usage telemetry if included in final session/prompt response
-                if let Some(usage_obj) = val.pointer("/result/usage").or_else(|| val.pointer("/result/_meta/usage")) {
-                    let used_tokens = usage_obj.get("used")
-                        .or_else(|| usage_obj.get("usedTokens"))
-                        .or_else(|| usage_obj.get("totalTokens"))
-                        .or_else(|| usage_obj.get("inputTokens"))
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let context_window = usage_obj.get("size")
-                        .or_else(|| usage_obj.get("contextWindow"))
-                        .or_else(|| usage_obj.get("maxTokens"))
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    if used_tokens > 0 || context_window > 0 {
-                        let percentage = if context_window > 0 {
-                            ((used_tokens as f64 / context_window as f64) * 100.0).clamp(0.0, 100.0)
-                        } else {
-                            0.0
-                        };
-                        let _ = app_handle.emit("acp-usage-update", serde_json::json!({
-                            "sessionId": target_session,
-                            "usedTokens": used_tokens,
-                            "contextWindow": context_window,
-                            "percentage": percentage,
-                        }));
-                    }
+                // Emit context occupancy only when explicit context fields exist, and report cumulative turn billing separately.
+                let (ctx_usage_opt, turn_usage_opt) = extract_prompt_result_usage(&val);
+                if let Some(ctx_usage) = ctx_usage_opt {
+                    emit_context_usage(app_handle, &target_session, &ctx_usage);
+                }
+                if let Some(turn_usage) = turn_usage_opt {
+                    let _ = app_handle.emit("acp-turn-usage", serde_json::json!({
+                        "sessionId": target_session,
+                        "inputTokens": turn_usage.input_tokens,
+                        "outputTokens": turn_usage.output_tokens,
+                        "cachedReadTokens": turn_usage.cached_read_tokens,
+                        "thoughtTokens": turn_usage.thought_tokens,
+                        "totalTokens": turn_usage.total_tokens,
+                    }));
                 }
 
                 let delta = val.get("result")
@@ -1442,29 +1550,9 @@ pub fn handle_acp_line(line: &str, app_handle: &AppHandle, acp_session: &Arc<Acp
                             return;
                         }
                         Some("usage_update") => {
-                            let used_tokens = val.pointer("/params/update/used")
-                                .or_else(|| val.pointer("/params/update/usedTokens"))
-                                .or_else(|| val.pointer("/params/update/totalTokens"))
-                                .or_else(|| val.pointer("/params/used"))
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            let context_window = val.pointer("/params/update/size")
-                                .or_else(|| val.pointer("/params/update/contextWindow"))
-                                .or_else(|| val.pointer("/params/update/maxTokens"))
-                                .or_else(|| val.pointer("/params/size"))
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            let percentage = if context_window > 0 {
-                                ((used_tokens as f64 / context_window as f64) * 100.0).clamp(0.0, 100.0)
-                            } else {
-                                0.0
-                            };
-                            let _ = app_handle.emit("acp-usage-update", serde_json::json!({
-                                "sessionId": matched_session_id,
-                                "usedTokens": used_tokens,
-                                "contextWindow": context_window,
-                                "percentage": percentage,
-                            }));
+                            if let Some(ctx_usage) = extract_context_usage_from_update(&val) {
+                                emit_context_usage(app_handle, &matched_session_id, &ctx_usage);
+                            }
                             return;
                         }
                         Some("plan") => {
@@ -2601,6 +2689,91 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(true)
         );
+    }
+
+    #[test]
+    fn test_extract_context_usage_from_update_and_prompt_result_separation() {
+        // 1. Live usage_update carries actual context window occupancy (used, size)
+        let update_msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "acp-1",
+                "update": {
+                    "sessionUpdate": "usage_update",
+                    "used": 24693,
+                    "size": 1048576
+                }
+            }
+        });
+        assert_eq!(
+            extract_context_usage_from_update(&update_msg),
+            Some(ContextUsageUpdate {
+                used_tokens: 24693,
+                context_window: 1048576,
+            })
+        );
+
+        // 2. usage_update must never fall back to cumulative totalTokens
+        let update_with_total_only = serde_json::json!({
+            "params": {
+                "update": {
+                    "sessionUpdate": "usage_update",
+                    "totalTokens": 3850000
+                }
+            }
+        });
+        assert_eq!(extract_context_usage_from_update(&update_with_total_only), None);
+
+        // 3. Final session/prompt response returns cumulative multi-step billing usage
+        // (e.g. 3.8M across tool calls), NOT context window occupancy.
+        let prompt_result = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": {
+                "stopReason": "end_turn",
+                "usage": {
+                    "inputTokens": 3200000,
+                    "outputTokens": 15000,
+                    "cachedReadTokens": 600000,
+                    "thoughtTokens": 4000,
+                    "totalTokens": 3815000
+                }
+            }
+        });
+        let (ctx_opt, turn_opt) = extract_prompt_result_usage(&prompt_result);
+        assert_eq!(ctx_opt, None, "Cumulative prompt result usage must not overwrite context window occupancy");
+        assert_eq!(
+            turn_opt,
+            Some(TurnUsageSummary {
+                input_tokens: 3200000,
+                output_tokens: 15000,
+                cached_read_tokens: 600000,
+                thought_tokens: 4000,
+                total_tokens: 3815000,
+            })
+        );
+
+        // 4. Explicit context occupancy inside result.usage is honored if provided
+        let explicit_ctx_result = serde_json::json!({
+            "result": {
+                "stopReason": "end_turn",
+                "usage": {
+                    "used": 4120,
+                    "size": 1048576,
+                    "totalTokens": 4120
+                }
+            }
+        });
+        let (explicit_ctx, explicit_turn) = extract_prompt_result_usage(&explicit_ctx_result);
+        assert_eq!(
+            explicit_ctx,
+            Some(ContextUsageUpdate {
+                used_tokens: 4120,
+                context_window: 1048576,
+            })
+        );
+        assert!(explicit_turn.is_some());
     }
 }
 

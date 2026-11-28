@@ -266,6 +266,55 @@ pub struct WorkspacePathValidation {
     pub error_message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceContextProbe {
+    pub validation: WorkspacePathValidation,
+    pub suggested_name: String,
+    pub has_git: bool,
+    pub has_gemini_md: bool,
+    pub has_agents_md: bool,
+    pub has_gemini_skills: bool,
+    pub has_agents_skills: bool,
+    pub detected_stack: Vec<String>,
+}
+
+/// Checks if a local directory path falls inside root drives or EDR-restricted system locations.
+fn check_restricted_workspace_path(p: &Path) -> Option<String> {
+    let path_str = p.to_string_lossy().to_string();
+    let norm = path_str.replace('/', "\\").to_lowercase();
+    let clean_norm = norm.trim_end_matches('\\');
+
+    // 1. Root drives (e.g. "c:", "c:\", "d:\")
+    if (clean_norm.len() <= 2 && clean_norm.ends_with(':')) || norm == "c:\\" || norm == "d:\\" || norm == "/" {
+        return Some("Cannot use root drive as a workspace. Please select a specific project or subfolder to prevent enterprise security and filesystem crawl alerts.".to_string());
+    }
+
+    // 2. Windows / System directories
+    if let Ok(windir) = std::env::var("WINDIR") {
+        let win_norm = windir.replace('/', "\\").to_lowercase();
+        if clean_norm == win_norm || clean_norm.starts_with(&(win_norm + "\\")) {
+            return Some("Access to Windows system directories is restricted for security and EDR threat prevention.".to_string());
+        }
+    } else if clean_norm.starts_with("c:\\windows") {
+        return Some("Access to Windows system directories is restricted for security and EDR threat prevention.".to_string());
+    }
+
+    // 3. Program Files
+    if clean_norm.starts_with("c:\\program files") {
+        return Some("Program Files is read-only for standard users and monitored by enterprise EDR. Please select a development folder.".to_string());
+    }
+
+    // 4. Temporary volatile folders
+    if let Ok(temp) = std::env::var("TEMP") {
+        let temp_norm = temp.replace('/', "\\").to_lowercase();
+        if clean_norm == temp_norm || clean_norm.starts_with(&(temp_norm + "\\")) {
+            return Some("Temporary directories are monitored by CrowdStrike / EDR software for volatile script execution. Please choose a permanent project folder.".to_string());
+        }
+    }
+
+    None
+}
+
 /// Returns true when a path targets a Windows UNC network share (`\\server\share` / `//server/share`),
 /// Win32 device namespace (`\\.\...`, `\\?\...`), or NT object namespace (`\??\...`).
 /// Rejecting these before touching the filesystem prevents SMB/NTLM credential leaks.
@@ -316,6 +365,13 @@ pub fn validate_workspace_path(path: String) -> Result<WorkspacePathValidation, 
 
     let p = PathBuf::from(trimmed);
     if !p.exists() || !p.is_dir() {
+        if let Some(restricted) = check_restricted_workspace_path(&p) {
+            return Ok(WorkspacePathValidation {
+                is_valid: false,
+                exists: false,
+                error_message: Some(restricted),
+            });
+        }
         return Ok(WorkspacePathValidation {
             is_valid: false,
             exists: false,
@@ -323,57 +379,12 @@ pub fn validate_workspace_path(path: String) -> Result<WorkspacePathValidation, 
         });
     }
 
-    // Check dangerous/restricted directories that trigger EDR / CrowdStrike / UAC alerts
-    let path_str = p.to_string_lossy().to_string();
-    let norm = path_str.replace('/', "\\").to_lowercase();
-    let clean_norm = norm.trim_end_matches('\\');
-
-    // 1. Root drives (e.g. "c:", "c:\", "d:\")
-    if (clean_norm.len() <= 2 && clean_norm.ends_with(':')) || norm == "c:\\" || norm == "d:\\" || norm == "/" {
+    if let Some(restricted) = check_restricted_workspace_path(&p) {
         return Ok(WorkspacePathValidation {
             is_valid: false,
             exists: true,
-            error_message: Some("Cannot use root drive as a workspace. Please select a specific project or subfolder to prevent enterprise security and filesystem crawl alerts.".to_string()),
+            error_message: Some(restricted),
         });
-    }
-
-    // 2. Windows / System directories
-    if let Ok(windir) = std::env::var("WINDIR") {
-        let win_norm = windir.replace('/', "\\").to_lowercase();
-        if clean_norm == win_norm || clean_norm.starts_with(&(win_norm + "\\")) {
-            return Ok(WorkspacePathValidation {
-                is_valid: false,
-                exists: true,
-                error_message: Some("Access to Windows system directories is restricted for security and EDR threat prevention.".to_string()),
-            });
-        }
-    } else if clean_norm.starts_with("c:\\windows") {
-        return Ok(WorkspacePathValidation {
-            is_valid: false,
-            exists: true,
-            error_message: Some("Access to Windows system directories is restricted for security and EDR threat prevention.".to_string()),
-        });
-    }
-
-    // 3. Program Files
-    if clean_norm.starts_with("c:\\program files") {
-        return Ok(WorkspacePathValidation {
-            is_valid: false,
-            exists: true,
-            error_message: Some("Program Files is read-only for standard users and monitored by enterprise EDR. Please select a development folder.".to_string()),
-        });
-    }
-
-    // 4. Temporary volatile folders
-    if let Ok(temp) = std::env::var("TEMP") {
-        let temp_norm = temp.replace('/', "\\").to_lowercase();
-        if clean_norm == temp_norm || clean_norm.starts_with(&(temp_norm + "\\")) {
-            return Ok(WorkspacePathValidation {
-                is_valid: false,
-                exists: true,
-                error_message: Some("Temporary directories are monitored by CrowdStrike / EDR software for volatile script execution. Please choose a permanent project folder.".to_string()),
-            });
-        }
     }
 
     Ok(WorkspacePathValidation {
@@ -381,6 +392,170 @@ pub fn validate_workspace_path(path: String) -> Result<WorkspacePathValidation, 
         exists: true,
         error_message: None,
     })
+}
+
+#[tauri::command]
+pub fn create_workspace_directory(path: String) -> Result<WorkspacePathValidation, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Workspace folder path cannot be empty.".to_string());
+    }
+    if is_unsafe_windows_unc_or_device_path(trimmed) {
+        return Err("Network (UNC), device, and NT object paths cannot be created.".to_string());
+    }
+
+    let p = PathBuf::from(trimmed);
+    if let Some(restricted) = check_restricted_workspace_path(&p) {
+        return Err(restricted);
+    }
+    if p.exists() && !p.is_dir() {
+        return Err("A file already exists at that path.".to_string());
+    }
+
+    std::fs::create_dir_all(&p)
+        .map_err(|e| format!("Failed to create directory: {}", e))?;
+
+    validate_workspace_path(trimmed.to_string())
+}
+
+#[tauri::command]
+pub fn probe_workspace_context(path: String) -> Result<WorkspaceContextProbe, String> {
+    let validation = validate_workspace_path(path.clone())?;
+    let trimmed = path.trim();
+    let p = PathBuf::from(trimmed);
+    let suggested_name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && !s.ends_with(':'))
+        .unwrap_or_default();
+
+    if !validation.is_valid || !validation.exists {
+        return Ok(WorkspaceContextProbe {
+            validation,
+            suggested_name,
+            has_git: false,
+            has_gemini_md: false,
+            has_agents_md: false,
+            has_gemini_skills: false,
+            has_agents_skills: false,
+            detected_stack: Vec::new(),
+        });
+    }
+
+    let has_git = p.join(".git").exists();
+    let has_gemini_md = p.join("GEMINI.md").is_file() || p.join(".gemini").join("GEMINI.md").is_file();
+    let has_agents_md = p.join("AGENTS.md").is_file();
+    let has_gemini_skills = p.join(".gemini").join("skills").is_dir();
+    let has_agents_skills = p.join(".agents").join("skills").is_dir();
+
+    let mut detected_stack = Vec::new();
+    if p.join("package.json").is_file() {
+        detected_stack.push("Node / TS".to_string());
+    }
+    if p.join("Cargo.toml").is_file() || p.join("src-tauri").join("Cargo.toml").is_file() {
+        detected_stack.push("Rust".to_string());
+    }
+    if p.join("pyproject.toml").is_file() || p.join("requirements.txt").is_file() {
+        detected_stack.push("Python".to_string());
+    }
+    if p.join("go.mod").is_file() {
+        detected_stack.push("Go".to_string());
+    }
+    if let Ok(entries) = std::fs::read_dir(&p) {
+        let has_dotnet = entries
+            .flatten()
+            .take(60)
+            .any(|e| {
+                let name = e.file_name().to_string_lossy().to_lowercase();
+                name.ends_with(".sln") || name.ends_with(".csproj")
+            });
+        if has_dotnet {
+            detected_stack.push(".NET".to_string());
+        }
+    }
+
+    Ok(WorkspaceContextProbe {
+        validation,
+        suggested_name,
+        has_git,
+        has_gemini_md,
+        has_agents_md,
+        has_gemini_skills,
+        has_agents_skills,
+        detected_stack,
+    })
+}
+
+#[tauri::command]
+pub async fn pick_workspace_directory(initial_path: Option<String>) -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let init_dir = initial_path
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && !is_unsafe_windows_unc_or_device_path(s))
+            .and_then(|s| {
+                let p = PathBuf::from(&s);
+                if p.is_dir() {
+                    Some(s)
+                } else {
+                    p.parent().filter(|par| par.is_dir()).map(|par| par.to_string_lossy().to_string())
+                }
+            })
+            .unwrap_or_else(|| get_default_workspace_dir().unwrap_or_default());
+
+        tokio::task::spawn_blocking(move || {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$owner.StartPosition = 'Manual'
+$owner.Size = New-Object System.Drawing.Size(0, 0)
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = 'Select Project Workspace Folder'
+$dialog.UseDescriptionForTitle = $true
+$dialog.ShowNewFolderButton = $true
+if ($env:GEMINI_PICKER_INIT_DIR -and (Test-Path -LiteralPath $env:GEMINI_PICKER_INIT_DIR)) {
+  $dialog.SelectedPath = $env:GEMINI_PICKER_INIT_DIR
+}
+$result = $dialog.ShowDialog($owner)
+if ($result -eq [System.Windows.Forms.DialogResult]::OK -and $dialog.SelectedPath) {
+  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+  Write-Output $dialog.SelectedPath
+}
+$dialog.Dispose()
+$owner.Dispose()
+"#;
+            let mut cmd = std::process::Command::new("powershell.exe");
+            cmd.args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script]);
+            cmd.env("GEMINI_PICKER_INIT_DIR", &init_dir);
+            cmd.creation_flags(CREATE_NO_WINDOW);
+            let output = cmd.output().map_err(|e| format!("Failed to launch folder picker: {}", e))?;
+            if !output.status.success() {
+                let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                return Err(if err.is_empty() {
+                    "Folder picker exited unexpectedly.".to_string()
+                } else {
+                    err
+                });
+            }
+            let picked = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if picked.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(picked))
+            }
+        })
+        .await
+        .map_err(|e| format!("Folder picker task failed: {}", e))?
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = initial_path;
+        Ok(None)
+    }
 }
 
 #[tauri::command]
@@ -1392,5 +1567,44 @@ mod tests {
         assert!(invalid_res.is_err());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_probe_workspace_context_and_create_directory() {
+        // Test safe non-temp project path under USERPROFILE if available, otherwise validate EDR guard rejects %TEMP%
+        let temp_sub = std::env::temp_dir().join(format!("gemini_test_probe_{}", uuid::Uuid::new_v4()));
+        let err_create = create_workspace_directory(temp_sub.to_string_lossy().to_string());
+        assert!(err_create.is_err(), "Creating workspace directory inside %TEMP% must be rejected by EDR guard");
+
+        // Probe a real directory containing git, AGENTS.md, package.json, Cargo.toml, and .gemini/skills
+        let probe_dir = std::env::temp_dir().join(format!("gemini_probe_fixture_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(probe_dir.join(".git")).unwrap();
+        std::fs::create_dir_all(probe_dir.join(".gemini").join("skills")).unwrap();
+        std::fs::write(probe_dir.join("AGENTS.md"), "# Rules").unwrap();
+        std::fs::write(probe_dir.join("package.json"), "{}").unwrap();
+
+        let probe = probe_workspace_context(probe_dir.to_string_lossy().to_string()).unwrap();
+        assert!(!probe.validation.is_valid); // %TEMP% flagged by EDR guard
+        assert!(!probe.suggested_name.is_empty());
+
+        // Probe the actual repository root (not in %TEMP%) to verify git/stack/instructions detection
+        if let Ok(cwd) = std::env::current_dir() {
+            let repo_root = if cwd.ends_with("src-tauri") {
+                cwd.parent().unwrap_or(&cwd).to_path_buf()
+            } else {
+                cwd
+            };
+            if repo_root.join("package.json").is_file() {
+                let repo_probe = probe_workspace_context(repo_root.to_string_lossy().to_string()).unwrap();
+                assert!(repo_probe.validation.is_valid);
+                assert!(repo_probe.validation.exists);
+                assert!(repo_probe.has_git);
+                assert!(repo_probe.has_agents_md);
+                assert!(repo_probe.detected_stack.contains(&"Node / TS".to_string()));
+                assert!(repo_probe.detected_stack.contains(&"Rust".to_string()));
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&probe_dir);
     }
 }

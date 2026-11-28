@@ -28,6 +28,8 @@
     }
     return descriptor.binaryDir || null;
   });
+
+  let pathAddResult = $derived(engineStore.getPathAddResult(descriptor.id));
 </script>
 
 <div class="space-y-2">
@@ -63,14 +65,14 @@
     {/if}
   </div>
 
-  {#if engineStore.pathAddResult}
-    <div class="p-2.5 rounded-lg text-xs flex items-start gap-2 {engineStore.pathAddResult.success ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'}">
-      {#if engineStore.pathAddResult.success}
+  {#if pathAddResult}
+    <div class="p-2.5 rounded-lg text-xs flex items-start gap-2 {pathAddResult.success ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border border-rose-500/30 text-rose-300'}">
+      {#if pathAddResult.success}
         <CheckCircle2 size={14} class="text-emerald-400 shrink-0 mt-0.5" />
       {:else}
         <AlertCircle size={14} class="text-rose-400 shrink-0 mt-0.5" />
       {/if}
-      <span class="leading-relaxed">{engineStore.pathAddResult.message}</span>
+      <span class="leading-relaxed">{pathAddResult.message}</span>
     </div>
   {/if}
 </div>

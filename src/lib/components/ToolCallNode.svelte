@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ToolExecutionStep } from "$lib/types";
-  import { resolveHumanFriendlyTitle, formatDuration } from "$lib/utils/toolSteps";
+  import { resolveHumanFriendlyTitle, formatDuration, stripToolEmojiPrefix } from "$lib/utils/toolSteps";
   import {
     ChevronRight,
     CheckCircle2,
@@ -58,21 +58,11 @@
   let ToolIcon = $derived(getToolIcon(step.tool_name, step.title));
 
   let displayTitle = $derived.by(() => {
-    const summary = (step.summary || "").trim();
+    const summary = stripToolEmojiPrefix((step.summary || "").trim());
     if (summary && !summary.includes("call_") && !summary.includes("tool-") && !summary.endsWith(": tool")) {
       return summary;
     }
-    const cleanTitle = resolveHumanFriendlyTitle(step);
-    if (step.status === "completed") {
-      return `✅ ${cleanTitle}`;
-    }
-    if (step.status === "in_progress" || step.status === "pending") {
-      return `⚙️ ${cleanTitle}`;
-    }
-    if (step.status === "failed") {
-      return `❌ ${cleanTitle}`;
-    }
-    return cleanTitle;
+    return stripToolEmojiPrefix(resolveHumanFriendlyTitle(step));
   });
 
   async function copyText(text: string, sectionId: string) {
