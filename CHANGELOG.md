@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.13.0] - 2026-11-28
+
+### Added & Redesigned
+- **Streamlined Side Workspace Explorer (`SolutionExplorer.svelte`, `ExplorerTreeRow.svelte`, `ExplorerContextMenu.svelte`, `gitStatus.ts`, `workspace.rs`)**:
+  - Removed the redundant double header and duplicate collapse button in favor of a single `Explorer` / `Git` tool-window tab bar + compact workspace toolbar, saving vertical space while persisting panel width (`explorerWidth`) and active tab (`activeTab`) in `localStorage`.
+  - Surfaced live Git status badges (`M`, `A`, `U`, `D`, `R`, `!`) on changed files and activity dots on ancestor folders directly inside the Explorer tree via `buildGitStatusMaps` without spawning extra Git subprocesses, plus a live change count pill on the collapsed right dock.
+  - Simplified row hover actions to a clean 3-button pill (`Attach`, `@Mention`, `More ...`) so filenames remain legible on narrow widths, added full keyboard arrow navigation (`ArrowUp`, `ArrowDown`, `ArrowRight`, `ArrowLeft`, `Enter`, `Space`), and added `View Git Diff`, `Refresh Folder`, and `Copy Full Path` to the context menu.
+  - Upgraded `refreshTree(true)` (with deferred `needsTreeRefresh` while collapsed) to preserve expanded folders across manual refreshes and automatic refreshes triggered on mutating tool completions, turn completions, window focus, and turn rewinds.
+  - Enhanced `walk_search_dir` to match path-qualified queries containing `/` or `\` against `relative_path` while preserving strict filename matching for plain queries, and added an inline `"Show N hidden matches"` prompt when search results match hidden dotfiles.
+- **Theme-Harmonized Git Changes UX & Repository Actions (`GitChangesWindow.svelte`, `git.rs`, `lib.rs`, `types.ts`)**:
+  - Harmonized `GitChangesWindow.svelte` with theme CSS tokens (`bg-sidebar`, `bg-surface`, `bg-app`, `text-primary-theme`, `text-secondary-theme`, `text-muted-theme`, `border-subtle`) across all 6 dark and light themes (`soft-dark`, `warm-dusk`, `platinum-dark`, `platinum-white`, `gemini-aurora`, `cyber-emerald`).
+  - Added a clean `"Working tree clean"` view with quick Push/Pull controls when ahead/behind, a live filter bar when 6+ files are changed, discoverable section actions (`Stage All`, `Unstage All`, `Undo All`), right-click `Attach to Chat` / `Mention in Prompt (@)`, and fixed tooltip positioning and deleted-file menu guards.
+  - Added actionable diagnostic recovery commands and UI cards for missing Git binaries (`git_not_found`), Git 2.35+ ownership blocks (`dubious_ownership` with 1-click `git_trust_repository`), and non-Git folders (1-click `git_init_repo`).
+
+### Fixed
+- **Cross-Version Git Reliability (`src-tauri/src/commands/git.rs`)**:
+  - Replaced `git status --porcelain=v1` (Git 2.11+) with version-universal `git -c core.quotepath=false status --porcelain -uall`, added C-escape/octal UTF-8 unescaping (`unescape_git_path`) and `T` typechange parsing in `parse_porcelain_v1`.
+  - Updated `get_git_active_branch` to query `git symbolic-ref --short -q HEAD` first (Git 1.8+ including unborn repos with 0 commits) before falling back to `git branch --show-current` (Git 2.22+) and detached `HEAD` hashes.
+  - Fixed `git_unstage_file` and `git_unstage_all` to fall back from `git restore --staged` (Git 2.23+) to `git reset -q HEAD`, and use `git rm --cached` on unborn repositories without failing on missing `HEAD`.
+  - Added `run_git_diff_compat` to disable external diff drivers and mnemonic prefixes (`--no-ext-diff -c diff.noprefix=false -c diff.mnemonicPrefix=false -M`) and fall back cleanly from `--ignore-cr-at-eol` (Git 2.16+) to `-w -U3`; added untracked binary detection via `is_binary_content`.
+  - Added `resolve_git_workdir` / `normalize_git_toplevel_path` (including Windows MSYS2 `/c/...` normalization) so monorepo subdirectory workspaces work cleanly, plus `GIT_OPTIONAL_LOCKS=0`, English diagnostic locale vars, standard Windows Git path fallbacks, dynamic remote resolution in `git_push`, and `handleCommitAndPush` commit-success gating.
+
+### Verification & Knowledge Base
+- Added Rust tests in `git.rs` (`test_parse_porcelain_v1_typechange_and_octal_utf8`, `test_normalize_git_toplevel_path`, `test_git_unborn_repo_unstage_and_subdirectory_status`, `test_git_init_repo_and_file_diff_binary_and_text`), backslash path-qualified test in `workspace.rs`, and `gitStatus` unit tests in `tests/pure-utils.test.mjs` (**11/11** JS/TS suites & **155/155** Rust tests).
+- Updated Knowledge Units [`PROD-EXPLORER-001.yaml`](knowledge/product/PROD-EXPLORER-001.yaml) (v1.7.0), [`PROD-GIT-001.yaml`](knowledge/product/PROD-GIT-001.yaml) (v1.5.0), [`DEV-SVELTE-001.yaml`](knowledge/development/DEV-SVELTE-001.yaml) (v1.13.0), [`DEV-TEST-001.yaml`](knowledge/development/DEV-TEST-001.yaml) (v1.11.0), and `README.md`.
+
 ## [0.12.0] - 2026-11-28
 
 ### Added & Redesigned

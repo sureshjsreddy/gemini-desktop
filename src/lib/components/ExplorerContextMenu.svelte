@@ -1,5 +1,6 @@
 <script lang="ts">
-  import type { TreeNode } from "$lib/types";
+  import type { TreeNode, GitFileItem } from "$lib/types";
+  import { getGitStatusBadge } from "$lib/utils/gitStatus";
   import {
     Paperclip,
     AtSign,
@@ -7,10 +8,13 @@
     FileText,
     Eye,
     Copy,
+    RotateCw,
+    FileDiff,
   } from "lucide-svelte";
 
   let {
     contextMenu,
+    gitItem = null,
     onClose,
     onAttach,
     onMention,
@@ -18,19 +22,26 @@
     onOpenWithNotepad,
     onReveal,
     onCopyPath,
+    onRefreshDir,
+    onViewGitDiff,
   }: {
     contextMenu: { x: number; y: number; node: TreeNode } | null;
+    gitItem?: GitFileItem | null;
     onClose: () => void;
     onAttach: (node: TreeNode) => void;
     onMention: (node: TreeNode) => void;
     onOpenFile: (path: string) => void;
     onOpenWithNotepad: (path: string) => void;
     onReveal: (path: string) => void;
-    onCopyPath: (path: string) => void;
+    onCopyPath: (path: string, full?: boolean) => void;
+    onRefreshDir?: (node: TreeNode) => void;
+    onViewGitDiff?: (gitItem: GitFileItem) => void;
   } = $props();
 </script>
 
 {#if contextMenu}
+  {@const gitBadge = gitItem ? getGitStatusBadge(gitItem.status) : null}
+
   <!-- Backdrop to close context menu -->
   <div
     class="fixed inset-0 z-50 bg-transparent"
@@ -44,11 +55,21 @@
 
   <!-- Context Menu Card -->
   <div
-    class="fixed z-50 w-48 bg-surface-elevated border border-subtle rounded-lg shadow-2xl py-1 text-xs text-primary-theme"
-    style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
+    class="fixed z-50 w-52 bg-surface-elevated border border-subtle rounded-lg shadow-2xl py-1 text-xs text-primary-theme"
+    style="left: {Math.min(contextMenu.x, window.innerWidth - 220)}px; top: {Math.min(contextMenu.y, window.innerHeight - 310)}px;"
+    role="menu"
+    tabindex="-1"
+    onkeydown={(e) => {
+      if (e.key === "Escape") onClose();
+    }}
   >
-    <div class="px-2.5 py-1 text-[10px] text-muted-theme border-b border-subtle/60 font-mono truncate">
-      {contextMenu.node.name}
+    <div class="px-2.5 py-1.5 text-[10px] text-muted-theme border-b border-subtle/60 font-mono flex items-center justify-between gap-1.5">
+      <span class="truncate">{contextMenu.node.name}</span>
+      {#if gitBadge}
+        <span class="text-[9px] font-bold px-1 rounded border shrink-0 {gitBadge.badgeClass}">
+          {gitBadge.letter}
+        </span>
+      {/if}
     </div>
 
     <!-- Attach to Chat -->
@@ -70,6 +91,20 @@
       <AtSign size={13} class="text-secondary-theme" />
       <span>Mention in Prompt (@)</span>
     </button>
+
+    {#if gitItem && onViewGitDiff && !contextMenu.node.isDir}
+      <button
+        type="button"
+        onclick={() => {
+          onViewGitDiff(gitItem);
+          onClose();
+        }}
+        class="w-full px-2.5 py-1.5 text-left hover:bg-surface-hover flex items-center gap-2 cursor-pointer text-emerald-500 font-medium"
+      >
+        <FileDiff size={13} />
+        <span>View Git Diff</span>
+      </button>
+    {/if}
 
     <div class="my-1 border-t border-subtle/60"></div>
 
@@ -93,6 +128,18 @@
         <FileText size={13} class="text-muted-theme" />
         <span>Open with Notepad</span>
       </button>
+    {:else if onRefreshDir}
+      <button
+        type="button"
+        onclick={() => {
+          onRefreshDir(contextMenu.node);
+          onClose();
+        }}
+        class="w-full px-2.5 py-1.5 text-left hover:bg-surface-hover flex items-center gap-2 cursor-pointer"
+      >
+        <RotateCw size={13} class="text-secondary-theme" />
+        <span>Refresh Folder</span>
+      </button>
     {/if}
 
     <!-- Reveal in Explorer -->
@@ -110,11 +157,21 @@
     <!-- Copy Relative Path -->
     <button
       type="button"
-      onclick={() => onCopyPath(contextMenu.node.path)}
+      onclick={() => onCopyPath(contextMenu.node.path, false)}
       class="w-full px-2.5 py-1.5 text-left hover:bg-surface-hover flex items-center gap-2 cursor-pointer"
     >
       <Copy size={13} class="text-secondary-theme" />
       <span>Copy Relative Path</span>
+    </button>
+
+    <!-- Copy Full Path -->
+    <button
+      type="button"
+      onclick={() => onCopyPath(contextMenu.node.path, true)}
+      class="w-full px-2.5 py-1.5 text-left hover:bg-surface-hover flex items-center gap-2 cursor-pointer"
+    >
+      <Copy size={13} class="text-muted-theme" />
+      <span>Copy Full Path</span>
     </button>
   </div>
 {/if}

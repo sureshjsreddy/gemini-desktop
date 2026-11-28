@@ -168,8 +168,10 @@ pub fn search_workspace_files_internal(
     }
 
     let q_lower = query.to_lowercase();
+    let q_norm = q_lower.replace('\\', "/");
+    let match_rel_path = q_norm.contains('/');
     let mut entries = Vec::new();
-    walk_search_dir(root, root, &q_lower, 0, 10, max_results, cancellation, &mut entries);
+    walk_search_dir(root, root, &q_norm, match_rel_path, 0, 10, max_results, cancellation, &mut entries);
 
     entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(entries)
@@ -179,6 +181,7 @@ fn walk_search_dir(
     root: &std::path::Path,
     current: &std::path::Path,
     query_lower: &str,
+    match_rel_path: bool,
     depth: usize,
     max_depth: usize,
     max_results: usize,
@@ -234,8 +237,15 @@ fn walk_search_dir(
                 Err(_) => continue,
             };
 
-            // Files only: check if file_name contains query (do not check directory path)
-            if file_name.to_lowercase().contains(query_lower) {
+            // Plain queries match strictly against file_name to avoid folder-name noise;
+            // path-qualified queries containing '/' match against relative_path.
+            let is_match = if match_rel_path {
+                relative.to_lowercase().contains(query_lower)
+            } else {
+                file_name.to_lowercase().contains(query_lower)
+            };
+
+            if is_match {
                 let extension = path.extension().and_then(|e| e.to_str()).map(|s| s.to_string());
                 out.push(WorkspaceFileEntry {
                     name: file_name,
@@ -252,7 +262,7 @@ fn walk_search_dir(
     }
 
     for subdir in subdirs {
-        walk_search_dir(root, &subdir, query_lower, depth + 1, max_depth, max_results, cancellation, out);
+        walk_search_dir(root, &subdir, query_lower, match_rel_path, depth + 1, max_depth, max_results, cancellation, out);
         if out.len() >= max_results {
             return;
         }
@@ -1276,6 +1286,15 @@ mod tests {
         // 3. Search for "src" (folder name) - should return 0 because path is not matched, only filename
         let path_res = search_workspace_files_internal(&temp_dir, "src", 100, None).expect("search failed");
         assert_eq!(path_res.len(), 0);
+
+        // 3b. Path-qualified search with '/' or '\' matches relative_path cleanly
+        let qualified_res = search_workspace_files_internal(&temp_dir, "src/app", 100, None).expect("search failed");
+        assert_eq!(qualified_res.len(), 1);
+        assert_eq!(qualified_res[0].relative_path, "src/app.svelte");
+
+        let qualified_win_res = search_workspace_files_internal(&temp_dir, "src\\app", 100, None).expect("search failed");
+        assert_eq!(qualified_win_res.len(), 1);
+        assert_eq!(qualified_win_res[0].relative_path, "src/app.svelte");
 
         // 4. Search with limit = 1
         let limited = search_workspace_files_internal(&temp_dir, "svelte", 1, None).expect("search failed");

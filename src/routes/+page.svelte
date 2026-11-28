@@ -497,7 +497,7 @@
         streamStates[sessionId].toolCalls = [...list];
         streamStates = { ...streamStates };
 
-        // Auto-refresh Git Changes when mutating tools complete
+        // Auto-refresh Git Changes & Workspace Explorer when mutating tools complete
         if (payload.status === "completed") {
           const tName = (payload.tool_name || payload.title || "").toLowerCase();
           if (
@@ -509,6 +509,7 @@
             tName.includes("terminal")
           ) {
             solutionExplorerRef?.refreshGitStatus();
+            solutionExplorerRef?.refreshTree(true);
           }
         }
       }
@@ -732,6 +733,7 @@
   function handleWindowFocus() {
     checkClipboardForDebugError(false);
     solutionExplorerRef?.refreshGitStatus();
+    solutionExplorerRef?.refreshTree(true);
   }
 
   async function checkClipboardForDebugError(force = false) {
@@ -1081,6 +1083,8 @@
     }
     if (restoredFiles.length > 0) {
       await refreshWorkspaceFiles();
+      solutionExplorerRef?.refreshGitStatus();
+      solutionExplorerRef?.refreshTree(true);
     }
     await dialogManager.alert(
       `Rewound ${rewoundCount} message(s)${restoredFiles.length > 0 ? ` and restored ${restoredFiles.length} file(s) in workspace.` : "."}`,
@@ -1390,9 +1394,10 @@ Keep this summary dense, structured, and actionable so it serves as our clean wo
       }
     }
 
-    // Refresh workspace files & git changes count
+    // Refresh workspace files, explorer tree & git changes count
     refreshWorkspaceFiles();
     solutionExplorerRef?.refreshGitStatus();
+    solutionExplorerRef?.refreshTree(true);
 
     // Auto-dispatch next queued prompt for this session if present
     const pendingQueue = sessionQueuedPrompts[sessionId];

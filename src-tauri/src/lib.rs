@@ -120,6 +120,8 @@ pub fn run() {
             add_cli_to_user_path,
             create_continuation_session,
             git_get_status,
+            git_trust_repository,
+            git_init_repo,
             git_stage_file,
             git_unstage_file,
             git_stage_all,

@@ -3,7 +3,7 @@ type: product_standard
 title: Workspace Explorer Tree Navigation, Context Attachment & File Filtering
 domain: product
 status: approved
-version: 1.6.0
+version: 1.7.0
 authority:
   level: official
   confidence: high
@@ -30,7 +30,10 @@ do:
   - "Filter out dotfiles and dotfolders (names starting with `.`) by default, with an `Eye`/`EyeOff` toggle button in the toolbar to reveal them on demand."
   - "Provide a 'Collapse All Folders' action button (`ChevronsDownUp`) in the toolbar to quickly collapse the tree hierarchy."
   - "Provide multi-select mode (`isSelectMode`) with checkboxes to batch-select multiple files or folders and attach them to chat context with one click."
-  - "Provide instant single-click inline attachment (`Paperclip` icon) and `@mention` insertion (`@` icon) on hover for any file or directory row."
+  - "Streamline panel chrome into a single top tool-window tab bar (`Explorer` / `Git`) + compact workspace action bar, persist panel width and active tab across restarts, and display the live Git change count badge on the collapsed right dock."
+  - "Display passive Git status badges (`M`, `A`, `U`, `D`, `R`, `!`) on modified files and subtle activity dots on ancestor folders in the tree without extra Git subprocess calls, hiding cleanly on row hover."
+  - "Support full keyboard tree navigation (`ArrowUp`, `ArrowDown`, `ArrowRight`, `ArrowLeft`, `Enter`, `Space`), preserve expanded subdirectories on manual or agent-triggered tree refreshes, and support path-qualified search queries containing `/` or `\\` alongside strict filename search."
+  - "Provide a streamlined 3-action hover pill (`Attach`, `@Mention`, `More ...`) plus rich right-click context menu (`Attach`, `Mention`, `View Git Diff`, `Open`, `Open with Notepad`, `Refresh Folder`, `Reveal in Explorer`, `Copy Relative Path`, `Copy Full Path`)."
   - "Render distinct Visual Studio 2022 color badges and icons based on file type and extension."
   - "Support context menu and double-click actions: open in system default app via native Rust command `open_workspace_file` (with automatic Windows Notepad fallback for unassociated file types, bypassing frontend plugin-opener ACL restrictions), reveal in Windows Explorer, and copy relative path."
   - "Support universal code location & artifact opening via `normalize_open_target`: parse trailing colon line and column numbers (`:179`, `:179:15`, `:179-185`, `#L179`), preserve Windows drive colons (`C:\\...`), resolve Antigravity brain artifacts (`.gemini/antigravity/brain/...`), and perform fuzzy subdirectory matching for relative paths."

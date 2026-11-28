@@ -3,7 +3,7 @@ type: development_standard
 title: Svelte 5 Runes State Management & Tailwind CSS v4 Component Standard
 domain: development
 status: approved
-version: 1.12.0
+version: 1.13.0
 authority:
   level: official
   confidence: high
@@ -31,7 +31,7 @@ do:
   - "Use `modalManager` (`src/lib/modal.svelte.ts`) to govern dialog modals (`search`, `workspace`, `templates`, `theme`, `mcp`, `palette`) with `isOpen(type)`, `open(type)`, `close()`, and `toggle(type)`, preventing multiple competing open modals and eliminating scattered boolean flags."
   - "Provide a global Command Palette (`Ctrl+P` / `Ctrl+Shift+P` via `CommandPaletteModal.svelte`) for instant fuzzy discovery and keyboard navigation of workspace actions, active sessions, and theme modes."
   - "Enable session forking (`fork_session`) from any conversation turn in `ChatView.svelte` to branch discussions into independent sessions without altering the original history."
-  - "Decompose high-complexity views into focused subcomponents (e.g. `ToolPermissionCard.svelte`, `ToolCallNode.svelte`, `ChatPromptComposer.svelte`, `ChatMentionPopover.svelte`, `ChatSlashPopover.svelte`, `ExplorerContextMenu.svelte`, `ExplorerTreeRow.svelte`, `EngineSwitcher.svelte`, `CliPathStatusBanner.svelte`) and extract reusable domain logic into shared stores and pure utility modules (`engineStore.svelte.ts`, `engineModels.ts`, `approvalModes.ts`, `toolSteps.ts`, `fileIcons.ts`, `fileFilters.ts`)."
+  - "Decompose high-complexity views into focused subcomponents (e.g. `ToolPermissionCard.svelte`, `ToolCallNode.svelte`, `ChatPromptComposer.svelte`, `ChatMentionPopover.svelte`, `ChatSlashPopover.svelte`, `ExplorerContextMenu.svelte`, `ExplorerTreeRow.svelte`, `EngineSwitcher.svelte`, `CliPathStatusBanner.svelte`) and extract reusable domain logic into shared stores and pure utility modules (`engineStore.svelte.ts`, `engineModels.ts`, `approvalModes.ts`, `toolSteps.ts`, `fileIcons.ts`, `fileFilters.ts`, `gitStatus.ts`)."
   - "Bound markdown rendering cost and chat DOM growth via LRU caching in `markdown.ts` and message windowing ('Show earlier messages') in `ChatView.svelte`."
   - "Group multi-step agent tool executions and ACP plan milestones via `ToolCallGroup.svelte` and `toolSteps.ts` as a Living Now Capsule while streaming (compact phase/milestone stepper, single-line active focus with burst-grouped reads, live elapsed clock, and changed-file/check impact pills) that collapses automatically into a 1-Line Work Receipt with an expandable `[Inspect]` timeline drawer (`All` / `Files` / `Commands` / `Errors`) once completed."
   - "Enforce empty-only prompt history recall via `resolvePromptHistoryNavigation` (`src/lib/utils/promptHistory.ts`) in `ChatPromptComposer.svelte`: `ArrowUp` enters past prompt history only when the composer text is completely empty and no modifier keys or text selections are active, preserving unsent drafts and prefilled/rewound prompts."

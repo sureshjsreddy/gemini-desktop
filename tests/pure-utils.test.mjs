@@ -38,6 +38,12 @@ import {
   buildTurnReceiptSummary,
   stripToolEmojiPrefix,
 } from "../src/lib/utils/toolSteps.ts";
+import {
+  toWorkspaceRelativeGitPath,
+  buildGitStatusMaps,
+  getGitStatusBadge,
+  splitGitFilePath,
+} from "../src/lib/utils/gitStatus.ts";
 
 test("engineModels: cross-engine sanitization & fallback labels", () => {
   assert.equal(sanitizeModelForEngine("gemini-2.5-pro", "agy"), "auto");
@@ -482,4 +488,71 @@ test("turnProgress: Living Now Capsule narrative, ACP milestones, and 1-Line Wor
   assert.equal(milestoneOnlyReceipt.headline, "3/3 tasks completed");
   assert.equal(milestoneOnlyReceipt.milestoneDone, 3);
   assert.equal(milestoneOnlyReceipt.milestoneTotal, 3);
+});
+
+test("gitStatus: maps repo-relative paths, monorepo subpaths, and priority badges cleanly", () => {
+  // 1. Standard repo-root workspace
+  assert.equal(
+    toWorkspaceRelativeGitPath("src/lib/App.svelte", "C:\\repo", "C:\\repo"),
+    "src/lib/App.svelte",
+  );
+
+  // 2. Monorepo subdirectory workspace maps nested files and ignores sibling packages
+  assert.equal(
+    toWorkspaceRelativeGitPath("packages/web/src/App.svelte", "C:\\repo\\packages\\web", "C:\\repo"),
+    "src/App.svelte",
+  );
+  assert.equal(
+    toWorkspaceRelativeGitPath("packages/api/main.rs", "C:\\repo\\packages\\web", "C:\\repo"),
+    null,
+  );
+
+  // 3. Builds file & ancestor folder maps with conflict > modified > untracked priority
+  const maps = buildGitStatusMaps(
+    {
+      is_git_repo: true,
+      repo_name: "repo",
+      repo_root: "C:\\repo",
+      active_branch: "main",
+      staged: [{ path: "src/App.svelte", status: "added", is_staged: true }],
+      unstaged: [
+        { path: "src/App.svelte", status: "modified", is_staged: false },
+        { path: "src/new/util.ts", status: "untracked", is_staged: false },
+      ],
+    },
+    "C:\\repo",
+  );
+
+  assert.equal(maps.fileStatusMap.get("src/App.svelte")?.status, "modified");
+  assert.equal(maps.fileStatusMap.get("src/new/util.ts")?.status, "untracked");
+  assert.equal(maps.dirtyDirs.has("src"), true);
+  assert.equal(maps.dirtyDirs.has("src/new"), true);
+  assert.equal(maps.dirtyDirs.has("other"), false);
+
+  // 4. Non-git or null status returns empty maps cleanly, and conflict overrides modified priority
+  const emptyMaps = buildGitStatusMaps(null, "C:\\repo");
+  assert.equal(emptyMaps.fileStatusMap.size, 0);
+  assert.equal(emptyMaps.dirtyDirs.size, 0);
+
+  const conflictMaps = buildGitStatusMaps(
+    {
+      is_git_repo: true,
+      repo_name: "repo",
+      active_branch: "main",
+      staged: [{ path: "src/merge.ts", status: "modified", is_staged: true }],
+      unstaged: [{ path: "src/merge.ts", status: "conflict", is_staged: false }],
+    },
+    "C:\\repo",
+  );
+  assert.equal(conflictMaps.fileStatusMap.get("src/merge.ts")?.status, "conflict");
+
+  // 5. Badge and path split helpers
+  assert.equal(getGitStatusBadge("conflict").letter, "!");
+  assert.equal(getGitStatusBadge("untracked").letter, "U");
+  assert.equal(getGitStatusBadge("deleted").letter, "D");
+  assert.equal(getGitStatusBadge("renamed").letter, "R");
+  assert.equal(getGitStatusBadge("added").letter, "A");
+  assert.equal(getGitStatusBadge("modified").letter, "M");
+  assert.deepEqual(splitGitFilePath("src/lib/types.ts"), { name: "types.ts", dir: "src/lib" });
+  assert.deepEqual(splitGitFilePath("README.md"), { name: "README.md", dir: "" });
 });

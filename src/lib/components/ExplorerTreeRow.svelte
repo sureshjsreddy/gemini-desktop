@@ -1,8 +1,9 @@
 <script lang="ts">
-  import type { TreeNode } from "$lib/types";
+  import type { TreeNode, GitFileItem } from "$lib/types";
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { getFileIconMeta } from "$lib/utils/fileIcons";
   import { isNodeVisible } from "$lib/utils/fileFilters";
+  import { getGitStatusBadge } from "$lib/utils/gitStatus";
   import ExplorerTreeRow from "$lib/components/ExplorerTreeRow.svelte";
   import {
     Folder,
@@ -19,9 +20,7 @@
     Check,
     Paperclip,
     AtSign,
-    ExternalLink,
-    Eye,
-    Copy,
+    MoreHorizontal,
   } from "lucide-svelte";
 
   let {
@@ -32,8 +31,9 @@
     checkedItems,
     isSelectMode = false,
     attachedPath = null,
-    copiedPath = null,
     showHiddenFiles = false,
+    gitFileStatusMap,
+    gitDirtyDirs,
     onSelectNode,
     onToggleDir,
     onToggleCheckItem,
@@ -41,8 +41,6 @@
     onContextMenu,
     onAttachNode,
     onInsertMention,
-    onRevealInExplorer,
-    onCopyPath,
   }: {
     node: TreeNode;
     depth?: number;
@@ -51,17 +49,16 @@
     checkedItems: Map<string, { path: string; isDir: boolean; name: string }>;
     isSelectMode?: boolean;
     attachedPath?: string | null;
-    copiedPath?: string | null;
     showHiddenFiles?: boolean;
+    gitFileStatusMap?: Map<string, GitFileItem>;
+    gitDirtyDirs?: Set<string>;
     onSelectNode: (node: TreeNode) => void;
     onToggleDir: (node: TreeNode, e?: MouseEvent) => void;
-    onToggleCheckItem: (node: TreeNode, e?: MouseEvent) => void;
+    onToggleCheckItem: (node: TreeNode, e?: Event) => void;
     onOpenFile: (path: string, e?: MouseEvent) => void;
     onContextMenu: (node: TreeNode, e: MouseEvent) => void;
     onAttachNode: (node: TreeNode, e?: MouseEvent) => void;
     onInsertMention: (node: TreeNode, e?: MouseEvent) => void;
-    onRevealInExplorer: (path: string, e?: MouseEvent) => void;
-    onCopyPath: (path: string, e?: MouseEvent) => void;
   } = $props();
 
   let isExpanded = $derived(node.isDir && expandedDirs.has(node.path));
@@ -73,11 +70,86 @@
   let visibleChildren = $derived(
     node.isDir && node.children ? node.children.filter((c) => isNodeVisible(c, showHiddenFiles)) : []
   );
+
+  let gitItem = $derived(!node.isDir ? gitFileStatusMap?.get(node.path) : undefined);
+  let gitBadge = $derived(gitItem ? getGitStatusBadge(gitItem.status) : null);
+  let hasDirtyChildren = $derived(node.isDir && Boolean(gitDirtyDirs?.has(node.path)));
+
+  function moveTreeFocus(currentEl: HTMLElement, delta: number) {
+    const container = currentEl.closest("[data-explorer-tree]");
+    if (!container) return;
+    const rows = Array.from(container.querySelectorAll<HTMLElement>("[data-tree-row]"));
+    const idx = rows.indexOf(currentEl);
+    if (idx === -1) return;
+    const next = rows[idx + delta];
+    if (next) next.focus();
+  }
+
+  function focusParentDir(currentEl: HTMLElement) {
+    const slashIdx = node.path.lastIndexOf("/");
+    if (slashIdx === -1) return;
+    const parentPath = node.path.slice(0, slashIdx);
+    const container = currentEl.closest("[data-explorer-tree]");
+    if (!container) return;
+    const rows = Array.from(container.querySelectorAll<HTMLElement>("[data-tree-row]"));
+    const parentEl = rows.find((el) => el.getAttribute("data-tree-row") === parentPath);
+    if (parentEl) parentEl.focus();
+  }
+
+  function handleKeyDown(e: KeyboardEvent) {
+    const el = e.currentTarget as HTMLElement;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      moveTreeFocus(el, 1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      moveTreeFocus(el, -1);
+    } else if (e.key === "ArrowRight") {
+      if (node.isDir) {
+        e.preventDefault();
+        if (!isExpanded) {
+          onToggleDir(node);
+        } else {
+          moveTreeFocus(el, 1);
+        }
+      }
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      if (node.isDir && isExpanded) {
+        onToggleDir(node);
+      } else {
+        focusParentDir(el);
+      }
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onSelectNode(node);
+      if (isSelectMode) {
+        onToggleCheckItem(node);
+      } else if (node.isDir) {
+        onToggleDir(node);
+      } else if (e.key === "Enter") {
+        onOpenFile(node.path);
+      }
+    }
+  }
+
+  function openAnchoredContextMenu(e: MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const syntheticEvent = new MouseEvent("contextmenu", {
+      clientX: rect.left - 140,
+      clientY: rect.bottom + 4,
+      bubbles: true,
+    });
+    onContextMenu(node, syntheticEvent);
+  }
 </script>
 
 <!-- Tree Row Item (VS 2022 Height: 24px) -->
 <div
   role="treeitem"
+  data-tree-row={node.path}
   aria-selected={isSelected}
   aria-expanded={node.isDir ? isExpanded : undefined}
   tabindex="0"
@@ -95,18 +167,8 @@
     }
   }}
   oncontextmenu={(e) => onContextMenu(node, e)}
-  onkeydown={(e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      onSelectNode(node);
-      if (isSelectMode) {
-        onToggleCheckItem(node);
-      } else if (node.isDir) {
-        onToggleDir(node);
-      }
-    }
-  }}
-  class="group relative flex items-center h-6 pr-2 cursor-pointer transition-colors select-none {isSelected ? 'bg-accent-subtle text-primary-theme font-medium border-l-2 border-accent-theme' : 'text-secondary-theme hover:bg-surface-hover/80 hover:text-primary-theme'} {isHiddenItem ? 'opacity-70' : ''}"
+  onkeydown={handleKeyDown}
+  class="group relative flex items-center h-6 pr-2 cursor-pointer transition-colors select-none focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent-theme {isSelected ? 'bg-accent-subtle text-primary-theme font-medium border-l-2 border-accent-theme' : 'text-secondary-theme hover:bg-surface-hover/80 hover:text-primary-theme'} {isHiddenItem ? 'opacity-70' : ''}"
   style="padding-left: {depth * 14 + 6}px;"
 >
   <!-- Visual Studio Tree Indentation Guide Line -->
@@ -125,7 +187,7 @@
         e.stopPropagation();
         onToggleCheckItem(node, e);
       }}
-      class="w-3.5 h-3.5 mr-1 flex items-center justify-center text-muted-theme hover:text-accent-theme cursor-pointer"
+      class="w-3.5 h-3.5 mr-1 flex items-center justify-center text-muted-theme hover:text-accent-theme cursor-pointer shrink-0"
       aria-label="Check item to attach"
     >
       {#if isChecked}
@@ -184,28 +246,45 @@
   </div>
 
   <!-- Node Name -->
-  <span class="truncate text-xs leading-none mr-2 font-normal {isHiddenItem ? 'italic' : ''}" title={node.path}>
+  <span
+    class="truncate text-xs leading-none mr-1.5 font-normal {isHiddenItem ? 'italic' : ''} {gitBadge && gitItem?.status !== 'modified' ? gitBadge.textColor : ''}"
+    title={gitBadge ? `${node.path} (${gitBadge.label})` : node.path}
+  >
     {node.name}
   </span>
 
-  <!-- Folder Child Count Badge -->
-  {#if node.isDir && node.children.length > 0}
-    <span class="text-[10px] text-muted-theme/80 font-mono group-hover:opacity-0 transition-opacity ml-auto shrink-0">
-      {node.children.length}
-    </span>
-  {/if}
+  <!-- Right-side Passive Badges (Git Status / Dirty Folder Dot / Child Count) — hidden cleanly on hover -->
+  <div class="ml-auto flex items-center gap-1 shrink-0 group-hover:hidden">
+    {#if hasDirtyChildren}
+      <span
+        class="w-1.5 h-1.5 rounded-full bg-sky-400/85 shrink-0"
+        title="Contains modified or untracked Git files"
+      ></span>
+    {/if}
+    {#if gitBadge}
+      <span
+        class="text-[9px] font-mono font-bold px-1 rounded border leading-tight {gitBadge.badgeClass}"
+        title={gitBadge.title}
+      >
+        {gitBadge.letter}
+      </span>
+    {:else if node.isDir && node.children.length > 0}
+      <span class="text-[10px] text-muted-theme/70 font-mono">
+        {node.children.length}
+      </span>
+    {/if}
+  </div>
 
-  <!-- Action Buttons on Row Hover -->
-  <div class="hidden group-hover:flex items-center gap-0.5 ml-auto shrink-0 bg-surface/90 rounded px-0.5 border border-subtle/50">
-    <!-- Direct "Attach to Chat" Button -->
-    <Tooltip text={isAttached ? "Attached to Chat!" : node.isDir ? "Attach Folder to Chat" : "Attach File to Chat"} position="left">
+  <!-- Streamlined 3-Action Hover Pill (keeps filenames readable on narrow panels) -->
+  <div class="hidden group-hover:flex items-center gap-0.5 ml-auto shrink-0 bg-surface/95 rounded px-0.5 border border-subtle/60 shadow-xs">
+    <Tooltip text={isAttached ? "Attached!" : node.isDir ? "Attach Folder to Chat" : "Attach File to Chat"} position="left">
       <button
         type="button"
         onclick={(e) => {
           e.stopPropagation();
           onAttachNode(node, e);
         }}
-        class="p-0.5 rounded hover:bg-surface-elevated transition-colors cursor-pointer {isAttached ? 'text-emerald-400 font-bold' : 'text-accent-theme hover:text-accent-hover'}"
+        class="p-0.5 rounded hover:bg-surface-elevated transition-colors cursor-pointer {isAttached ? 'text-emerald-500 font-bold' : 'text-accent-theme hover:text-accent-hover'}"
         aria-label="Attach to Chat"
       >
         {#if isAttached}
@@ -216,7 +295,6 @@
       </button>
     </Tooltip>
 
-    <!-- Insert @mention into Chat Prompt -->
     <Tooltip text={node.isDir ? "Mention Folder (@dir/)" : "Mention File (@file)"} position="left">
       <button
         type="button"
@@ -231,54 +309,14 @@
       </button>
     </Tooltip>
 
-    {#if !node.isDir}
-      <!-- Open with Default App -->
-      <Tooltip text="Open File" position="left">
-        <button
-          type="button"
-          onclick={(e) => {
-            e.stopPropagation();
-            onOpenFile(node.path, e);
-          }}
-          class="p-0.5 text-muted-theme hover:text-primary-theme rounded hover:bg-surface-elevated transition-colors cursor-pointer"
-          aria-label="Open file"
-        >
-          <ExternalLink size={11} />
-        </button>
-      </Tooltip>
-    {/if}
-
-    <!-- Reveal in Explorer -->
-    <Tooltip text="Reveal in Windows Explorer" position="left">
+    <Tooltip text="More Actions" position="left">
       <button
         type="button"
-        onclick={(e) => {
-          e.stopPropagation();
-          onRevealInExplorer(node.path, e);
-        }}
+        onclick={openAnchoredContextMenu}
         class="p-0.5 text-muted-theme hover:text-primary-theme rounded hover:bg-surface-elevated transition-colors cursor-pointer"
-        aria-label="Reveal in File Explorer"
+        aria-label="More actions"
       >
-        <Eye size={11} />
-      </button>
-    </Tooltip>
-
-    <!-- Copy Relative Path -->
-    <Tooltip text={copiedPath === node.path ? "Copied!" : "Copy Relative Path"} position="left">
-      <button
-        type="button"
-        onclick={(e) => {
-          e.stopPropagation();
-          onCopyPath(node.path, e);
-        }}
-        class="p-0.5 text-muted-theme hover:text-primary-theme rounded hover:bg-surface-elevated transition-colors cursor-pointer"
-        aria-label="Copy path"
-      >
-        {#if copiedPath === node.path}
-          <Check size={11} class="text-emerald-400" />
-        {:else}
-          <Copy size={11} />
-        {/if}
+        <MoreHorizontal size={11} />
       </button>
     </Tooltip>
   </div>
@@ -313,8 +351,9 @@
             {checkedItems}
             {isSelectMode}
             {attachedPath}
-            {copiedPath}
             {showHiddenFiles}
+            {gitFileStatusMap}
+            {gitDirtyDirs}
             {onSelectNode}
             {onToggleDir}
             {onToggleCheckItem}
@@ -322,8 +361,6 @@
             {onContextMenu}
             {onAttachNode}
             {onInsertMention}
-            {onRevealInExplorer}
-            {onCopyPath}
           />
         {/each}
       {/if}

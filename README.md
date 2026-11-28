@@ -64,9 +64,13 @@ A modern, blazing-fast native desktop application for interacting with **Gemini 
   - XSS-safe markdown rendering powered by `DOMPurify` with event-delegated code block copy buttons.
 
 - **🎨 Multi-Theme System & Syntax Highlighting**
-  - 4 tailored themes: **Platinum Dark** (default), **Gemini Aurora**, **Cyber Emerald**, and **Platinum Light** (`platinum-white`).
+  - 6 tailored themes: **Soft Dark (Eye Comfort, default)**, **Warm Dusk (Sepia Dark)**, **Platinum Dark**, **Gemini Aurora**, **Cyber Emerald**, and **Platinum Light** (`platinum-white`), with optional comfortable text scaling.
   - Full theme-adaptive `highlight.js` syntax highlighting palette tuned for readable light and dark contrast.
   - Modernized theme-adaptive tool execution authorization banners.
+
+- **🗂️ Workspace Explorer & Visual Studio-Style Git Changes (`Ctrl+Alt+L` / `Ctrl+Shift+G`)**
+  - **Streamlined Right Dock Explorer**: Single-chrome tabbed right dock (`Explorer` / `Git`) with persisted panel width and active tab, live Git status badges (`M`, `A`, `U`, `D`, `R`, `!`) & folder activity dots directly in the tree, keyboard arrow navigation, preserved expanded directories across live refreshes, path-qualified file search (`Ctrl+;`), and 1-click attach / `@mention` / diff inspection.
+  - **Cross-Version Git Changes Tool Window**: Compatible across Git `1.8` – `2.54+` (including unborn repositories and monorepo subdirectories), with theme-adaptive UI, Staged/Unstaged diffing, 1-click Pull/Push/Commit & Push, AI Conventional Commit generation, file filtering, `Working tree clean` summary, and actionable recovery for `safe.directory` (`Trust Repository`) and non-Git folders (`Initialize Git Repository`).
 
 - **📁 Split-Pane Workspace Workbench & Directory Profiles**
   - Searchable split-pane Workspace Management modal (`WorkspaceModal.svelte`) with native folder picking, 1-click EDR-safe folder creation (`create_workspace_directory`), live stack/Git/`GEMINI.md`/`AGENTS.md` probing (`probe_workspace_context`), single-row Execution Approval Policy selector, and unsaved-change misclick guards.
@@ -128,6 +132,9 @@ A modern, blazing-fast native desktop application for interacting with **Gemini 
 | Shortcut | Action | Scope |
 | :--- | :--- | :--- |
 | **`Ctrl + P`** / **`Ctrl + Shift + P`** | Open Unified Command Palette | Global |
+| **`Ctrl + Alt + L`** | Toggle Right Dock (Workspace Explorer / Git Changes) | Global |
+| **`Ctrl + Shift + G`** | Open Git Changes Tool Window | Global |
+| **`Ctrl + ;`** | Focus Workspace Explorer File Search | Global |
 | **`Ctrl + ` `** / **`Ctrl + ~`** | Toggle Integrated Workspace Terminal Drawer | Global |
 | **`Ctrl + M`** | Toggle MCP Server Manager | Global |
 | **`Ctrl + K`** | Open Full-Text SQLite FTS5 Search | Global |

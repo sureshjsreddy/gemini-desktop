@@ -3,7 +3,7 @@ type: product_feature
 title: "Visual Studio Git Changes Tool Window, Staging & AI Conventional Commits Standard"
 domain: product
 status: approved
-version: 1.4.0
+version: 1.5.0
 authority:
   level: official
   confidence: high
@@ -22,7 +22,11 @@ do:
   - "Query system Git CLI directly via `run_git_command` under Windows `CREATE_NO_WINDOW` (0x08000000) without spawning visible console windows."
   - "Display active repository root folder and checked-out branch name (e.g. `🌿 main`) along with upstream ahead/behind synchronization indicators (`↑` unpushed, `↓` unpulled)."
   - "Gracefully handle non-git workspace directories by rendering a clean fallback banner ('Not a Git repository')."
-  - "Group working directory modifications into Staged Changes and Changes (unstaged) using `git status --porcelain=v1 -uall`."
+  - "Group working directory modifications into Staged Changes and Changes (unstaged) using version-universal `git -c core.quotepath=false status --porcelain -uall` (compatible with Git 1.7 through 2.54+)."
+  - "Ensure cross-version Git compatibility: detect branches via `git symbolic-ref --short -q HEAD` before `git branch --show-current` (Git < 2.22), unstage via `git restore --staged` with automatic fallback to `git reset -q HEAD` (Git < 2.23) and `git rm --cached` (unborn repositories with 0 commits), and fall back from `git diff --ignore-cr-at-eol` to `-w -U3` (Git < 2.16) while disabling `diff.external` and `diff.noprefix`."
+  - "Resolve repository root via `git rev-parse --show-toplevel` (normalizing MSYS2 drive paths on Windows) so monorepo subdirectory workspaces stage, unstage, diff, undo, and open files accurately."
+  - "Surface actionable diagnostic states in `GitChangesWindow` for missing Git binaries (`git_not_found`), Git 2.35+ `safe.directory` ownership blocks (`dubious_ownership` with 1-click `git_trust_repository`), and non-Git workspaces (with 1-click `git_init_repo`)."
+  - "Harmonize `GitChangesWindow.svelte` with theme CSS design tokens (`bg-sidebar`, `bg-surface`, `bg-app`, `text-primary-theme`, `text-secondary-theme`, `text-muted-theme`), show a clean Working Tree card when 0 changes exist, provide an optional filter input when 6+ files are changed, and support attaching or `@mention`ing changed files directly from the context menu."
   - "Parse porcelain status codes and map them to Visual Studio color-coded glyph badges: `[A]` (emerald/green for Added), `[M]` (sky/blue for Modified), `[D]` (rose/red for Deleted with strikethrough styling), `[U]` (emerald-300 for Untracked), `[R]` (amber for Renamed), and `[!]` (red for Merge Conflict)."
   - "Provide rich hover tooltips on each badge clarifying the exact status meaning (e.g. `Added — New file in Git index`, `Deleted — File was removed`)."
   - "Display file type extension icons beside status badges matching the Solution Explorer hierarchy."

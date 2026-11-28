@@ -1,4 +1,4 @@
-use crate::commands::session_diff::FileChangeSummary;
+use crate::commands::session_diff::{is_binary_content, FileChangeSummary};
 use serde::{Deserialize, Serialize};
 use similar::{ChangeTag, TextDiff};
 use std::path::{Path, PathBuf};
@@ -7,7 +7,7 @@ use std::process::Command;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GitFileItem {
     pub path: String,
-    pub status: String, // "modified" | "added" | "deleted" | "untracked" | "renamed"
+    pub status: String, // "modified" | "added" | "deleted" | "untracked" | "renamed" | "conflict"
     pub is_staged: bool,
 }
 
@@ -22,43 +22,176 @@ pub struct GitStatusResult {
     pub behind: usize,
     pub staged: Vec<GitFileItem>,
     pub unstaged: Vec<GitFileItem>,
+    #[serde(default)]
+    pub repo_root: Option<String>,
+    #[serde(default)]
+    pub error_kind: Option<String>,
+    #[serde(default)]
+    pub error_message: Option<String>,
 }
 
-pub fn run_git_command(ws_path: &Path, args: &[&str]) -> Result<std::process::Output, String> {
-    let mut cmd = Command::new("git");
-    cmd.args(args).current_dir(ws_path);
+fn configure_git_cmd(cmd: &mut Command, ws_path: &Path) {
+    cmd.current_dir(ws_path)
+        // Prevent index.lock contention with external IDEs/CLIs (Git >= 2.14.2; ignored safely on older versions)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        // Force English diagnostic strings so error detection works on localized systems without altering UTF-8 paths
+        .env("LC_MESSAGES", "C")
+        .env("LANGUAGE", "en");
 
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
+}
 
-    cmd.output()
-        .map_err(|e| format!("Failed to execute git command {:?}: {}", args, e))
+fn windows_git_fallback_candidates() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut candidates = Vec::new();
+        for env_key in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+            if let Ok(base) = std::env::var(env_key) {
+                let p = PathBuf::from(&base);
+                if env_key == "LOCALAPPDATA" {
+                    candidates.push(p.join("Programs").join("Git").join("cmd").join("git.exe"));
+                    candidates.push(p.join("Programs").join("Git").join("bin").join("git.exe"));
+                } else {
+                    candidates.push(p.join("Git").join("cmd").join("git.exe"));
+                    candidates.push(p.join("Git").join("bin").join("git.exe"));
+                }
+            }
+        }
+        candidates
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Vec::new()
+    }
+}
+
+pub fn run_git_command(ws_path: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    let mut cmd = Command::new("git");
+    cmd.args(args);
+    configure_git_cmd(&mut cmd, ws_path);
+
+    match cmd.output() {
+        Ok(out) => Ok(out),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            for candidate in windows_git_fallback_candidates() {
+                if candidate.is_file() {
+                    let mut fallback = Command::new(&candidate);
+                    fallback.args(args);
+                    configure_git_cmd(&mut fallback, ws_path);
+                    if let Ok(out) = fallback.output() {
+                        return Ok(out);
+                    }
+                }
+            }
+            Err(format!("Git executable not found on PATH: {}", err))
+        }
+        Err(e) => Err(format!("Failed to execute git command {:?}: {}", args, e)),
+    }
+}
+
+/// Normalizes `git rev-parse --show-toplevel` paths (including MSYS2 `/c/repo` paths on Windows).
+pub fn normalize_git_toplevel_path(raw: &str) -> PathBuf {
+    let trimmed = raw.trim().trim_matches('"');
+    #[cfg(target_os = "windows")]
+    {
+        let bytes = trimmed.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0] == b'/'
+            && bytes[1].is_ascii_alphabetic()
+            && (bytes[2] == b'/' || bytes[2] == b'\\')
+        {
+            let drive = (bytes[1] as char).to_ascii_uppercase();
+            let rest = trimmed[2..].replace('/', "\\");
+            return PathBuf::from(format!("{}:{}", drive, rest));
+        }
+        PathBuf::from(trimmed.replace('/', "\\"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        PathBuf::from(trimmed)
+    }
+}
+
+/// Resolves the Git repository root directory for `ws_path`, falling back to `ws_path` if unavailable.
+/// Running Git commands against the top-level root guarantees monorepo subdirectories work identically.
+pub fn resolve_git_workdir(ws_path: &Path) -> PathBuf {
+    if let Ok(output) = run_git_command(ws_path, &["rev-parse", "--show-toplevel"]) {
+        if output.status.success() {
+            let top_str = String::from_utf8_lossy(&output.stdout);
+            let candidate = normalize_git_toplevel_path(&top_str);
+            if candidate.is_dir() {
+                return candidate;
+            }
+        }
+    }
+    ws_path.to_path_buf()
+}
+
+enum GitRepoProbe {
+    InsideRepo,
+    NotARepo,
+    DubiousOwnership(String),
+    GitNotFound(String),
+    Error(String),
+}
+
+fn probe_git_repo_state(ws_path: &Path) -> GitRepoProbe {
+    match run_git_command(ws_path, &["rev-parse", "--is-inside-work-tree"]) {
+        Ok(output) => {
+            if output.status.success() {
+                let out_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if out_str == "true" {
+                    return GitRepoProbe::InsideRepo;
+                }
+                return GitRepoProbe::NotARepo;
+            }
+            let err_str = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let err_lower = err_str.to_lowercase();
+            if err_lower.contains("dubious ownership") || err_lower.contains("safe.directory") {
+                return GitRepoProbe::DubiousOwnership(err_str);
+            }
+            if err_lower.contains("not a git repository") {
+                return GitRepoProbe::NotARepo;
+            }
+            if err_str.is_empty() {
+                GitRepoProbe::NotARepo
+            } else {
+                GitRepoProbe::Error(err_str)
+            }
+        }
+        Err(err_msg) => {
+            if err_msg.to_lowercase().contains("not found") {
+                GitRepoProbe::GitNotFound(err_msg)
+            } else {
+                GitRepoProbe::Error(err_msg)
+            }
+        }
+    }
 }
 
 /// Checks if directory is inside a git working tree
 pub fn is_inside_git_repo(ws_path: &Path) -> bool {
-    if let Ok(output) = run_git_command(ws_path, &["rev-parse", "--is-inside-work-tree"]) {
-        if output.status.success() {
-            let out_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            return out_str == "true";
-        }
+    matches!(probe_git_repo_state(ws_path), GitRepoProbe::InsideRepo)
+}
+
+/// Checks whether HEAD resolves to an actual commit (false on freshly initialized unborn repos).
+pub fn has_git_head(repo_root: &Path) -> bool {
+    if let Ok(output) = run_git_command(repo_root, &["rev-parse", "--verify", "-q", "HEAD"]) {
+        return output.status.success();
     }
     false
 }
 
 /// Retrieves the repository top-level folder name
+#[allow(dead_code)]
 pub fn get_git_repo_name(ws_path: &Path) -> String {
-    if let Ok(output) = run_git_command(ws_path, &["rev-parse", "--show-toplevel"]) {
-        if output.status.success() {
-            let top_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let p = Path::new(&top_str);
-            if let Some(file_name) = p.file_name() {
-                return file_name.to_string_lossy().to_string();
-            }
-        }
+    let root = resolve_git_workdir(ws_path);
+    if let Some(file_name) = root.file_name() {
+        return file_name.to_string_lossy().to_string();
     }
     ws_path
         .file_name()
@@ -66,8 +199,18 @@ pub fn get_git_repo_name(ws_path: &Path) -> String {
         .unwrap_or_else(|| "Workspace".to_string())
 }
 
-/// Retrieves the active branch name or short commit hash
+/// Retrieves the active branch name or short commit hash across all Git versions (1.8+ including unborn repos)
 pub fn get_git_active_branch(ws_path: &Path) -> String {
+    // 1. Universal across Git 1.8+ and works on unborn HEAD (fresh git init with 0 commits)
+    if let Ok(output) = run_git_command(ws_path, &["symbolic-ref", "--short", "-q", "HEAD"]) {
+        if output.status.success() {
+            let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !branch.is_empty() {
+                return branch;
+            }
+        }
+    }
+    // 2. Fallback for Git 2.22+
     if let Ok(output) = run_git_command(ws_path, &["branch", "--show-current"]) {
         if output.status.success() {
             let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -76,7 +219,7 @@ pub fn get_git_active_branch(ws_path: &Path) -> String {
             }
         }
     }
-    // Fallback if in detached HEAD
+    // 3. Fallback for detached HEAD
     if let Ok(output) = run_git_command(ws_path, &["rev-parse", "--short", "HEAD"]) {
         if output.status.success() {
             let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -90,6 +233,9 @@ pub fn get_git_active_branch(ws_path: &Path) -> String {
 
 /// Retrieves ahead/behind count against upstream tracking branch if configured
 pub fn get_git_ahead_behind(ws_path: &Path) -> (usize, usize) {
+    if !has_git_head(ws_path) {
+        return (0, 0);
+    }
     if let Ok(output) = run_git_command(ws_path, &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]) {
         if output.status.success() {
             let out_str = String::from_utf8_lossy(&output.stdout);
@@ -110,15 +256,19 @@ pub fn is_file_in_git_head(ws_path: &Path, rel_path: &str) -> bool {
     let target = format!("HEAD:{}", norm);
     let mut cmd = Command::new("git");
     cmd.args(&["cat-file", "-e", &target])
-        .current_dir(ws_path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    configure_git_cmd(&mut cmd, ws_path);
+    if cmd.status().map(|s| s.success()).unwrap_or(false) {
+        return true;
     }
-    cmd.status().map(|s| s.success()).unwrap_or(false)
+    let repo_root = resolve_git_workdir(ws_path);
+    if repo_root != ws_path {
+        if let Ok(out) = run_git_command(&repo_root, &["cat-file", "-e", &target]) {
+            return out.status.success();
+        }
+    }
+    false
 }
 
 /// Checks if a file is currently tracked in Git (index or HEAD)
@@ -126,15 +276,92 @@ pub fn is_file_tracked_by_git(ws_path: &Path, rel_path: &str) -> bool {
     let norm = rel_path.replace('\\', "/");
     let mut cmd = Command::new("git");
     cmd.args(&["ls-files", "--error-unmatch", "--", &norm])
-        .current_dir(ws_path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    configure_git_cmd(&mut cmd, ws_path);
+    if cmd.status().map(|s| s.success()).unwrap_or(false) {
+        return true;
     }
-    cmd.status().map(|s| s.success()).unwrap_or(false)
+    let repo_root = resolve_git_workdir(ws_path);
+    if repo_root != ws_path {
+        if let Ok(out) = run_git_command(&repo_root, &["ls-files", "--error-unmatch", "--", &norm]) {
+            return out.status.success();
+        }
+    }
+    false
+}
+
+/// Unescapes C-quoted Git paths (e.g. `"src/my folder/caf\303\251.txt"` -> `src/my folder/café.txt`).
+pub fn unescape_git_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if !(trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2) {
+        return trimmed.to_string();
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    let bytes = inner.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            let next = bytes[i + 1];
+            match next {
+                b'\\' => {
+                    out.push(b'\\');
+                    i += 2;
+                }
+                b'"' => {
+                    out.push(b'"');
+                    i += 2;
+                }
+                b'n' => {
+                    out.push(b'\n');
+                    i += 2;
+                }
+                b'r' => {
+                    out.push(b'\r');
+                    i += 2;
+                }
+                b't' => {
+                    out.push(b'\t');
+                    i += 2;
+                }
+                b'a' => {
+                    out.push(0x07);
+                    i += 2;
+                }
+                b'b' => {
+                    out.push(0x08);
+                    i += 2;
+                }
+                b'f' => {
+                    out.push(0x0c);
+                    i += 2;
+                }
+                b'v' => {
+                    out.push(0x0b);
+                    i += 2;
+                }
+                b'0'..=b'3' if i + 3 < bytes.len()
+                    && (b'0'..=b'7').contains(&bytes[i + 2])
+                    && (b'0'..=b'7').contains(&bytes[i + 3]) =>
+                {
+                    let val = ((next - b'0') << 6)
+                        | ((bytes[i + 2] - b'0') << 3)
+                        | (bytes[i + 3] - b'0');
+                    out.push(val);
+                    i += 4;
+                }
+                _ => {
+                    out.push(next);
+                    i += 2;
+                }
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).to_string()
 }
 
 /// Parses porcelain v1 status into staged and unstaged GitFileItems
@@ -150,21 +377,25 @@ pub fn parse_porcelain_v1(output: &str) -> (Vec<GitFileItem>, Vec<GitFileItem>) 
         let bytes = line.as_bytes();
         let index_char = bytes[0] as char;
         let worktree_char = bytes[1] as char;
-        let raw_path = &line[3..].trim();
+        let raw_path = line[3..].trim_end();
 
-        // Handle rename syntax: "orig -> dest"
-        let path = if let Some(idx) = raw_path.find(" -> ") {
-            raw_path[idx + 4..].trim().trim_matches('"').to_string()
+        // Handle rename/copy syntax: "orig -> dest" (ignoring " -> " inside quotes if possible)
+        let path = if let Some(idx) = raw_path.rfind(" -> ") {
+            unescape_git_path(&raw_path[idx + 4..])
         } else {
-            raw_path.trim_matches('"').to_string()
+            unescape_git_path(raw_path)
         };
 
         if path.is_empty() {
             continue;
         }
 
-        // Unmerged / conflict states (UU, AA, DD, AU, UA, etc.)
-        if index_char == 'U' || worktree_char == 'U' || (index_char == 'A' && worktree_char == 'A') || (index_char == 'D' && worktree_char == 'D') {
+        // Unmerged / conflict states (UU, AA, DD, AU, UA, DU, UD)
+        if index_char == 'U'
+            || worktree_char == 'U'
+            || (index_char == 'A' && worktree_char == 'A')
+            || (index_char == 'D' && worktree_char == 'D')
+        {
             unstaged.push(GitFileItem {
                 path: path.clone(),
                 status: "conflict".to_string(),
@@ -175,7 +406,7 @@ pub fn parse_porcelain_v1(output: &str) -> (Vec<GitFileItem>, Vec<GitFileItem>) 
 
         // Staged changes (Index)
         match index_char {
-            'M' => staged.push(GitFileItem {
+            'M' | 'T' => staged.push(GitFileItem {
                 path: path.clone(),
                 status: "modified".to_string(),
                 is_staged: true,
@@ -205,7 +436,7 @@ pub fn parse_porcelain_v1(output: &str) -> (Vec<GitFileItem>, Vec<GitFileItem>) 
 
         // Unstaged changes (Worktree)
         match worktree_char {
-            'M' => unstaged.push(GitFileItem {
+            'M' | 'T' => unstaged.push(GitFileItem {
                 path: path.clone(),
                 status: "modified".to_string(),
                 is_staged: false,
@@ -240,26 +471,88 @@ pub async fn git_get_status(workspace_dir: String) -> Result<GitStatusResult, St
             return Err("Workspace directory does not exist".to_string());
         }
 
-        if !is_inside_git_repo(&ws_path) {
-            return Ok(GitStatusResult {
-                is_git_repo: false,
-                repo_name: ws_path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "Workspace".to_string()),
-                active_branch: String::new(),
-                ahead: 0,
-                behind: 0,
-                staged: Vec::new(),
-                unstaged: Vec::new(),
-            });
+        let fallback_name = ws_path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Workspace".to_string());
+
+        match probe_git_repo_state(&ws_path) {
+            GitRepoProbe::InsideRepo => {}
+            GitRepoProbe::NotARepo => {
+                return Ok(GitStatusResult {
+                    is_git_repo: false,
+                    repo_name: fallback_name,
+                    active_branch: String::new(),
+                    ahead: 0,
+                    behind: 0,
+                    staged: Vec::new(),
+                    unstaged: Vec::new(),
+                    repo_root: None,
+                    error_kind: None,
+                    error_message: None,
+                });
+            }
+            GitRepoProbe::DubiousOwnership(msg) => {
+                return Ok(GitStatusResult {
+                    is_git_repo: false,
+                    repo_name: fallback_name,
+                    active_branch: String::new(),
+                    ahead: 0,
+                    behind: 0,
+                    staged: Vec::new(),
+                    unstaged: Vec::new(),
+                    repo_root: None,
+                    error_kind: Some("dubious_ownership".to_string()),
+                    error_message: Some(msg),
+                });
+            }
+            GitRepoProbe::GitNotFound(msg) => {
+                return Ok(GitStatusResult {
+                    is_git_repo: false,
+                    repo_name: fallback_name,
+                    active_branch: String::new(),
+                    ahead: 0,
+                    behind: 0,
+                    staged: Vec::new(),
+                    unstaged: Vec::new(),
+                    repo_root: None,
+                    error_kind: Some("git_not_found".to_string()),
+                    error_message: Some(msg),
+                });
+            }
+            GitRepoProbe::Error(msg) => {
+                return Ok(GitStatusResult {
+                    is_git_repo: false,
+                    repo_name: fallback_name,
+                    active_branch: String::new(),
+                    ahead: 0,
+                    behind: 0,
+                    staged: Vec::new(),
+                    unstaged: Vec::new(),
+                    repo_root: None,
+                    error_kind: Some("git_error".to_string()),
+                    error_message: Some(msg),
+                });
+            }
         }
 
-        let repo_name = get_git_repo_name(&ws_path);
-        let active_branch = get_git_active_branch(&ws_path);
-        let (ahead, behind) = get_git_ahead_behind(&ws_path);
+        let repo_root = resolve_git_workdir(&ws_path);
+        let repo_name = repo_root
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or(fallback_name);
+        let active_branch = get_git_active_branch(&repo_root);
+        let (ahead, behind) = get_git_ahead_behind(&repo_root);
 
-        let output = run_git_command(&ws_path, &["status", "--porcelain=v1", "-uall"])?;
+        // Use `--porcelain` (without `=v1`) + `-uall` so it works across ALL Git versions (1.7 through 2.54+).
+        // Prefer `-c core.quotepath=false` to keep Unicode paths unescaped; fallback cleanly on ultra-old Git.
+        let output = match run_git_command(
+            &repo_root,
+            &["-c", "core.quotepath=false", "status", "--porcelain", "-uall"],
+        ) {
+            Ok(out) if out.status.success() => out,
+            _ => run_git_command(&repo_root, &["status", "--porcelain", "-uall"])?,
+        };
         if !output.status.success() {
             let err_msg = String::from_utf8_lossy(&output.stderr);
             return Err(format!("git status failed: {}", err_msg));
@@ -276,7 +569,55 @@ pub async fn git_get_status(workspace_dir: String) -> Result<GitStatusResult, St
             behind,
             staged,
             unstaged,
+            repo_root: Some(repo_root.to_string_lossy().to_string()),
+            error_kind: None,
+            error_message: None,
         })
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn git_trust_repository(workspace_dir: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let ws_path = PathBuf::from(&workspace_dir);
+        if !ws_path.exists() {
+            return Err("Workspace directory does not exist".to_string());
+        }
+        let norm_dir = ws_path
+            .canonicalize()
+            .unwrap_or_else(|_| ws_path.clone())
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .replace('\\', "/");
+        let output = run_git_command(
+            &ws_path,
+            &["config", "--global", "--add", "safe.directory", &norm_dir],
+        )?;
+        if !output.status.success() {
+            let err_msg = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Failed to trust repository: {}", err_msg.trim()));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
+pub async fn git_init_repo(workspace_dir: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let ws_path = PathBuf::from(&workspace_dir);
+        if !ws_path.exists() || !ws_path.is_dir() {
+            return Err("Workspace directory does not exist".to_string());
+        }
+        let output = run_git_command(&ws_path, &["init"])?;
+        if !output.status.success() {
+            let err_msg = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Failed to initialize Git repository: {}", err_msg.trim()));
+        }
+        Ok(())
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -286,7 +627,9 @@ pub async fn git_get_status(workspace_dir: String) -> Result<GitStatusResult, St
 pub async fn git_stage_file(workspace_dir: String, path: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let ws_path = PathBuf::from(&workspace_dir);
-        let output = run_git_command(&ws_path, &["add", "--", &path])?;
+        let repo_root = resolve_git_workdir(&ws_path);
+        let normalized = path.replace('\\', "/");
+        let output = run_git_command(&repo_root, &["add", "--", &normalized])?;
         if !output.status.success() {
             let err_msg = String::from_utf8_lossy(&output.stderr);
             return Err(format!("Failed to stage file {}: {}", path, err_msg));
@@ -301,9 +644,28 @@ pub async fn git_stage_file(workspace_dir: String, path: String) -> Result<(), S
 pub async fn git_unstage_file(workspace_dir: String, path: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let ws_path = PathBuf::from(&workspace_dir);
-        let output = run_git_command(&ws_path, &["restore", "--staged", "--", &path])?;
-        if !output.status.success() {
-            let err_msg = String::from_utf8_lossy(&output.stderr);
+        let repo_root = resolve_git_workdir(&ws_path);
+        let normalized = path.replace('\\', "/");
+
+        if !has_git_head(&repo_root) {
+            // Unborn repository (0 commits): remove from index without deleting working tree file
+            let rm_out = run_git_command(&repo_root, &["rm", "--cached", "-r", "-f", "-q", "--", &normalized])?;
+            if !rm_out.status.success() {
+                let err_msg = String::from_utf8_lossy(&rm_out.stderr);
+                return Err(format!("Failed to unstage file {}: {}", path, err_msg));
+            }
+            return Ok(());
+        }
+
+        // Try `git restore --staged` (Git >= 2.23), fall back cleanly to `git reset -q HEAD` (Git < 2.23)
+        if let Ok(out) = run_git_command(&repo_root, &["restore", "--staged", "--", &normalized]) {
+            if out.status.success() {
+                return Ok(());
+            }
+        }
+        let reset_out = run_git_command(&repo_root, &["reset", "-q", "HEAD", "--", &normalized])?;
+        if !reset_out.status.success() {
+            let err_msg = String::from_utf8_lossy(&reset_out.stderr);
             return Err(format!("Failed to unstage file {}: {}", path, err_msg));
         }
         Ok(())
@@ -316,7 +678,8 @@ pub async fn git_unstage_file(workspace_dir: String, path: String) -> Result<(),
 pub async fn git_stage_all(workspace_dir: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let ws_path = PathBuf::from(&workspace_dir);
-        let output = run_git_command(&ws_path, &["add", "-A"])?;
+        let repo_root = resolve_git_workdir(&ws_path);
+        let output = run_git_command(&repo_root, &["add", "-A"])?;
         if !output.status.success() {
             let err_msg = String::from_utf8_lossy(&output.stderr);
             return Err(format!("Failed to stage all files: {}", err_msg));
@@ -331,9 +694,25 @@ pub async fn git_stage_all(workspace_dir: String) -> Result<(), String> {
 pub async fn git_unstage_all(workspace_dir: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let ws_path = PathBuf::from(&workspace_dir);
-        let output = run_git_command(&ws_path, &["restore", "--staged", "."])?;
-        if !output.status.success() {
-            let err_msg = String::from_utf8_lossy(&output.stderr);
+        let repo_root = resolve_git_workdir(&ws_path);
+
+        if !has_git_head(&repo_root) {
+            let rm_out = run_git_command(&repo_root, &["rm", "--cached", "-r", "-f", "-q", "."])?;
+            if !rm_out.status.success() {
+                let err_msg = String::from_utf8_lossy(&rm_out.stderr);
+                return Err(format!("Failed to unstage all files: {}", err_msg));
+            }
+            return Ok(());
+        }
+
+        if let Ok(out) = run_git_command(&repo_root, &["restore", "--staged", "."]) {
+            if out.status.success() {
+                return Ok(());
+            }
+        }
+        let reset_out = run_git_command(&repo_root, &["reset", "-q", "HEAD"])?;
+        if !reset_out.status.success() {
+            let err_msg = String::from_utf8_lossy(&reset_out.stderr);
             return Err(format!("Failed to unstage all files: {}", err_msg));
         }
         Ok(())
@@ -350,40 +729,46 @@ pub async fn git_undo_change(
 ) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let ws_path = PathBuf::from(&workspace_dir);
+        let repo_root = resolve_git_workdir(&ws_path);
         let normalized = path.replace('\\', "/");
 
-        let in_head = is_file_in_git_head(&ws_path, &normalized);
+        let in_head = is_file_in_git_head(&repo_root, &normalized);
 
         if in_head && !is_untracked {
-            // Tracked file committed in HEAD: restore from HEAD
-            // 1. Unstage if staged (works across ALL Git versions)
-            let _ = run_git_command(&ws_path, &["reset", "HEAD", "--", &normalized]);
-            let _ = run_git_command(&ws_path, &["restore", "--staged", "--", &normalized]);
+            // Tracked file committed in HEAD: restore from HEAD across ALL Git versions
+            let _ = run_git_command(&repo_root, &["reset", "-q", "HEAD", "--", &normalized]);
+            let _ = run_git_command(&repo_root, &["restore", "--staged", "--", &normalized]);
 
-            // 2. Restore working tree from HEAD (handles modified, deleted, and conflicted files)
-            let checkout_res = run_git_command(&ws_path, &["checkout", "HEAD", "--", &normalized]);
+            let checkout_res = run_git_command(&repo_root, &["checkout", "HEAD", "--", &normalized]);
             if !checkout_res.as_ref().map(|o| o.status.success()).unwrap_or(false) {
-                // Fallback for newer Git versions if checkout had any warning/error
-                let restore_res = run_git_command(&ws_path, &["restore", "--source=HEAD", "--staged", "--worktree", "--", &normalized]);
+                let restore_res = run_git_command(
+                    &repo_root,
+                    &["restore", "--source=HEAD", "--staged", "--worktree", "--", &normalized],
+                );
                 if !restore_res.as_ref().map(|o| o.status.success()).unwrap_or(false) {
-                    let _ = run_git_command(&ws_path, &["restore", "--", &normalized]);
+                    let plain_restore = run_git_command(&repo_root, &["restore", "--", &normalized])?;
+                    if !plain_restore.status.success() {
+                        let err_msg = String::from_utf8_lossy(&plain_restore.stderr);
+                        return Err(format!("Failed to discard changes in {}: {}", path, err_msg.trim()));
+                    }
                 }
             }
         } else {
             // File was newly added (A), untracked (??), or created during editing (not present in HEAD)
-            // 1. Remove from Git index if staged
-            let _ = run_git_command(&ws_path, &["rm", "-f", "--cached", "--", &normalized]);
-            let _ = run_git_command(&ws_path, &["reset", "HEAD", "--", &normalized]);
-
-            // 2. Safely remove from disk
-            let disk_path = ws_path.join(&path);
-            if disk_path.is_file() {
-                let _ = std::fs::remove_file(&disk_path);
-            } else if disk_path.is_dir() {
-                let _ = std::fs::remove_dir_all(&disk_path);
+            let _ = run_git_command(&repo_root, &["rm", "-f", "--cached", "--", &normalized]);
+            if has_git_head(&repo_root) {
+                let _ = run_git_command(&repo_root, &["reset", "-q", "HEAD", "--", &normalized]);
             }
-            // 3. Clean any untracked leftovers with git clean
-            let _ = run_git_command(&ws_path, &["clean", "-fd", "--", &normalized]);
+
+            let disk_path = repo_root.join(&normalized);
+            if disk_path.is_file() {
+                std::fs::remove_file(&disk_path)
+                    .map_err(|e| format!("Failed to delete file {}: {}", path, e))?;
+            } else if disk_path.is_dir() {
+                std::fs::remove_dir_all(&disk_path)
+                    .map_err(|e| format!("Failed to delete directory {}: {}", path, e))?;
+            }
+            let _ = run_git_command(&repo_root, &["clean", "-fd", "--", &normalized]);
         }
         Ok(())
     })
@@ -395,15 +780,21 @@ pub async fn git_undo_change(
 pub async fn git_undo_all(workspace_dir: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let ws_path = PathBuf::from(&workspace_dir);
+        let repo_root = resolve_git_workdir(&ws_path);
         // 1. Universal hard reset to HEAD: discards all staged and unstaged tracked modifications/deletions
-        let reset_res = run_git_command(&ws_path, &["reset", "--hard", "HEAD"]);
+        let reset_res = if has_git_head(&repo_root) {
+            run_git_command(&repo_root, &["reset", "--hard", "HEAD"])
+        } else {
+            // Unborn repo with 0 commits: clear index without failing
+            let _ = run_git_command(&repo_root, &["rm", "-rf", "--cached", "."]);
+            run_git_command(&repo_root, &["checkout", "-f"])
+        };
         if !reset_res.as_ref().map(|o| o.status.success()).unwrap_or(false) {
-            // Fallback for newly initialized repos without commits (empty tree)
-            let _ = run_git_command(&ws_path, &["rm", "-rf", "--cached", "."]);
-            let _ = run_git_command(&ws_path, &["checkout", "-f"]);
+            let _ = run_git_command(&repo_root, &["rm", "-rf", "--cached", "."]);
+            let _ = run_git_command(&repo_root, &["checkout", "-f"]);
         }
         // 2. Clean all untracked files and directories
-        let clean_res = run_git_command(&ws_path, &["clean", "-fd"])?;
+        let clean_res = run_git_command(&repo_root, &["clean", "-fd"])?;
         if !clean_res.status.success() {
             let err_msg = String::from_utf8_lossy(&clean_res.stderr);
             return Err(format!("Failed to clean untracked files: {}", err_msg));
@@ -422,21 +813,21 @@ pub async fn git_commit(
 ) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
         let ws_path = PathBuf::from(&workspace_dir);
+        let repo_root = resolve_git_workdir(&ws_path);
         let trimmed_msg = message.trim();
         if trimmed_msg.is_empty() {
             return Err("Commit message cannot be empty".to_string());
         }
 
         let output = if commit_all {
-            // Priority fallback: if user chose to commit all / unstaged, auto-stage tracked and untracked
-            let stage_res = run_git_command(&ws_path, &["add", "-A"])?;
+            let stage_res = run_git_command(&repo_root, &["add", "-A"])?;
             if !stage_res.status.success() {
                 let err = String::from_utf8_lossy(&stage_res.stderr);
                 return Err(format!("Failed to stage changes before committing: {}", err));
             }
-            run_git_command(&ws_path, &["commit", "-m", trimmed_msg])?
+            run_git_command(&repo_root, &["commit", "-m", trimmed_msg])?
         } else {
-            run_git_command(&ws_path, &["commit", "-m", trimmed_msg])?
+            run_git_command(&repo_root, &["commit", "-m", trimmed_msg])?
         };
 
         if !output.status.success() {
@@ -454,18 +845,45 @@ pub async fn git_commit(
 
 pub fn run_git_remote_command(ws_path: &Path, args: &[&str]) -> Result<std::process::Output, String> {
     let mut cmd = Command::new("git");
-    cmd.args(args)
-        .current_dir(ws_path)
-        .env("GIT_TERMINAL_PROMPT", "0");
+    cmd.args(args).env("GIT_TERMINAL_PROMPT", "0");
+    configure_git_cmd(&mut cmd, ws_path);
 
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    match cmd.output() {
+        Ok(out) => Ok(out),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            for candidate in windows_git_fallback_candidates() {
+                if candidate.is_file() {
+                    let mut fallback = Command::new(&candidate);
+                    fallback.args(args).env("GIT_TERMINAL_PROMPT", "0");
+                    configure_git_cmd(&mut fallback, ws_path);
+                    if let Ok(out) = fallback.output() {
+                        return Ok(out);
+                    }
+                }
+            }
+            Err(format!("Git executable not found on PATH: {}", err))
+        }
+        Err(e) => Err(format!("Failed to execute git command {:?}: {}", args, e)),
     }
+}
 
-    cmd.output()
-        .map_err(|e| format!("Failed to execute git command {:?}: {}", args, e))
+fn resolve_default_remote(repo_root: &Path) -> String {
+    if let Ok(out) = run_git_command(repo_root, &["remote"]) {
+        if out.status.success() {
+            let remotes: Vec<String> = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
+            if remotes.iter().any(|r| r == "origin") {
+                return "origin".to_string();
+            }
+            if let Some(first) = remotes.into_iter().next() {
+                return first;
+            }
+        }
+    }
+    "origin".to_string()
 }
 
 #[tauri::command]
@@ -478,8 +896,9 @@ pub async fn git_pull(workspace_dir: String) -> Result<String, String> {
         if !is_inside_git_repo(&ws_path) {
             return Err("Workspace is not inside a Git repository".to_string());
         }
+        let repo_root = resolve_git_workdir(&ws_path);
 
-        let output = run_git_remote_command(&ws_path, &["pull"])?;
+        let output = run_git_remote_command(&repo_root, &["pull"])?;
 
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
@@ -519,18 +938,30 @@ pub async fn git_push(workspace_dir: String, set_upstream: bool) -> Result<Strin
         if !is_inside_git_repo(&ws_path) {
             return Err("Workspace is not inside a Git repository".to_string());
         }
+        let repo_root = resolve_git_workdir(&ws_path);
 
-        let branch = get_git_active_branch(&ws_path);
+        let branch = get_git_active_branch(&repo_root);
+        let is_detached = branch == "HEAD" || branch.starts_with("detached (");
+        let has_upstream = run_git_command(
+            &repo_root,
+            &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+        )
+        .map(|o| o.status.success())
+        .unwrap_or(false);
 
-        let output = if set_upstream {
-            run_git_remote_command(&ws_path, &["push", "-u", "origin", &branch])?
+        let output = if set_upstream || !has_upstream {
+            if is_detached {
+                return Err("Cannot push from a detached HEAD. Please check out a branch first.".to_string());
+            }
+            let remote = resolve_default_remote(&repo_root);
+            run_git_remote_command(&repo_root, &["push", "-u", &remote, &branch])?
         } else {
-            let res = run_git_remote_command(&ws_path, &["push"])?;
-            // If failed because no upstream tracking branch is set, auto-fallback with -u origin <branch>
+            let res = run_git_remote_command(&repo_root, &["push"])?;
             if !res.status.success() {
                 let err_str = String::from_utf8_lossy(&res.stderr);
-                if err_str.contains("no upstream branch") || err_str.contains("set-upstream") {
-                    run_git_remote_command(&ws_path, &["push", "-u", "origin", &branch])?
+                if (err_str.contains("no upstream branch") || err_str.contains("set-upstream")) && !is_detached {
+                    let remote = resolve_default_remote(&repo_root);
+                    run_git_remote_command(&repo_root, &["push", "-u", &remote, &branch])?
                 } else {
                     res
                 }
@@ -569,6 +1000,51 @@ pub async fn git_push(workspace_dir: String, set_upstream: bool) -> Result<Strin
     .map_err(|e| format!("Task join error: {}", e))?
 }
 
+/// Runs `git diff` safely across all Git versions (with fallback when `--ignore-cr-at-eol` is unsupported on Git < 2.16)
+/// and ignores user-configured `diff.external` / `diff.noprefix` / `diff.mnemonicPrefix`.
+fn run_git_diff_compat(
+    repo_root: &Path,
+    extra_args: &[&str],
+    tail_args: &[&str],
+) -> Result<std::process::Output, String> {
+    // 1. Modern Git (>= 2.16): ignore whitespace & CRLF, disable external diff & mnemonic prefixes
+    let mut args1 = vec![
+        "-c", "diff.noprefix=false",
+        "-c", "diff.mnemonicPrefix=false",
+        "diff", "--no-ext-diff", "-M",
+    ];
+    args1.extend_from_slice(extra_args);
+    args1.extend_from_slice(&["-w", "--ignore-cr-at-eol", "-U3"]);
+    args1.extend_from_slice(tail_args);
+    if let Ok(out) = run_git_command(repo_root, &args1) {
+        if out.status.success() {
+            return Ok(out);
+        }
+    }
+
+    // 2. Legacy Git (< 2.16): `--ignore-cr-at-eol` did not exist; retry with `-w -U3`
+    let mut args2 = vec![
+        "-c", "diff.noprefix=false",
+        "-c", "diff.mnemonicPrefix=false",
+        "diff", "--no-ext-diff", "-M",
+    ];
+    args2.extend_from_slice(extra_args);
+    args2.extend_from_slice(&["-w", "-U3"]);
+    args2.extend_from_slice(tail_args);
+    if let Ok(out) = run_git_command(repo_root, &args2) {
+        if out.status.success() {
+            return Ok(out);
+        }
+    }
+
+    // 3. Minimal fallback without `-c`
+    let mut args3 = vec!["diff", "--no-ext-diff"];
+    args3.extend_from_slice(extra_args);
+    args3.extend_from_slice(&["-U3"]);
+    args3.extend_from_slice(tail_args);
+    run_git_command(repo_root, &args3)
+}
+
 #[tauri::command]
 pub async fn git_get_file_diff(
     workspace_dir: String,
@@ -577,19 +1053,35 @@ pub async fn git_get_file_diff(
 ) -> Result<FileChangeSummary, String> {
     tokio::task::spawn_blocking(move || {
         let ws_path = PathBuf::from(&workspace_dir);
+        let repo_root = resolve_git_workdir(&ws_path);
         let normalized = path.replace('\\', "/");
 
-        let is_tracked = is_file_tracked_by_git(&ws_path, &normalized)
-            || is_file_in_git_head(&ws_path, &normalized);
+        let is_tracked = is_file_tracked_by_git(&repo_root, &normalized)
+            || is_file_in_git_head(&repo_root, &normalized);
 
         if !is_tracked {
             // Untracked newly created file: read from disk and format additions
-            let disk_file = ws_path.join(&path);
-            let raw_content = if disk_file.exists() {
-                std::fs::read_to_string(&disk_file).unwrap_or_default()
+            let disk_file = repo_root.join(&normalized);
+            let raw_bytes = if disk_file.is_file() {
+                std::fs::read(&disk_file).unwrap_or_default()
             } else {
-                String::new()
+                Vec::new()
             };
+
+            if is_binary_content(&raw_bytes) {
+                let size_kb = (raw_bytes.len() as f64) / 1024.0;
+                return Ok(FileChangeSummary {
+                    file_path: normalized,
+                    status: "created".to_string(),
+                    additions: 0,
+                    deletions: 0,
+                    diff_text: format!("Binary file created ({:.1} KB) — line diff not available.", size_kb),
+                    original_content: String::new(),
+                    current_content: String::new(),
+                });
+            }
+
+            let raw_content = String::from_utf8_lossy(&raw_bytes).to_string();
             let clean_content = raw_content.replace("\r\n", "\n").replace('\r', "\n");
             let lines: Vec<&str> = clean_content.lines().collect();
             let additions = lines.len();
@@ -614,17 +1106,9 @@ pub async fn git_get_file_diff(
             });
         }
 
-        // Tracked file: Execute system git diff with whitespace & CRLF ignore flags!
-        // -w (--ignore-all-space): ignores all whitespace changes
-        // --ignore-cr-at-eol: ignores carriage return \r differences (Windows CRLF vs LF)
-        // -U3: standard 3-line unified context
-        let diff_args: &[&str] = if is_staged {
-            &["diff", "--cached", "-w", "--ignore-cr-at-eol", "-U3", "--", &normalized]
-        } else {
-            &["diff", "-w", "--ignore-cr-at-eol", "-U3", "--", &normalized]
-        };
-
-        let diff_res = run_git_command(&ws_path, diff_args);
+        // Tracked file: Execute version-safe system git diff
+        let extra: &[&str] = if is_staged { &["--cached"] } else { &[] };
+        let diff_res = run_git_diff_compat(&repo_root, extra, &["--", &normalized]);
         let mut diff_text = String::new();
         let mut additions = 0;
         let mut deletions = 0;
@@ -639,7 +1123,6 @@ pub async fn git_get_file_diff(
                 let trimmed = stdout_str.trim();
 
                 if trimmed.is_empty() {
-                    // Output is empty when whitespace/CRLF is ignored -> purely formatting/whitespace changes
                     diff_text = "No substantive code changes detected.\nOnly whitespace, indentation, or line-ending (CRLF/LF) differences exist between this file and the Git baseline.".to_string();
                 } else {
                     for line in stdout_str.lines() {
@@ -660,42 +1143,18 @@ pub async fn git_get_file_diff(
 
         // Read clean baseline and current content (CRLF normalized to \n)
         let original_content = if is_staged {
-            let mut cmd = Command::new("git");
-            cmd.args(&["show", &format!("HEAD:{}", normalized)])
-                .current_dir(&ws_path);
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000);
-            }
-            cmd.output()
+            run_git_command(&repo_root, &["show", &format!("HEAD:{}", normalized)])
                 .ok()
                 .filter(|o| o.status.success())
                 .map(|o| String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n").replace('\r', "\n"))
                 .unwrap_or_default()
         } else {
-            let mut cmd = Command::new("git");
-            cmd.args(&["show", &format!(":{}", normalized)])
-                .current_dir(&ws_path);
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000);
-            }
-            cmd.output()
+            run_git_command(&repo_root, &["show", &format!(":{}", normalized)])
                 .ok()
                 .filter(|o| o.status.success())
                 .map(|o| String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n").replace('\r', "\n"))
                 .unwrap_or_else(|| {
-                    let mut cmd2 = Command::new("git");
-                    cmd2.args(&["show", &format!("HEAD:{}", normalized)])
-                        .current_dir(&ws_path);
-                    #[cfg(target_os = "windows")]
-                    {
-                        use std::os::windows::process::CommandExt;
-                        cmd2.creation_flags(0x08000000);
-                    }
-                    cmd2.output()
+                    run_git_command(&repo_root, &["show", &format!("HEAD:{}", normalized)])
                         .ok()
                         .filter(|o| o.status.success())
                         .map(|o| String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n").replace('\r', "\n"))
@@ -704,22 +1163,14 @@ pub async fn git_get_file_diff(
         };
 
         let current_content = if is_staged {
-            let mut cmd = Command::new("git");
-            cmd.args(&["show", &format!(":{}", normalized)])
-                .current_dir(&ws_path);
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000);
-            }
-            cmd.output()
+            run_git_command(&repo_root, &["show", &format!(":{}", normalized)])
                 .ok()
                 .filter(|o| o.status.success())
                 .map(|o| String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n").replace('\r', "\n"))
                 .unwrap_or_default()
         } else {
-            let disk_file = ws_path.join(&path);
-            if disk_file.exists() {
+            let disk_file = repo_root.join(&normalized);
+            if disk_file.is_file() {
                 std::fs::read_to_string(&disk_file)
                     .unwrap_or_default()
                     .replace("\r\n", "\n")
@@ -1315,9 +1766,10 @@ pub async fn git_generate_commit_message(
         if !ws_path.exists() {
             return Err("Workspace directory does not exist".to_string());
         }
+        let repo_root = resolve_git_workdir(&ws_path);
 
         // 1. Check staged diff first
-        let staged_diff_out = run_git_command(&ws_path, &["diff", "--cached", "--stat"])?;
+        let staged_diff_out = run_git_command(&repo_root, &["diff", "--cached", "--stat"])?;
         let is_staged = staged_diff_out.status.success()
             && !String::from_utf8_lossy(&staged_diff_out.stdout).trim().is_empty();
 
@@ -1325,33 +1777,35 @@ pub async fn git_generate_commit_message(
         let mut full_diff_str = String::new();
 
         if is_staged {
-            if let Ok(stat_res) = run_git_command(&ws_path, &["diff", "--cached", "--stat"]) {
+            if let Ok(stat_res) = run_git_command(&repo_root, &["diff", "--cached", "--stat"]) {
                 stat_str = String::from_utf8_lossy(&stat_res.stdout).trim().to_string();
             }
-            if let Ok(diff_res) = run_git_command(&ws_path, &["diff", "--cached", "-w", "--ignore-cr-at-eol", "-U3"]) {
+            if let Ok(diff_res) = run_git_diff_compat(&repo_root, &["--cached"], &[]) {
                 full_diff_str = String::from_utf8_lossy(&diff_res.stdout).to_string();
             }
         } else {
-            // Priority 1: Unstaged modifications against HEAD
-            if let Ok(stat_res) = run_git_command(&ws_path, &["diff", "HEAD", "--stat"]) {
-                if stat_res.status.success() {
-                    stat_str = String::from_utf8_lossy(&stat_res.stdout).trim().to_string();
+            // Priority 1: Unstaged modifications against HEAD (only when HEAD exists)
+            if has_git_head(&repo_root) {
+                if let Ok(stat_res) = run_git_command(&repo_root, &["diff", "HEAD", "--stat"]) {
+                    if stat_res.status.success() {
+                        stat_str = String::from_utf8_lossy(&stat_res.stdout).trim().to_string();
+                    }
                 }
-            }
-            if let Ok(diff_res) = run_git_command(&ws_path, &["diff", "HEAD", "-w", "--ignore-cr-at-eol", "-U3"]) {
-                if diff_res.status.success() {
-                    full_diff_str = String::from_utf8_lossy(&diff_res.stdout).to_string();
-                }
-            }
-
-            // Priority 2: If git diff HEAD failed (e.g. freshly initialized repo with 0 commits), fallback to plain git diff
-            if full_diff_str.trim().is_empty() {
-                if let Ok(diff_res) = run_git_command(&ws_path, &["diff", "-w", "--ignore-cr-at-eol", "-U3"]) {
+                if let Ok(diff_res) = run_git_diff_compat(&repo_root, &["HEAD"], &[]) {
                     if diff_res.status.success() {
                         full_diff_str = String::from_utf8_lossy(&diff_res.stdout).to_string();
                     }
                 }
-                if let Ok(stat_res) = run_git_command(&ws_path, &["diff", "--stat"]) {
+            }
+
+            // Priority 2: If git diff HEAD failed or empty (e.g. unborn repo), fallback to plain git diff
+            if full_diff_str.trim().is_empty() {
+                if let Ok(diff_res) = run_git_diff_compat(&repo_root, &[], &[]) {
+                    if diff_res.status.success() {
+                        full_diff_str = String::from_utf8_lossy(&diff_res.stdout).to_string();
+                    }
+                }
+                if let Ok(stat_res) = run_git_command(&repo_root, &["diff", "--stat"]) {
                     if stat_res.status.success() {
                         stat_str = String::from_utf8_lossy(&stat_res.stdout).trim().to_string();
                     }
@@ -1359,14 +1813,21 @@ pub async fn git_generate_commit_message(
             }
 
             // Priority 3: Incorporate untracked files into diff so newly created files are analyzed by AI
-            if let Ok(status_out) = run_git_command(&ws_path, &["status", "--porcelain=v1", "-uall"]) {
+            let status_res = match run_git_command(
+                &repo_root,
+                &["-c", "core.quotepath=false", "status", "--porcelain", "-uall"],
+            ) {
+                Ok(out) if out.status.success() => Ok(out),
+                _ => run_git_command(&repo_root, &["status", "--porcelain", "-uall"]),
+            };
+            if let Ok(status_out) = status_res {
                 if status_out.status.success() {
                     let status_str = String::from_utf8_lossy(&status_out.stdout);
                     for line in status_str.lines() {
                         if line.starts_with("?? ") {
-                            let rel_path = line[3..].trim().trim_matches('"');
+                            let rel_path = unescape_git_path(&line[3..]);
                             if !rel_path.is_empty() {
-                                let disk_path = ws_path.join(rel_path);
+                                let disk_path = repo_root.join(&rel_path);
                                 if disk_path.is_file() {
                                     if let Ok(content) = std::fs::read_to_string(&disk_path) {
                                         let clean_content = content.replace("\r\n", "\n").replace('\r', "\n");
@@ -1391,7 +1852,7 @@ pub async fn git_generate_commit_message(
 
         // If diff is completely empty, check if there are any other git status items (e.g. empty files, mode changes)
         if full_diff_str.trim().is_empty() {
-            let status_out = run_git_command(&ws_path, &["status", "--porcelain=v1"])?;
+            let status_out = run_git_command(&repo_root, &["status", "--porcelain"])?;
             let status_str = String::from_utf8_lossy(&status_out.stdout).trim().to_string();
             if status_str.is_empty() {
                 return Err("No changes detected in repository to generate commit message".to_string());
@@ -1430,7 +1891,7 @@ pub async fn git_generate_commit_message(
         // 2. PRIMARY: Try calling the active CLI engine LLM for true generative understanding
         if let Ok(llm_msg) = generate_commit_message_with_llm_for_engine(
             &active_engine,
-            &ws_path,
+            &repo_root,
             &full_diff_str,
             context_hint.as_deref(),
         ) {
@@ -1502,16 +1963,111 @@ mod tests {
             behind: 1,
             staged: Vec::new(),
             unstaged: Vec::new(),
+            repo_root: Some("C:\\repo".to_string()),
+            error_kind: None,
+            error_message: None,
         };
         let json = serde_json::to_string(&res).unwrap();
         assert!(json.contains("\"ahead\":2"));
         assert!(json.contains("\"behind\":1"));
 
-        // Backward compatibility: when ahead/behind missing from JSON, defaults to 0
+        // Backward compatibility: when ahead/behind/repo_root/error fields missing from JSON, default cleanly
         let backward_json = r#"{"is_git_repo":true,"repo_name":"repo","active_branch":"main","staged":[],"unstaged":[]}"#;
         let parsed: GitStatusResult = serde_json::from_str(backward_json).unwrap();
         assert_eq!(parsed.ahead, 0);
         assert_eq!(parsed.behind, 0);
+        assert!(parsed.repo_root.is_none());
+        assert!(parsed.error_kind.is_none());
+    }
+
+    #[test]
+    fn test_parse_porcelain_v1_typechange_and_octal_utf8() {
+        let sample = "T  src/link.txt\n T src/mode.sh\n?? \"src/caf\\303\\251 notes.md\"\nR  \"old dir/a.rs\" -> \"new dir/b.rs\"\n";
+        let (staged, unstaged) = parse_porcelain_v1(sample);
+
+        assert!(staged.iter().any(|i| i.path == "src/link.txt" && i.status == "modified"));
+        assert!(staged.iter().any(|i| i.path == "new dir/b.rs" && i.status == "renamed"));
+        assert!(unstaged.iter().any(|i| i.path == "src/mode.sh" && i.status == "modified"));
+        assert!(unstaged.iter().any(|i| i.path == "src/café notes.md" && i.status == "untracked"));
+    }
+
+    #[test]
+    fn test_normalize_git_toplevel_path() {
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(
+                normalize_git_toplevel_path("/c/AIFiles/gemini-desktop\n"),
+                PathBuf::from("C:\\AIFiles\\gemini-desktop")
+            );
+            assert_eq!(
+                normalize_git_toplevel_path("D:/Repos/app"),
+                PathBuf::from("D:\\Repos\\app")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_git_unborn_repo_unstage_and_subdirectory_status() {
+        let temp_dir = std::env::temp_dir().join(format!("gemini_git_compat_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let _ = run_git_command(&temp_dir, &["init"]);
+        let _ = run_git_command(&temp_dir, &["config", "user.name", "Tester"]);
+        let _ = run_git_command(&temp_dir, &["config", "user.email", "tester@example.com"]);
+
+        // 1. Unborn repo (0 commits): stage and unstage should work without failing on missing HEAD
+        let new_file = temp_dir.join("first.txt");
+        std::fs::write(&new_file, "hello\n").unwrap();
+        git_stage_file(temp_dir.to_string_lossy().to_string(), "first.txt".to_string())
+            .await
+            .unwrap();
+
+        let status_staged = git_get_status(temp_dir.to_string_lossy().to_string()).await.unwrap();
+        assert!(status_staged.is_git_repo);
+        assert!(!status_staged.active_branch.is_empty());
+        assert_eq!(status_staged.staged.len(), 1);
+        assert_eq!(status_staged.staged[0].path, "first.txt");
+
+        git_unstage_file(temp_dir.to_string_lossy().to_string(), "first.txt".to_string())
+            .await
+            .unwrap();
+        assert!(new_file.exists(), "Unstaging on unborn repo must preserve working tree file");
+
+        let status_unstaged = git_get_status(temp_dir.to_string_lossy().to_string()).await.unwrap();
+        assert_eq!(status_unstaged.staged.len(), 0);
+        assert_eq!(status_unstaged.unstaged.len(), 1);
+
+        // 2. Commit and verify subdirectory workspace resolution (monorepo subfolder)
+        git_commit(
+            temp_dir.to_string_lossy().to_string(),
+            "chore: init".to_string(),
+            true,
+        )
+        .await
+        .unwrap();
+
+        let sub_dir = temp_dir.join("packages").join("web");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        std::fs::write(sub_dir.join("index.ts"), "export const x = 1;\n").unwrap();
+
+        let sub_status = git_get_status(sub_dir.to_string_lossy().to_string()).await.unwrap();
+        assert!(sub_status.is_git_repo);
+        assert_eq!(sub_status.unstaged.len(), 1);
+        assert_eq!(sub_status.unstaged[0].path, "packages/web/index.ts");
+
+        // Staging & unstaging from the subdirectory workspace works cleanly
+        git_stage_file(
+            sub_dir.to_string_lossy().to_string(),
+            "packages/web/index.ts".to_string(),
+        )
+        .await
+        .unwrap();
+        git_unstage_all(sub_dir.to_string_lossy().to_string())
+            .await
+            .unwrap();
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[tokio::test]
@@ -1659,6 +2215,67 @@ mod tests {
         let res_mod = git_undo_change(temp_dir.to_string_lossy().to_string(), "initial.txt".to_string(), false).await;
         assert!(res_mod.is_ok());
         assert_eq!(std::fs::read_to_string(&init_file).unwrap().replace("\r\n", "\n"), "initial\n");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_git_init_repo_and_file_diff_binary_and_text() {
+        let temp_dir = std::env::temp_dir().join(format!("gemini_git_init_diff_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let ws = temp_dir.to_string_lossy().to_string();
+
+        // 1. Non-git directory returns clean is_git_repo=false without error_kind
+        let non_git = git_get_status(ws.clone()).await.unwrap();
+        assert!(!non_git.is_git_repo);
+        assert!(non_git.error_kind.is_none());
+
+        // 2. git_init_repo initializes the workspace cleanly
+        git_init_repo(ws.clone()).await.unwrap();
+        let _ = run_git_command(&temp_dir, &["config", "user.name", "Tester"]);
+        let _ = run_git_command(&temp_dir, &["config", "user.email", "tester@example.com"]);
+
+        let after_init = git_get_status(ws.clone()).await.unwrap();
+        assert!(after_init.is_git_repo);
+        assert!(!after_init.active_branch.is_empty());
+
+        // 3. Untracked binary file diff returns binary notice instead of empty file diff
+        let bin_file = temp_dir.join("logo.png");
+        std::fs::write(&bin_file, &[0x89, 0x50, 0x4E, 0x47, 0x00, 0x01, 0x02]).unwrap();
+        let bin_diff = git_get_file_diff(ws.clone(), "logo.png".to_string(), false)
+            .await
+            .unwrap();
+        assert_eq!(bin_diff.status, "created");
+        assert!(bin_diff.diff_text.contains("Binary file created"));
+
+        // 4. Untracked text file diff shows additions & created status
+        let txt_file = temp_dir.join("notes.txt");
+        std::fs::write(&txt_file, "line 1\nline 2\n").unwrap();
+        let txt_diff = git_get_file_diff(ws.clone(), "notes.txt".to_string(), false)
+            .await
+            .unwrap();
+        assert_eq!(txt_diff.status, "created");
+        assert_eq!(txt_diff.additions, 2);
+
+        // 5. Commit notes.txt, modify it, and inspect tracked diff + undo_all
+        let _ = std::fs::remove_file(&bin_file);
+        git_commit(ws.clone(), "feat: add notes".to_string(), true)
+            .await
+            .unwrap();
+        std::fs::write(&txt_file, "line 1\nline 2 updated\n").unwrap();
+
+        let mod_diff = git_get_file_diff(ws.clone(), "notes.txt".to_string(), false)
+            .await
+            .unwrap();
+        assert_eq!(mod_diff.status, "modified");
+        assert!(mod_diff.additions >= 1 && mod_diff.deletions >= 1);
+
+        git_undo_all(ws).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&txt_file).unwrap().replace("\r\n", "\n"),
+            "line 1\nline 2\n"
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

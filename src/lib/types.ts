@@ -398,7 +398,7 @@ export interface SessionRetentionConfig {
 
 export interface GitFileItem {
   path: string;
-  status: "modified" | "added" | "deleted" | "untracked" | "renamed";
+  status: "modified" | "added" | "deleted" | "untracked" | "renamed" | "conflict";
   is_staged: boolean;
 }
 
@@ -410,6 +410,9 @@ export interface GitStatusResult {
   behind?: number;
   staged: GitFileItem[];
   unstaged: GitFileItem[];
+  repo_root?: string;
+  error_kind?: string;
+  error_message?: string;
 }
 
 export interface GlobalCliSettings {

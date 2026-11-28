@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import type { Workspace, GitStatusResult, GitFileItem } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
+  import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
   import {
     GitBranch,
     FolderGit2,
@@ -27,11 +27,20 @@
     ArrowDown,
     ArrowUp,
     UploadCloud,
+    ShieldCheck,
+    Search,
+    Paperclip,
+    AtSign,
+    CheckCircle2,
   } from "lucide-svelte";
   import Tooltip from "$lib/components/Tooltip.svelte";
   import { dialogManager } from "$lib/dialog.svelte";
-  import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
   import { getFileIconMeta } from "$lib/utils/fileIcons";
+  import {
+    getGitStatusBadge,
+    splitGitFilePath,
+    toWorkspaceRelativeGitPath,
+  } from "$lib/utils/gitStatus";
 
   let {
     workspace = null,
@@ -46,14 +55,18 @@
     isLoading = false,
     onRefresh,
     onCompareFile,
+    onAttachFile,
+    onInsertMention,
     getContextHint,
   }: {
     workspace: Workspace | null;
-    isOpen: boolean;
+    isOpen?: boolean;
     gitStatus?: GitStatusResult;
     isLoading?: boolean;
     onRefresh?: () => Promise<void> | void;
     onCompareFile?: (relPath: string, isStaged: boolean) => void;
+    onAttachFile?: (relPath: string, name?: string) => void;
+    onInsertMention?: (relPath: string) => void;
     getContextHint?: () => string;
   } = $props();
 
@@ -61,7 +74,9 @@
   let isCommitting = $state(false);
   let isPulling = $state(false);
   let isPushing = $state(false);
+  let isRepoActionBusy = $state(false);
   let commitMessage = $state("");
+  let filterText = $state("");
   let commitFeedback = $state<{ type: "success" | "error"; text: string } | null>(null);
   let syncFeedback = $state<{ type: "success" | "error"; text: string } | null>(null);
 
@@ -76,16 +91,69 @@
     item: GitFileItem;
   } | null>(null);
 
-  let totalChanges = $derived(
-    (gitStatus?.staged?.length || 0) + (gitStatus?.unstaged?.length || 0)
+  let stagedList = $derived(gitStatus?.staged || []);
+  let unstagedList = $derived(gitStatus?.unstaged || []);
+  let totalChanges = $derived(stagedList.length + unstagedList.length);
+
+  let normalizedFilter = $derived(filterText.trim().toLowerCase());
+  let filteredStaged = $derived(
+    normalizedFilter
+      ? stagedList.filter((i) => i.path.toLowerCase().includes(normalizedFilter))
+      : stagedList
   );
+  let filteredUnstaged = $derived(
+    normalizedFilter
+      ? unstagedList.filter((i) => i.path.toLowerCase().includes(normalizedFilter))
+      : unstagedList
+  );
+
   let canCommit = $derived(
     totalChanges > 0 && commitMessage.trim().length > 0 && !isCommitting
   );
 
+  // Reset filter when panel closes or workspace changes
+  $effect(() => {
+    const _ws = workspace?.path;
+    filterText = "";
+    commitFeedback = null;
+    syncFeedback = null;
+  });
+
   export async function refreshStatus() {
     if (onRefresh) {
       await onRefresh();
+    }
+  }
+
+  async function handleTrustRepository() {
+    if (!workspace?.path || isRepoActionBusy) return;
+    isRepoActionBusy = true;
+    try {
+      await invoke("git_trust_repository", { workspaceDir: workspace.path });
+      await refreshStatus();
+    } catch (err: any) {
+      await dialogManager.alert(
+        typeof err === "string" ? err : err?.message || "Failed to update Git safe.directory",
+        "Git Safe Directory"
+      );
+    } finally {
+      isRepoActionBusy = false;
+    }
+  }
+
+  async function handleInitRepo() {
+    if (!workspace?.path || isRepoActionBusy) return;
+    isRepoActionBusy = true;
+    try {
+      await invoke("git_init_repo", { workspaceDir: workspace.path });
+      await refreshStatus();
+    } catch (err: any) {
+      await dialogManager.alert(
+        typeof err === "string" ? err : err?.message || "Failed to initialize Git repository",
+        "Initialize Git"
+      );
+    } finally {
+      isRepoActionBusy = false;
     }
   }
 
@@ -239,15 +307,15 @@
     }
   }
 
-  async function handleCommit() {
-    if (!workspace?.path || !canCommit) return;
+  async function handleCommit(): Promise<boolean> {
+    if (!workspace?.path || !canCommit) return false;
     isCommitting = true;
     commitFeedback = null;
 
     // Visual Studio priority rule:
     // If staged changes exist, commit ONLY staged changes.
     // If NO staged changes exist, commit all modified/untracked files.
-    const commitAll = gitStatus.staged.length === 0;
+    const commitAll = stagedList.length === 0;
 
     try {
       const result = await invoke<string>("git_commit", {
@@ -266,11 +334,13 @@
           commitFeedback = null;
         }
       }, 4000);
+      return true;
     } catch (err: any) {
       commitFeedback = {
         type: "error",
         text: typeof err === "string" ? err : "Git commit failed",
       };
+      return false;
     } finally {
       isCommitting = false;
     }
@@ -337,8 +407,8 @@
 
   async function handleCommitAndPush() {
     if (!workspace?.path || !canCommit || isCommitting || isPushing) return;
-    await handleCommit();
-    if (!commitFeedback || commitFeedback.type === "success") {
+    const ok = await handleCommit();
+    if (ok) {
       await handlePush();
     }
   }
@@ -353,8 +423,9 @@
   }
 
   function resolveFullPath(relPath: string): string {
-    if (!workspace?.path) return relPath;
-    const base = workspace.path.replace(/[/\\]+$/, "");
+    const baseDir = gitStatus?.repo_root || workspace?.path || "";
+    if (!baseDir) return relPath;
+    const base = baseDir.replace(/[/\\]+$/, "");
     const cleanRel = relPath.replace(/^[/\\]+/, "");
     return `${base}\\${cleanRel}`.replace(/\//g, "\\");
   }
@@ -366,9 +437,14 @@
       await invoke("open_workspace_file", {
         path: full,
         withApp: forceNotepad ? "notepad" : null,
+        workspacePath: gitStatus?.repo_root || workspace?.path,
       });
     } catch (err) {
       console.error("Failed to open file:", err);
+      await dialogManager.alert(
+        `Unable to open "${relPath}".\n\n${err instanceof Error ? err.message : String(err)}`,
+        "Cannot Open File"
+      );
     }
     contextMenu = null;
   }
@@ -379,7 +455,7 @@
       await revealItemInDir(full);
     } catch {
       try {
-        await openPath(workspace?.path || full);
+        await openPath(gitStatus?.repo_root || workspace?.path || full);
       } catch (err) {
         console.error("Failed to reveal file in explorer:", err);
       }
@@ -397,70 +473,18 @@
     contextMenu = null;
   }
 
-  function getStatusBadge(status: string) {
-    switch (status) {
-      case "added":
-        return {
-          letter: "A",
-          label: "Added",
-          title: "Added — New file in Git index",
-          class: "bg-emerald-500/25 text-emerald-300 border-emerald-500/40",
-          textColor: "text-emerald-300",
-        };
-      case "modified":
-        return {
-          letter: "M",
-          label: "Modified",
-          title: "Modified — File has changes",
-          class: "bg-sky-500/25 text-sky-300 border-sky-500/40",
-          textColor: "text-slate-100",
-        };
-      case "deleted":
-        return {
-          letter: "D",
-          label: "Deleted",
-          title: "Deleted — File was removed",
-          class: "bg-rose-500/25 text-rose-300 border-rose-500/40",
-          textColor: "text-rose-400 line-through opacity-75",
-        };
-      case "renamed":
-        return {
-          letter: "R",
-          label: "Renamed",
-          title: "Renamed — File was renamed or moved",
-          class: "bg-amber-500/25 text-amber-300 border-amber-500/40",
-          textColor: "text-amber-200",
-        };
-      case "conflict":
-        return {
-          letter: "!",
-          label: "Conflict",
-          title: "Conflict — Merge conflict",
-          class: "bg-red-500/30 text-red-300 border-red-500/50",
-          textColor: "text-red-300 font-semibold",
-        };
-      case "untracked":
-      default:
-        return {
-          letter: "U",
-          label: "Untracked",
-          title: "Untracked — New file on disk, not yet in Git",
-          class: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
-          textColor: "text-emerald-300/90",
-        };
-    }
+  function handleAttachGitItem(item: GitFileItem) {
+    const wsRel = toWorkspaceRelativeGitPath(item.path, workspace?.path, gitStatus?.repo_root);
+    const target = wsRel || item.path;
+    const fileMeta = splitGitFilePath(target);
+    onAttachFile?.(target, fileMeta.name);
+    contextMenu = null;
   }
 
-  function splitFilePath(fullPath: string) {
-    const normalized = fullPath.replace(/\\/g, "/");
-    const lastSlash = normalized.lastIndexOf("/");
-    if (lastSlash === -1) {
-      return { name: normalized, dir: "" };
-    }
-    return {
-      name: normalized.substring(lastSlash + 1),
-      dir: normalized.substring(0, lastSlash),
-    };
+  function handleMentionGitItem(item: GitFileItem) {
+    const wsRel = toWorkspaceRelativeGitPath(item.path, workspace?.path, gitStatus?.repo_root);
+    onInsertMention?.(wsRel || item.path);
+    contextMenu = null;
   }
 </script>
 
@@ -470,95 +494,169 @@
   }}
 />
 
-<div class="h-full flex flex-col bg-slate-900 border-l border-slate-800 text-slate-200 select-none overflow-hidden">
-  <!-- Top Bar: Repository Name & Active Branch -->
-  <div class="px-3 py-2.5 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between gap-2">
+<div
+  class="h-full flex flex-col bg-sidebar text-primary-theme select-none overflow-hidden"
+  data-git-panel-open={isOpen}
+>
+  <!-- Top Bar: Repository Name, Active Branch & Sync Controls -->
+  <div class="px-2.5 py-2 bg-surface/60 border-b border-subtle flex items-center justify-between gap-2">
     <div class="flex items-center gap-1.5 min-w-0 flex-1">
-      <FolderGit2 class="w-4 h-4 text-emerald-400 shrink-0" />
-      <span class="text-xs font-semibold text-slate-100 truncate max-w-[90px]" title={gitStatus.repo_name || "Repository"}>
+      <FolderGit2 class="w-4 h-4 text-emerald-500 shrink-0" />
+      <span
+        class="text-xs font-semibold text-primary-theme truncate max-w-[90px]"
+        title={gitStatus.repo_name || "Repository"}
+      >
         {gitStatus.repo_name || "Repository"}
       </span>
-      {#if gitStatus.active_branch}
+      {#if gitStatus.is_git_repo && gitStatus.active_branch}
         <span
-          class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1 min-w-0 max-w-[125px] sm:max-w-[150px]"
+          class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/12 text-emerald-500 border border-emerald-500/25 flex items-center gap-1 min-w-0 max-w-[125px] sm:max-w-[150px]"
           title="{gitStatus.active_branch}{gitStatus.ahead ? ` (${gitStatus.ahead} unpushed)` : ''}{gitStatus.behind ? ` (${gitStatus.behind} unpulled)` : ''}"
         >
           <GitBranch class="w-3 h-3 shrink-0" />
           <span class="truncate">{gitStatus.active_branch}</span>
           {#if (gitStatus.ahead || 0) > 0}
-            <span class="text-sky-300 font-semibold shrink-0" title="{gitStatus.ahead} commits ahead of remote">↑{gitStatus.ahead}</span>
+            <span class="text-sky-500 font-semibold shrink-0" title="{gitStatus.ahead} commits ahead">
+              ↑{gitStatus.ahead}
+            </span>
           {/if}
           {#if (gitStatus.behind || 0) > 0}
-            <span class="text-amber-300 font-semibold shrink-0" title="{gitStatus.behind} commits behind remote">↓{gitStatus.behind}</span>
+            <span class="text-amber-500 font-semibold shrink-0" title="{gitStatus.behind} commits behind">
+              ↓{gitStatus.behind}
+            </span>
           {/if}
         </span>
       {/if}
     </div>
 
     <div class="flex items-center gap-1 shrink-0">
-      <Tooltip text="Pull from remote {gitStatus.behind ? `(${gitStatus.behind} unpulled commits)` : ''}">
-        <button
-          type="button"
-          class="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-700/60 transition-colors disabled:opacity-40"
-          onclick={handlePull}
-          disabled={isLoading || isPulling || isPushing}
+      {#if gitStatus.is_git_repo}
+        <Tooltip
+          text="Pull from remote{gitStatus.behind ? ` (${gitStatus.behind} incoming)` : ''}"
+          position="bottom"
         >
-          <ArrowDown class="w-3 h-3 text-amber-400 {isPulling ? 'animate-bounce' : ''}" />
-          <span>Pull</span>
-          {#if (gitStatus.behind || 0) > 0}
-            <span class="text-[10px] text-amber-300 font-bold font-mono">({gitStatus.behind})</span>
-          {/if}
-        </button>
-      </Tooltip>
+          <button
+            type="button"
+            class="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-secondary-theme hover:text-primary-theme hover:bg-surface-hover border border-theme-default transition-colors disabled:opacity-40 cursor-pointer"
+            onclick={handlePull}
+            disabled={isLoading || isPulling || isPushing}
+          >
+            <ArrowDown class="w-3 h-3 text-amber-500 {isPulling ? 'animate-bounce' : ''}" />
+            <span>Pull</span>
+            {#if (gitStatus.behind || 0) > 0}
+              <span class="text-[10px] text-amber-500 font-bold font-mono">({gitStatus.behind})</span>
+            {/if}
+          </button>
+        </Tooltip>
 
-      <Tooltip text="Push to remote {gitStatus.ahead ? `(${gitStatus.ahead} unpushed commits)` : ''}">
-        <button
-          type="button"
-          class="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-slate-300 hover:text-white hover:bg-slate-800 border border-slate-700/60 transition-colors disabled:opacity-40"
-          onclick={handlePush}
-          disabled={isLoading || isPulling || isPushing}
+        <Tooltip
+          text="Push to remote{gitStatus.ahead ? ` (${gitStatus.ahead} outgoing)` : ''}"
+          position="bottom"
         >
-          <ArrowUp class="w-3 h-3 text-sky-400 {isPushing ? 'animate-bounce' : ''}" />
-          <span>Push</span>
-          {#if (gitStatus.ahead || 0) > 0}
-            <span class="text-[10px] text-sky-300 font-bold font-mono">({gitStatus.ahead})</span>
-          {/if}
-        </button>
-      </Tooltip>
+          <button
+            type="button"
+            class="flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium rounded text-secondary-theme hover:text-primary-theme hover:bg-surface-hover border border-theme-default transition-colors disabled:opacity-40 cursor-pointer"
+            onclick={handlePush}
+            disabled={isLoading || isPulling || isPushing}
+          >
+            <ArrowUp class="w-3 h-3 text-sky-500 {isPushing ? 'animate-bounce' : ''}" />
+            <span>Push</span>
+            {#if (gitStatus.ahead || 0) > 0}
+              <span class="text-[10px] text-sky-500 font-bold font-mono">({gitStatus.ahead})</span>
+            {/if}
+          </button>
+        </Tooltip>
+      {/if}
 
-      <Tooltip text="Refresh Git Status">
+      <Tooltip text="Refresh Git Status" position="bottom">
         <button
           type="button"
           aria-label="Refresh Git Status"
-          class="p-1 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+          class="p-1 rounded text-muted-theme hover:text-primary-theme hover:bg-surface-hover transition-colors cursor-pointer"
           onclick={refreshStatus}
           disabled={isLoading || isPulling || isPushing}
         >
-          <RotateCw class="w-3.5 h-3.5 {isLoading ? 'animate-spin text-emerald-400' : ''}" />
+          <RotateCw class="w-3.5 h-3.5 {isLoading ? 'animate-spin text-emerald-500' : ''}" />
         </button>
       </Tooltip>
     </div>
   </div>
 
   {#if !gitStatus.is_git_repo}
-    <!-- Non-Git Workspace Notice -->
-    <div class="p-6 text-center text-slate-400 flex flex-col items-center justify-center h-64 gap-3">
-      <AlertCircle class="w-8 h-8 text-amber-400/80" />
-      <div class="text-xs font-medium text-slate-300">Not a Git repository</div>
-      <div class="text-[11px] text-slate-500 max-w-xs">
-        The current workspace directory is not managed under Git version control.
-      </div>
+    <!-- Diagnostic or Non-Git Workspace States -->
+    <div class="p-6 text-center text-secondary-theme flex flex-col items-center justify-center flex-1 gap-3">
+      {#if gitStatus.error_kind === "dubious_ownership"}
+        <div class="p-2.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-500">
+          <ShieldCheck class="w-6 h-6" />
+        </div>
+        <div class="text-xs font-semibold text-primary-theme">Repository Ownership Check (safe.directory)</div>
+        <div class="text-[11px] text-muted-theme max-w-xs leading-relaxed">
+          Git blocked access because this directory has a different system owner. Add it to your Git <code class="font-mono">safe.directory</code> list to inspect changes.
+        </div>
+        <button
+          type="button"
+          onclick={handleTrustRepository}
+          disabled={isRepoActionBusy}
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
+        >
+          <ShieldCheck class="w-3.5 h-3.5" />
+          <span>{isRepoActionBusy ? "Trusting..." : "Trust Repository"}</span>
+        </button>
+      {:else if gitStatus.error_kind === "git_not_found"}
+        <AlertCircle class="w-8 h-8 text-rose-500/80" />
+        <div class="text-xs font-semibold text-primary-theme">Git CLI not found</div>
+        <div class="text-[11px] text-muted-theme max-w-xs leading-relaxed">
+          Install Git for Windows or ensure <code class="font-mono">git.exe</code> is available on your PATH.
+        </div>
+        <button
+          type="button"
+          onclick={refreshStatus}
+          class="px-3 py-1.5 rounded-md bg-surface-elevated hover:bg-surface-hover border border-theme-default text-xs font-medium cursor-pointer"
+        >
+          Retry
+        </button>
+      {:else if gitStatus.error_kind === "git_error"}
+        <AlertCircle class="w-8 h-8 text-amber-500/80" />
+        <div class="text-xs font-semibold text-primary-theme">Unable to read Git status</div>
+        <div class="text-[11px] text-muted-theme max-w-xs break-words">
+          {gitStatus.error_message || "Unknown Git error."}
+        </div>
+        <button
+          type="button"
+          onclick={refreshStatus}
+          class="px-3 py-1.5 rounded-md bg-surface-elevated hover:bg-surface-hover border border-theme-default text-xs font-medium cursor-pointer"
+        >
+          Retry
+        </button>
+      {:else}
+        <FolderGit2 class="w-8 h-8 text-muted-theme/70" />
+        <div class="text-xs font-semibold text-primary-theme">Not a Git repository</div>
+        <div class="text-[11px] text-muted-theme max-w-xs leading-relaxed">
+          The current workspace folder is not initialized with Git version control.
+        </div>
+        {#if workspace?.path}
+          <button
+            type="button"
+            onclick={handleInitRepo}
+            disabled={isRepoActionBusy}
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated hover:bg-surface-hover border border-theme-default text-primary-theme text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
+          >
+            <FolderGit2 class="w-3.5 h-3.5 text-emerald-500" />
+            <span>{isRepoActionBusy ? "Initializing..." : "Initialize Git Repository"}</span>
+          </button>
+        {/if}
+      {/if}
     </div>
   {:else}
-    <!-- Commit Message Input Box -->
-    <div class="p-3 border-b border-slate-800/80 bg-slate-900/50 flex flex-col gap-2">
+    <!-- Commit Message Box (shown always so feedback persists after commit, compact & clean) -->
+    <div class="p-2.5 border-b border-subtle bg-surface/35 flex flex-col gap-2">
       <div class="relative">
         <textarea
           bind:value={commitMessage}
           onkeydown={handleKeyDown}
-          placeholder="Enter a commit message (Ctrl+Enter to commit)..."
+          placeholder="Commit message (Ctrl+Enter to commit)..."
           rows="3"
-          class="w-full text-xs font-sans bg-slate-950/80 border border-slate-800 rounded-md px-2.5 py-2 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/30 transition-all resize-none"
+          class="w-full text-xs font-sans bg-app border border-theme-default rounded-md px-2.5 py-2 text-primary-theme placeholder:text-muted-theme focus:outline-none focus:border-emerald-500/70 focus:ring-1 focus:ring-emerald-500/30 transition-all resize-none"
         ></textarea>
       </div>
 
@@ -566,38 +664,38 @@
       <div class="flex items-center justify-between gap-2 flex-wrap">
         <button
           type="button"
-          class="flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-slate-300 bg-slate-800/70 hover:bg-slate-800 hover:text-emerald-400 border border-slate-700/60 rounded transition-all disabled:opacity-50"
+          class="flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-secondary-theme bg-surface hover:bg-surface-hover hover:text-emerald-500 border border-theme-default rounded transition-all disabled:opacity-45 cursor-pointer"
           onclick={handleGenerateCommitMessage}
           disabled={isGeneratingCommit || totalChanges === 0}
           title="Analyze uncommitted diff and generate a Conventional Commit message"
         >
-          <Sparkles class="w-3.5 h-3.5 {isGeneratingCommit ? 'animate-spin text-emerald-400' : 'text-emerald-400'}" />
+          <Sparkles class="w-3.5 h-3.5 {isGeneratingCommit ? 'animate-spin text-emerald-500' : 'text-emerald-500'}" />
           <span>{isGeneratingCommit ? "Generating..." : "AI Generate"}</span>
         </button>
 
         <div class="flex items-center gap-1.5">
           <button
             type="button"
-            class="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded transition-all shadow-sm {canCommit ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/40'}"
+            class="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded transition-all shadow-xs {canCommit ? 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer' : 'bg-surface text-muted-theme cursor-not-allowed border border-subtle'}"
             onclick={handleCommit}
             disabled={!canCommit || isCommitting || isPushing || isPulling}
           >
             {#if isCommitting && !isPushing}
-              <RotateCw class="w-3.5 h-3.5 animate-spin mr-1" />
+              <RotateCw class="w-3.5 h-3.5 animate-spin mr-0.5" />
               <span>Committing...</span>
-            {:else if gitStatus.staged.length > 0}
+            {:else if stagedList.length > 0}
               <Check class="w-3.5 h-3.5 mr-0.5" />
-              <span>Commit Staged ({gitStatus.staged.length})</span>
+              <span>Commit Staged ({stagedList.length})</span>
             {:else}
               <Check class="w-3.5 h-3.5 mr-0.5" />
-              <span>Commit All ({gitStatus.unstaged.length})</span>
+              <span>Commit All ({unstagedList.length})</span>
             {/if}
           </button>
 
-          <Tooltip text="Commit and immediately push to remote">
+          <Tooltip text="Commit and immediately push to remote" position="left">
             <button
               type="button"
-              class="flex items-center gap-1 px-2 py-1 text-xs font-semibold rounded transition-all shadow-sm {canCommit ? 'bg-sky-600 hover:bg-sky-500 text-white' : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/40'}"
+              class="flex items-center gap-1 px-2 py-1 text-xs font-semibold rounded transition-all shadow-xs {canCommit ? 'bg-sky-600 hover:bg-sky-500 text-white cursor-pointer' : 'bg-surface text-muted-theme cursor-not-allowed border border-subtle'}"
               onclick={handleCommitAndPush}
               disabled={!canCommit || isCommitting || isPushing || isPulling}
             >
@@ -613,19 +711,20 @@
       </div>
 
       {#if commitFeedback}
-        <div class="text-[11px] px-2 py-1 rounded flex items-center justify-between gap-1.5 {commitFeedback.type === 'success' ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-300 border border-rose-500/20'}">
+        <div class="text-[11px] px-2 py-1 rounded flex items-center justify-between gap-1.5 {commitFeedback.type === 'success' ? 'bg-emerald-500/12 text-emerald-500 border border-emerald-500/25' : 'bg-rose-500/12 text-rose-500 border border-rose-500/25'}">
           <div class="flex items-center gap-1.5 min-w-0">
             {#if commitFeedback.type === 'success'}
               <Check class="w-3 h-3 shrink-0" />
             {:else}
               <AlertCircle class="w-3 h-3 shrink-0" />
             {/if}
-            <span class="truncate">{commitFeedback.text}</span>
+            <span class="truncate" title={commitFeedback.text}>{commitFeedback.text}</span>
           </div>
           <button
             type="button"
-            class="text-slate-400 hover:text-slate-200 p-0.5"
+            class="text-muted-theme hover:text-primary-theme p-0.5 cursor-pointer"
             onclick={() => (commitFeedback = null)}
+            aria-label="Dismiss commit notification"
           >
             <X class="w-3 h-3" />
           </button>
@@ -633,19 +732,20 @@
       {/if}
 
       {#if syncFeedback}
-        <div class="text-[11px] px-2 py-1 rounded flex items-center justify-between gap-1.5 {syncFeedback.type === 'success' ? 'bg-sky-500/10 text-sky-300 border border-sky-500/20' : 'bg-rose-500/10 text-rose-300 border border-rose-500/20'}">
+        <div class="text-[11px] px-2 py-1 rounded flex items-center justify-between gap-1.5 {syncFeedback.type === 'success' ? 'bg-sky-500/12 text-sky-500 border border-sky-500/25' : 'bg-rose-500/12 text-rose-500 border border-rose-500/25'}">
           <div class="flex items-center gap-1.5 min-w-0">
             {#if syncFeedback.type === 'success'}
-              <Check class="w-3 h-3 shrink-0 text-sky-400" />
+              <Check class="w-3 h-3 shrink-0" />
             {:else}
-              <AlertCircle class="w-3 h-3 shrink-0 text-rose-400" />
+              <AlertCircle class="w-3 h-3 shrink-0" />
             {/if}
-            <span class="truncate">{syncFeedback.text}</span>
+            <span class="truncate" title={syncFeedback.text}>{syncFeedback.text}</span>
           </div>
           <button
             type="button"
-            class="text-slate-400 hover:text-slate-200 p-0.5"
+            class="text-muted-theme hover:text-primary-theme p-0.5 cursor-pointer"
             onclick={() => (syncFeedback = null)}
+            aria-label="Dismiss sync notification"
           >
             <X class="w-3 h-3" />
           </button>
@@ -653,306 +753,193 @@
       {/if}
     </div>
 
-    <!-- Scrollable Lists Area -->
-    <div class="flex-1 overflow-y-auto divide-y divide-slate-800/60 text-xs">
-      <!-- Section 1: Staged Changes -->
-      <div class="py-1">
-        <div class="px-2.5 py-1.5 flex items-center justify-between text-slate-400 hover:bg-slate-800/40 rounded transition-colors group">
-          <button
-            type="button"
-            class="flex items-center gap-1 text-[11px] font-semibold text-slate-300 uppercase tracking-wider flex-1 text-left"
-            onclick={() => (isStagedOpen = !isStagedOpen)}
-          >
-            {#if isStagedOpen}
-              <ChevronDown class="w-3.5 h-3.5 text-slate-400" />
-            {:else}
-              <ChevronRight class="w-3.5 h-3.5 text-slate-400" />
+    {#if totalChanges === 0}
+      <!-- Clean Working Tree Empty State -->
+      <div class="flex-1 flex flex-col items-center justify-center p-6 text-center gap-2.5 text-muted-theme">
+        <CheckCircle2 class="w-7 h-7 text-emerald-500/75" />
+        <div class="text-xs font-semibold text-primary-theme">Working tree clean</div>
+        <p class="text-[11px] text-muted-theme max-w-[210px] leading-relaxed">
+          {#if (gitStatus.ahead || 0) > 0}
+            {gitStatus.ahead} local commit{gitStatus.ahead === 1 ? "" : "s"} ready to push.
+          {:else if (gitStatus.behind || 0) > 0}
+            {gitStatus.behind} incoming commit{gitStatus.behind === 1 ? "" : "s"} available to pull.
+          {:else}
+            No uncommitted changes on <span class="font-mono text-secondary-theme">{gitStatus.active_branch || "HEAD"}</span>.
+          {/if}
+        </p>
+        <div class="flex items-center gap-2 mt-1">
+          {#if (gitStatus.ahead || 0) > 0}
+            <button
+              type="button"
+              onclick={handlePush}
+              disabled={isPushing || isPulling}
+              class="flex items-center gap-1 px-2.5 py-1 rounded-md bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium cursor-pointer disabled:opacity-50"
+            >
+              <ArrowUp class="w-3.5 h-3.5" />
+              <span>Push ({gitStatus.ahead})</span>
+            </button>
+          {/if}
+          {#if (gitStatus.behind || 0) > 0}
+            <button
+              type="button"
+              onclick={handlePull}
+              disabled={isPushing || isPulling}
+              class="flex items-center gap-1 px-2.5 py-1 rounded-md bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium cursor-pointer disabled:opacity-50"
+            >
+              <ArrowDown class="w-3.5 h-3.5" />
+              <span>Pull ({gitStatus.behind})</span>
+            </button>
+          {/if}
+        </div>
+      </div>
+    {:else}
+      <!-- Filter Bar (shown only when there are 6+ changed files to keep small lists zero-clutter) -->
+      {#if totalChanges >= 6}
+        <div class="px-2.5 py-1.5 border-b border-subtle/70 bg-sidebar">
+          <div class="relative flex items-center">
+            <Search size={12} class="absolute left-2 text-muted-theme pointer-events-none" />
+            <input
+              type="text"
+              bind:value={filterText}
+              placeholder="Filter {totalChanges} changed files..."
+              class="w-full pl-7 pr-6 py-1 text-xs bg-app text-primary-theme placeholder:text-muted-theme rounded border border-theme-default focus:border-emerald-500/70 focus:outline-none"
+            />
+            {#if filterText}
+              <button
+                type="button"
+                onclick={() => (filterText = "")}
+                class="absolute right-1.5 text-muted-theme hover:text-primary-theme p-0.5 cursor-pointer"
+                aria-label="Clear filter"
+              >
+                <X size={12} />
+              </button>
             {/if}
-            <span>Staged Changes</span>
-            <span class="ml-1 text-[10px] font-mono px-1.5 py-0.2 rounded-full {gitStatus.staged.length > 0 ? 'bg-emerald-500/20 text-emerald-400 font-bold' : 'bg-slate-800 text-slate-500'}">
-              {gitStatus.staged.length}
-            </span>
-          </button>
+          </div>
+        </div>
+      {/if}
 
-          {#if gitStatus.staged.length > 0}
-            <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-              <Tooltip text="Unstage All Changes">
-                <button
-                  type="button"
-                  aria-label="Unstage All Changes"
-                  class="p-1 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-700/50"
-                  onclick={handleUnstageAll}
-                >
-                  <Minus class="w-3 h-3" />
-                </button>
-              </Tooltip>
-            </div>
+      <!-- Scrollable Lists Area -->
+      <div class="flex-1 overflow-y-auto divide-y divide-subtle/70 text-xs">
+        <!-- Section 1: Staged Changes -->
+        <div class="py-1">
+          <div class="px-2.5 py-1.5 flex items-center justify-between text-secondary-theme hover:bg-surface-hover/50 rounded transition-colors group">
+            <button
+              type="button"
+              class="flex items-center gap-1 text-[11px] font-semibold text-primary-theme uppercase tracking-wider flex-1 text-left cursor-pointer"
+              onclick={() => (isStagedOpen = !isStagedOpen)}
+            >
+              {#if isStagedOpen}
+                <ChevronDown class="w-3.5 h-3.5 text-muted-theme" />
+              {:else}
+                <ChevronRight class="w-3.5 h-3.5 text-muted-theme" />
+              {/if}
+              <span>Staged Changes</span>
+              <span class="ml-1 text-[10px] font-mono px-1.5 py-0.2 rounded-full {stagedList.length > 0 ? 'bg-emerald-500/20 text-emerald-500 font-bold' : 'bg-surface text-muted-theme'}">
+                {normalizedFilter ? `${filteredStaged.length}/${stagedList.length}` : stagedList.length}
+              </span>
+            </button>
+
+            {#if stagedList.length > 0}
+              <div class="flex items-center gap-1 opacity-75 group-hover:opacity-100 transition-opacity">
+                <Tooltip text="Unstage All Changes" position="left">
+                  <button
+                    type="button"
+                    aria-label="Unstage All Changes"
+                    class="p-1 rounded text-secondary-theme hover:text-primary-theme hover:bg-surface-hover cursor-pointer"
+                    onclick={handleUnstageAll}
+                  >
+                    <Minus class="w-3 h-3" />
+                  </button>
+                </Tooltip>
+              </div>
+            {/if}
+          </div>
+
+          {#if isStagedOpen}
+            {#if filteredStaged.length === 0}
+              <div class="px-7 py-2 text-[11px] text-muted-theme italic">
+                {normalizedFilter ? "No staged files match filter." : "No staged changes."}
+              </div>
+            {:else}
+              <div class="flex flex-col">
+                {#each filteredStaged as item (item.path)}
+                  {@render gitFileRow(item, true)}
+                {/each}
+              </div>
+            {/if}
           {/if}
         </div>
 
-        {#if isStagedOpen}
-          {#if gitStatus.staged.length === 0}
-            <div class="px-7 py-2 text-[11px] text-slate-500 italic">
-              No staged changes.
-            </div>
-          {:else}
-            <div class="flex flex-col">
-              {#each gitStatus.staged as item (item.path)}
-                {@const badge = getStatusBadge(item.status)}
-                {@const fileMeta = splitFilePath(item.path)}
-                {@const iconMeta = getFileIconMeta({ name: fileMeta.name })}
-                <div
-                  role="button"
-                  tabindex="0"
-                  class="group flex items-center justify-between px-3 py-1 text-slate-300 hover:bg-slate-800/70 hover:text-slate-100 cursor-pointer transition-colors"
-                  ondblclick={() => onCompareFile?.(item.path, true)}
-                  onkeydown={(e) => {
-                    if (e.key === "Enter") onCompareFile?.(item.path, true);
-                  }}
-                  oncontextmenu={(e) => {
-                    e.preventDefault();
-                    contextMenu = { x: e.clientX, y: e.clientY, item };
-                  }}
-                >
-                  <div class="flex items-center gap-2 min-w-0 flex-1 pr-2">
-                    <Tooltip text="{badge.label} — {badge.title}" position="right">
-                      <span class="text-[10px] font-mono font-bold px-1 rounded border {badge.class} shrink-0 cursor-help" aria-label="{badge.label} file">
-                        {badge.letter}
-                      </span>
-                    </Tooltip>
+        <!-- Section 2: Changes (Unstaged) -->
+        <div class="py-1">
+          <div class="px-2.5 py-1.5 flex items-center justify-between text-secondary-theme hover:bg-surface-hover/50 rounded transition-colors group">
+            <button
+              type="button"
+              class="flex items-center gap-1 text-[11px] font-semibold text-primary-theme uppercase tracking-wider flex-1 text-left cursor-pointer"
+              onclick={() => (isChangesOpen = !isChangesOpen)}
+            >
+              {#if isChangesOpen}
+                <ChevronDown class="w-3.5 h-3.5 text-muted-theme" />
+              {:else}
+                <ChevronRight class="w-3.5 h-3.5 text-muted-theme" />
+              {/if}
+              <span>Changes</span>
+              <span class="ml-1 text-[10px] font-mono px-1.5 py-0.2 rounded-full {unstagedList.length > 0 ? 'bg-sky-500/20 text-sky-500 font-bold' : 'bg-surface text-muted-theme'}">
+                {normalizedFilter ? `${filteredUnstaged.length}/${unstagedList.length}` : unstagedList.length}
+              </span>
+            </button>
 
-                    <div class="w-3.5 h-3.5 flex items-center justify-center shrink-0">
-                      {#if iconMeta.badge}
-                        <span
-                          class="font-mono text-[8px] font-bold px-0.5 rounded leading-none flex items-center justify-center shrink-0 border"
-                          style="color: {iconMeta.color}; border-color: {iconMeta.color}40; background-color: {iconMeta.color}15;"
-                        >
-                          {iconMeta.badge}
-                        </span>
-                      {:else if iconMeta.type === "code"}
-                        <FileCode size={13} style="color: {iconMeta.color};" />
-                      {:else if iconMeta.type === "database"}
-                        <Database size={13} style="color: {iconMeta.color};" />
-                      {:else if iconMeta.type === "terminal"}
-                        <Terminal size={13} style="color: {iconMeta.color};" />
-                      {:else if iconMeta.type === "image"}
-                        <Image size={13} style="color: {iconMeta.color};" />
-                      {:else}
-                        <FileText size={13} style="color: {iconMeta.color};" />
-                      {/if}
-                    </div>
-
-                    <span class="truncate font-medium {badge.textColor}" title="{fileMeta.name} ({badge.label})">
-                      {fileMeta.name}
-                    </span>
-                    {#if fileMeta.dir}
-                      <span class="truncate text-[10px] text-slate-500 font-mono">
-                        {fileMeta.dir}
-                      </span>
-                    {/if}
-                  </div>
-
-                  <!-- Quick Action Buttons -->
-                  <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                    <Tooltip text="Compare with HEAD">
-                      <button
-                        type="button"
-                        aria-label="Compare with HEAD"
-                        class="p-1 rounded text-slate-400 hover:text-emerald-400 hover:bg-slate-700"
-                        onclick={(e) => {
-                          e.stopPropagation();
-                          onCompareFile?.(item.path, true);
-                        }}
-                      >
-                        <FileDiff class="w-3.5 h-3.5" />
-                      </button>
-                    </Tooltip>
-                    <Tooltip text="Unstage this file">
-                      <button
-                        type="button"
-                        aria-label="Unstage this file"
-                        class="p-1 rounded text-slate-400 hover:text-amber-400 hover:bg-slate-700"
-                        onclick={(e) => {
-                          e.stopPropagation();
-                          handleUnstageFile(item.path);
-                        }}
-                      >
-                        <Minus class="w-3.5 h-3.5" />
-                      </button>
-                    </Tooltip>
-                  </div>
-                </div>
-              {/each}
-            </div>
-          {/if}
-        {/if}
-      </div>
-
-      <!-- Section 2: Changes (Unstaged) -->
-      <div class="py-1">
-        <div class="px-2.5 py-1.5 flex items-center justify-between text-slate-400 hover:bg-slate-800/40 rounded transition-colors group">
-          <button
-            type="button"
-            class="flex items-center gap-1 text-[11px] font-semibold text-slate-300 uppercase tracking-wider flex-1 text-left"
-            onclick={() => (isChangesOpen = !isChangesOpen)}
-          >
-            {#if isChangesOpen}
-              <ChevronDown class="w-3.5 h-3.5 text-slate-400" />
-            {:else}
-              <ChevronRight class="w-3.5 h-3.5 text-slate-400" />
+            {#if unstagedList.length > 0}
+              <div class="flex items-center gap-1 opacity-75 group-hover:opacity-100 transition-opacity">
+                <Tooltip text="Stage All Changes" position="left">
+                  <button
+                    type="button"
+                    aria-label="Stage All Changes"
+                    class="p-1 rounded text-secondary-theme hover:text-emerald-500 hover:bg-surface-hover cursor-pointer"
+                    onclick={handleStageAll}
+                  >
+                    <Plus class="w-3 h-3" />
+                  </button>
+                </Tooltip>
+                <Tooltip text="Undo All Changes" position="left">
+                  <button
+                    type="button"
+                    aria-label="Undo All Changes"
+                    class="p-1 rounded text-secondary-theme hover:text-rose-500 hover:bg-surface-hover cursor-pointer"
+                    onclick={handleUndoAll}
+                  >
+                    <Undo2 class="w-3 h-3" />
+                  </button>
+                </Tooltip>
+              </div>
             {/if}
-            <span>Changes</span>
-            <span class="ml-1 text-[10px] font-mono px-1.5 py-0.2 rounded-full {gitStatus.unstaged.length > 0 ? 'bg-sky-500/20 text-sky-400 font-bold' : 'bg-slate-800 text-slate-500'}">
-              {gitStatus.unstaged.length}
-            </span>
-          </button>
+          </div>
 
-          {#if gitStatus.unstaged.length > 0}
-            <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-              <Tooltip text="Stage All Changes">
-                <button
-                  type="button"
-                  aria-label="Stage All Changes"
-                  class="p-1 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-700/50"
-                  onclick={handleStageAll}
-                >
-                  <Plus class="w-3 h-3" />
-                </button>
-              </Tooltip>
-              <Tooltip text="Undo All Changes">
-                <button
-                  type="button"
-                  aria-label="Undo All Changes"
-                  class="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-700/50"
-                  onclick={handleUndoAll}
-                >
-                  <Undo2 class="w-3 h-3" />
-                </button>
-              </Tooltip>
-            </div>
+          {#if isChangesOpen}
+            {#if filteredUnstaged.length === 0}
+              <div class="px-7 py-2 text-[11px] text-muted-theme italic">
+                {normalizedFilter ? "No unstaged files match filter." : "No unstaged changes."}
+              </div>
+            {:else}
+              <div class="flex flex-col">
+                {#each filteredUnstaged as item (item.path)}
+                  {@render gitFileRow(item, false)}
+                {/each}
+              </div>
+            {/if}
           {/if}
         </div>
-
-        {#if isChangesOpen}
-          {#if gitStatus.unstaged.length === 0}
-            <div class="px-7 py-2 text-[11px] text-slate-500 italic">
-              No unstaged changes.
-            </div>
-          {:else}
-            <div class="flex flex-col">
-              {#each gitStatus.unstaged as item (item.path)}
-                {@const badge = getStatusBadge(item.status)}
-                {@const fileMeta = splitFilePath(item.path)}
-                {@const iconMeta = getFileIconMeta({ name: fileMeta.name })}
-                <div
-                  role="button"
-                  tabindex="0"
-                  class="group flex items-center justify-between px-3 py-1 text-slate-300 hover:bg-slate-800/70 hover:text-slate-100 cursor-pointer transition-colors"
-                  ondblclick={() => onCompareFile?.(item.path, false)}
-                  onkeydown={(e) => {
-                    if (e.key === "Enter") onCompareFile?.(item.path, false);
-                  }}
-                  oncontextmenu={(e) => {
-                    e.preventDefault();
-                    contextMenu = { x: e.clientX, y: e.clientY, item };
-                  }}
-                >
-                  <div class="flex items-center gap-2 min-w-0 flex-1 pr-2">
-                    <Tooltip text="{badge.label} — {badge.title}" position="right">
-                      <span class="text-[10px] font-mono font-bold px-1 rounded border {badge.class} shrink-0 cursor-help" aria-label="{badge.label} file">
-                        {badge.letter}
-                      </span>
-                    </Tooltip>
-
-                    <div class="w-3.5 h-3.5 flex items-center justify-center shrink-0">
-                      {#if iconMeta.badge}
-                        <span
-                          class="font-mono text-[8px] font-bold px-0.5 rounded leading-none flex items-center justify-center shrink-0 border"
-                          style="color: {iconMeta.color}; border-color: {iconMeta.color}40; background-color: {iconMeta.color}15;"
-                        >
-                          {iconMeta.badge}
-                        </span>
-                      {:else if iconMeta.type === "code"}
-                        <FileCode size={13} style="color: {iconMeta.color};" />
-                      {:else if iconMeta.type === "database"}
-                        <Database size={13} style="color: {iconMeta.color};" />
-                      {:else if iconMeta.type === "terminal"}
-                        <Terminal size={13} style="color: {iconMeta.color};" />
-                      {:else if iconMeta.type === "image"}
-                        <Image size={13} style="color: {iconMeta.color};" />
-                      {:else}
-                        <FileText size={13} style="color: {iconMeta.color};" />
-                      {/if}
-                    </div>
-
-                    <span class="truncate font-medium {badge.textColor}" title="{fileMeta.name} ({badge.label})">
-                      {fileMeta.name}
-                    </span>
-                    {#if fileMeta.dir}
-                      <span class="truncate text-[10px] text-slate-500 font-mono">
-                        {fileMeta.dir}
-                      </span>
-                    {/if}
-                  </div>
-
-                  <!-- Quick Action Buttons -->
-                  <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                    <Tooltip text="Compare with Unmodified">
-                      <button
-                        type="button"
-                        aria-label="Compare with Unmodified"
-                        class="p-1 rounded text-slate-400 hover:text-sky-400 hover:bg-slate-700"
-                        onclick={(e) => {
-                          e.stopPropagation();
-                          onCompareFile?.(item.path, false);
-                        }}
-                      >
-                        <FileDiff class="w-3.5 h-3.5" />
-                      </button>
-                    </Tooltip>
-                    <Tooltip text="Stage this file">
-                      <button
-                        type="button"
-                        aria-label="Stage this file"
-                        class="p-1 rounded text-slate-400 hover:text-emerald-400 hover:bg-slate-700"
-                        onclick={(e) => {
-                          e.stopPropagation();
-                          handleStageFile(item.path);
-                        }}
-                      >
-                        <Plus class="w-3.5 h-3.5" />
-                      </button>
-                    </Tooltip>
-                    <Tooltip text="Undo changes">
-                      <button
-                        type="button"
-                        aria-label="Undo changes"
-                        class="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-700"
-                        onclick={(e) => {
-                          e.stopPropagation();
-                          handleUndoFile(item);
-                        }}
-                      >
-                        <Undo2 class="w-3.5 h-3.5" />
-                      </button>
-                    </Tooltip>
-                  </div>
-                </div>
-              {/each}
-            </div>
-          {/if}
-        {/if}
       </div>
-    </div>
+    {/if}
   {/if}
 
   <!-- Right-Click Context Menu -->
   {#if contextMenu}
-    {@const menuBadge = getStatusBadge(contextMenu.item.status)}
-    {@const menuFileMeta = splitFilePath(contextMenu.item.path)}
+    {@const menuBadge = getGitStatusBadge(contextMenu.item.status)}
+    {@const menuFileMeta = splitGitFilePath(contextMenu.item.path)}
     <div
-      class="fixed z-50 bg-slate-900 border border-slate-700 rounded-md shadow-2xl py-1 w-56 text-xs text-slate-200 backdrop-blur-md"
-      style="left: {Math.min(contextMenu.x, window.innerWidth - 235)}px; top: {Math.min(contextMenu.y, window.innerHeight - 300)}px;"
+      class="fixed z-50 bg-surface-elevated border border-theme-default rounded-lg shadow-2xl py-1 w-56 text-xs text-primary-theme backdrop-blur-md"
+      style="left: {Math.min(contextMenu.x, window.innerWidth - 235)}px; top: {Math.min(contextMenu.y, window.innerHeight - 330)}px;"
       onclick={(e) => e.stopPropagation()}
       onkeydown={(e) => {
         if (e.key === "Escape") contextMenu = null;
@@ -961,16 +948,16 @@
       tabindex="-1"
     >
       <!-- Visual Studio Context Menu Header -->
-      <div class="px-2.5 py-1.5 border-b border-slate-800 bg-slate-950/70 flex items-center justify-between gap-1.5 mb-1">
+      <div class="px-2.5 py-1.5 border-b border-subtle bg-surface/70 flex items-center justify-between gap-1.5 mb-1">
         <div class="flex items-center gap-1.5 min-w-0">
-          <span class="text-[9px] font-mono font-bold px-1 py-0.2 rounded border {menuBadge.class} shrink-0">
+          <span class="text-[9px] font-mono font-bold px-1 py-0.2 rounded border {menuBadge.badgeClass} shrink-0">
             {menuBadge.letter}
           </span>
-          <span class="truncate font-semibold text-slate-200 text-[11px]" title={contextMenu.item.path}>
+          <span class="truncate font-semibold text-primary-theme text-[11px]" title={contextMenu.item.path}>
             {menuFileMeta.name}
           </span>
         </div>
-        <span class="text-[9px] font-mono uppercase tracking-wider px-1 py-0.5 rounded bg-slate-800/80 text-slate-400 shrink-0">
+        <span class="text-[9px] font-mono uppercase tracking-wider px-1 py-0.5 rounded bg-surface-hover text-muted-theme shrink-0">
           {contextMenu.item.is_staged ? "Staged" : "Unstaged"}
         </span>
       </div>
@@ -978,7 +965,7 @@
       {#if contextMenu.item.is_staged}
         <button
           type="button"
-          class="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2 text-amber-300"
+          class="w-full text-left px-3 py-1.5 hover:bg-surface-hover flex items-center gap-2 text-amber-500 cursor-pointer"
           onclick={() => {
             handleUnstageFile(contextMenu!.item.path);
             contextMenu = null;
@@ -989,19 +976,19 @@
         </button>
         <button
           type="button"
-          class="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2 text-slate-200"
+          class="w-full text-left px-3 py-1.5 hover:bg-surface-hover flex items-center gap-2 text-primary-theme cursor-pointer"
           onclick={() => {
             onCompareFile?.(contextMenu!.item.path, true);
             contextMenu = null;
           }}
         >
-          <FileDiff class="w-3.5 h-3.5 text-emerald-400" />
+          <FileDiff class="w-3.5 h-3.5 text-emerald-500" />
           <span>Compare with HEAD</span>
         </button>
       {:else}
         <button
           type="button"
-          class="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2 text-emerald-300"
+          class="w-full text-left px-3 py-1.5 hover:bg-surface-hover flex items-center gap-2 text-emerald-500 cursor-pointer"
           onclick={() => {
             handleStageFile(contextMenu!.item.path);
             contextMenu = null;
@@ -1012,7 +999,7 @@
         </button>
         <button
           type="button"
-          class="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2 text-rose-300"
+          class="w-full text-left px-3 py-1.5 hover:bg-surface-hover flex items-center gap-2 text-rose-500 cursor-pointer"
           onclick={() => {
             const item = contextMenu!.item;
             contextMenu = null;
@@ -1024,65 +1011,213 @@
         </button>
         <button
           type="button"
-          class="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2 text-slate-200"
+          class="w-full text-left px-3 py-1.5 hover:bg-surface-hover flex items-center gap-2 text-primary-theme cursor-pointer"
           onclick={() => {
             onCompareFile?.(contextMenu!.item.path, false);
             contextMenu = null;
           }}
         >
-          <FileDiff class="w-3.5 h-3.5 text-sky-400" />
+          <FileDiff class="w-3.5 h-3.5 text-sky-500" />
           <span>Compare with Unmodified</span>
         </button>
       {/if}
 
-      <div class="h-px bg-slate-800 my-1"></div>
+      {#if (onAttachFile || onInsertMention) && contextMenu.item.status !== "deleted"}
+        <div class="h-px bg-subtle my-1"></div>
+
+        {#if onAttachFile}
+          <button
+            type="button"
+            class="w-full text-left px-3 py-1.5 hover:bg-surface-hover flex items-center gap-2 text-accent-theme font-medium cursor-pointer"
+            onclick={() => handleAttachGitItem(contextMenu!.item)}
+          >
+            <Paperclip class="w-3.5 h-3.5" />
+            <span>Attach to Chat</span>
+          </button>
+        {/if}
+
+        {#if onInsertMention}
+          <button
+            type="button"
+            class="w-full text-left px-3 py-1.5 hover:bg-surface-hover flex items-center gap-2 cursor-pointer"
+            onclick={() => handleMentionGitItem(contextMenu!.item)}
+          >
+            <AtSign class="w-3.5 h-3.5 text-secondary-theme" />
+            <span>Mention in Prompt (@)</span>
+          </button>
+        {/if}
+      {/if}
+
+      {#if contextMenu.item.status !== "deleted"}
+        <div class="h-px bg-subtle my-1"></div>
+
+        <button
+          type="button"
+          class="w-full text-left px-3 py-1.5 hover:bg-surface-hover flex items-center gap-2 cursor-pointer"
+          onclick={() => handleOpenFile(contextMenu!.item.path)}
+        >
+          <ExternalLink class="w-3.5 h-3.5 text-secondary-theme" />
+          <span>Open with Default App</span>
+        </button>
+
+        <button
+          type="button"
+          class="w-full text-left px-3 py-1.5 hover:bg-surface-hover flex items-center gap-2 cursor-pointer"
+          onclick={() => handleOpenFile(contextMenu!.item.path, { forceNotepad: true })}
+        >
+          <FileText class="w-3.5 h-3.5 text-secondary-theme" />
+          <span>Open with Notepad</span>
+        </button>
+
+        <button
+          type="button"
+          class="w-full text-left px-3 py-1.5 hover:bg-surface-hover flex items-center gap-2 cursor-pointer"
+          onclick={() => handleRevealInExplorer(contextMenu!.item.path)}
+        >
+          <CornerDownLeft class="w-3.5 h-3.5 text-secondary-theme" />
+          <span>Reveal in File Explorer</span>
+        </button>
+      {/if}
+
+      <div class="h-px bg-subtle my-1"></div>
 
       <button
         type="button"
-        class="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
-        onclick={() => handleOpenFile(contextMenu!.item.path)}
-      >
-        <ExternalLink class="w-3.5 h-3.5 text-slate-400" />
-        <span>Open with Default App</span>
-      </button>
-
-      <button
-        type="button"
-        class="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
-        onclick={() => handleOpenFile(contextMenu!.item.path, { forceNotepad: true })}
-      >
-        <FileText class="w-3.5 h-3.5 text-slate-400" />
-        <span>Open with Notepad</span>
-      </button>
-
-      <button
-        type="button"
-        class="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
-        onclick={() => handleRevealInExplorer(contextMenu!.item.path)}
-      >
-        <CornerDownLeft class="w-3.5 h-3.5 text-slate-400" />
-        <span>Reveal in File Explorer</span>
-      </button>
-
-      <div class="h-px bg-slate-800 my-1"></div>
-
-      <button
-        type="button"
-        class="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
+        class="w-full text-left px-3 py-1.5 hover:bg-surface-hover flex items-center gap-2 cursor-pointer"
         onclick={() => handleCopyPath(contextMenu!.item.path, false)}
       >
-        <Copy class="w-3.5 h-3.5 text-slate-400" />
+        <Copy class="w-3.5 h-3.5 text-secondary-theme" />
         <span>Copy Relative Path</span>
       </button>
 
       <button
         type="button"
-        class="w-full text-left px-3 py-1.5 hover:bg-slate-800 flex items-center gap-2"
+        class="w-full text-left px-3 py-1.5 hover:bg-surface-hover flex items-center gap-2 cursor-pointer"
         onclick={() => handleCopyPath(contextMenu!.item.path, true)}
       >
-        <Copy class="w-3.5 h-3.5 text-slate-400" />
+        <Copy class="w-3.5 h-3.5 text-muted-theme" />
         <span>Copy Full Path</span>
       </button>
     </div>
   {/if}
 </div>
+
+{#snippet gitFileRow(item: GitFileItem, isStaged: boolean)}
+  {@const badge = getGitStatusBadge(item.status)}
+  {@const fileMeta = splitGitFilePath(item.path)}
+  {@const iconMeta = getFileIconMeta({ name: fileMeta.name })}
+
+  <div
+    role="button"
+    tabindex="0"
+    class="group flex items-center justify-between px-3 py-1 text-secondary-theme hover:bg-surface-hover/80 hover:text-primary-theme cursor-pointer transition-colors"
+    ondblclick={() => onCompareFile?.(item.path, isStaged)}
+    onkeydown={(e) => {
+      if (e.key === "Enter") onCompareFile?.(item.path, isStaged);
+    }}
+    oncontextmenu={(e) => {
+      e.preventDefault();
+      contextMenu = { x: e.clientX, y: e.clientY, item };
+    }}
+  >
+    <div class="flex items-center gap-2 min-w-0 flex-1 pr-2">
+      <span
+        class="text-[10px] font-mono font-bold px-1 rounded border {badge.badgeClass} shrink-0"
+        title={badge.title}
+        aria-label="{badge.label} file"
+      >
+        {badge.letter}
+      </span>
+
+      <div class="w-3.5 h-3.5 flex items-center justify-center shrink-0">
+        {#if iconMeta.badge}
+          <span
+            class="font-mono text-[8px] font-bold px-0.5 rounded leading-none flex items-center justify-center shrink-0 border"
+            style="color: {iconMeta.color}; border-color: {iconMeta.color}40; background-color: {iconMeta.color}15;"
+          >
+            {iconMeta.badge}
+          </span>
+        {:else if iconMeta.type === "code"}
+          <FileCode size={13} style="color: {iconMeta.color};" />
+        {:else if iconMeta.type === "database"}
+          <Database size={13} style="color: {iconMeta.color};" />
+        {:else if iconMeta.type === "terminal"}
+          <Terminal size={13} style="color: {iconMeta.color};" />
+        {:else if iconMeta.type === "image"}
+          <Image size={13} style="color: {iconMeta.color};" />
+        {:else}
+          <FileText size={13} style="color: {iconMeta.color};" />
+        {/if}
+      </div>
+
+      <span class="truncate font-medium {badge.textColor}" title="{item.path} ({badge.label})">
+        {fileMeta.name}
+      </span>
+      {#if fileMeta.dir}
+        <span class="truncate text-[10px] text-muted-theme font-mono">
+          {fileMeta.dir}
+        </span>
+      {/if}
+    </div>
+
+    <!-- Quick Action Buttons -->
+    <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity shrink-0">
+      <Tooltip text={isStaged ? "Compare with HEAD" : "Compare with Unmodified"} position="left">
+        <button
+          type="button"
+          aria-label={isStaged ? "Compare with HEAD" : "Compare with Unmodified"}
+          class="p-1 rounded text-muted-theme hover:text-sky-500 hover:bg-surface-elevated cursor-pointer"
+          onclick={(e) => {
+            e.stopPropagation();
+            onCompareFile?.(item.path, isStaged);
+          }}
+        >
+          <FileDiff class="w-3.5 h-3.5" />
+        </button>
+      </Tooltip>
+
+      {#if isStaged}
+        <Tooltip text="Unstage this file" position="left">
+          <button
+            type="button"
+            aria-label="Unstage this file"
+            class="p-1 rounded text-muted-theme hover:text-amber-500 hover:bg-surface-elevated cursor-pointer"
+            onclick={(e) => {
+              e.stopPropagation();
+              handleUnstageFile(item.path);
+            }}
+          >
+            <Minus class="w-3.5 h-3.5" />
+          </button>
+        </Tooltip>
+      {:else}
+        <Tooltip text="Stage this file" position="left">
+          <button
+            type="button"
+            aria-label="Stage this file"
+            class="p-1 rounded text-muted-theme hover:text-emerald-500 hover:bg-surface-elevated cursor-pointer"
+            onclick={(e) => {
+              e.stopPropagation();
+              handleStageFile(item.path);
+            }}
+          >
+            <Plus class="w-3.5 h-3.5" />
+          </button>
+        </Tooltip>
+        <Tooltip text="Undo changes" position="left">
+          <button
+            type="button"
+            aria-label="Undo changes"
+            class="p-1 rounded text-muted-theme hover:text-rose-500 hover:bg-surface-elevated cursor-pointer"
+            onclick={(e) => {
+              e.stopPropagation();
+              handleUndoFile(item);
+            }}
+          >
+            <Undo2 class="w-3.5 h-3.5" />
+          </button>
+        </Tooltip>
+      {/if}
+    </div>
+  </div>
+{/snippet}
